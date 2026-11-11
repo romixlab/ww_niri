@@ -14,9 +14,7 @@ Changes of ww_niri on top of upstream niri. Upstream's own changes are in its re
 
 ### Fixed
 
-- `media.list` and `PlayerAppeared`: a player that registers while niri subscribes to the bus is announced once, not twice.
-
-- Cargo.lock takes up wire_weaver master (574667c9) and exact_units main (58cc839), which build together again; 26.4.0's lock had exact_units 1e825f4, which ww_si and ww_self don't build against.
+- Cargo.lock takes up wire_weaver master (82438565, with API-63) and exact_units main (58cc839), which build together again; 26.4.0's lock had exact_units 1e825f4, which ww_si and ww_self don't build against.
 
 ## [26.4.0] - 2026-11-11
 
