@@ -4,6 +4,10 @@ Changes of ww_niri on top of upstream niri. Upstream's own changes are in its re
 
 ## [Unreleased]
 
+### Fixed
+
+- Cargo.lock goes back to the last tested set of the WireWeaver crates (wire_weaver 70ceb4f9, exact_units f2051438): 26.4.0's lock took exact_units 1e825f4, which ww_si and ww_self don't build against.
+
 ## [26.4.0] - 2026-11-11
 
 ### Added
