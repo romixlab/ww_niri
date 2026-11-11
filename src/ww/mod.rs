@@ -72,6 +72,7 @@ impl Services {
             hub.clone(),
             count,
         );
+        browsers.follow_windows();
         let players = Players::new(hub.clone(), run, browsers.clone());
         Rc::new(Self {
             hub,

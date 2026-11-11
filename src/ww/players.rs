@@ -228,7 +228,7 @@ impl Players {
         self.hub.emit(ww_niri_api::EventOwned::PlayerAppeared(info));
     }
 
-    /// A player's `PropertiesChanged`: a new status or track gives `PlaybackChanged`.
+    /// A player's `PropertiesChanged`: a new status or track marks its observed `playback.state`.
     async fn properties_changed(&self, msg: &zbus::Message) {
         let header = msg.header();
         let Some(sender) = header.sender() else {
@@ -252,13 +252,9 @@ impl Players {
             .borrow()
             .iter()
             .find(|(_, p)| p.owner.as_deref() == Some(sender.as_str()))
-            .map(|(id, p)| (PlayerId(*id), p.name.clone()));
-        let Some((player, name)) = found else { return };
-        match self.read_state(&name).await {
-            Ok(state) => self
-                .hub
-                .emit(ww_niri_api::EventOwned::PlaybackChanged { player, state }),
-            Err(err) => debug!("ww: error reading the state of {name}: {err:?}"),
+            .map(|(id, _)| PlayerId(*id));
+        if let Some(player) = found {
+            self.hub.playback_changed(player);
         }
     }
 

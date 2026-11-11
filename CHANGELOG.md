@@ -4,7 +4,17 @@ Changes of ww_niri on top of upstream niri. Upstream's own changes are in its re
 
 ## [Unreleased]
 
+### Added
+
+- Control API: observed properties under the resource arrays (wire_weaver API-63). `browsers[i].state` follows the slot's phase, URL, window and window title, `browsers[i].playback.state` and `media.players[j].playback.state` follow the player's status, track, rate and capabilities (MPRIS `PropertiesChanged`); observers of a player that leaves the bus get `Ended`. Changes reach observers whether or not the client has the events stream open.
+
+### Removed
+
+- The `PlaybackChanged` event: observe `playback.state` instead (breaks clients that matched on it).
+
 ### Fixed
+
+- `media.list` and `PlayerAppeared`: a player that registers while niri subscribes to the bus is announced once, not twice.
 
 - Cargo.lock takes up wire_weaver master (574667c9) and exact_units main (58cc839), which build together again; 26.4.0's lock had exact_units 1e825f4, which ww_si and ww_self don't build against.
 

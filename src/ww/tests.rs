@@ -487,6 +487,22 @@ fn browser_slot_lifecycle() {
                 .unwrap()
         };
         let slot = client.browsers(0);
+        // Observed on change: each phase the slot goes through reaches the client.
+        let mut phases = slot
+            .observe_state(wire_weaver_client::observe::on_change(Duration::ZERO))
+            .subscribe()
+            .await
+            .unwrap();
+        let mut until = async |what: &str, ok: &dyn Fn(&ww_niri_api::BrowserStateOwned) -> bool| {
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while !ok(&phases.recv().await.unwrap().value) {}
+            })
+            .await
+            .unwrap_or_else(|_| panic!("observers get {what}"))
+        };
+        until("Stopped", &|s| s.phase == BrowserPhase::Stopped).await;
+
+        let slot = client.browsers(0);
 
         assert!(matches!(
             slot.open("https://example.org/".to_owned()).call().await,
@@ -522,6 +538,7 @@ fn browser_slot_lifecycle() {
         assert!(matches!(next().await, EventOwned::WindowOpenedOrChanged(w)
             if w.browser == Some(BrowserSlot(0))));
         assert_eq!(next().await, EventOwned::BrowserStarted(BrowserSlot(0)));
+        until("Running", &|s| s.phase == BrowserPhase::Running).await;
 
         assert!(matches!(
             slot.open("file:///etc/passwd".to_owned()).call().await,
@@ -535,18 +552,12 @@ fn browser_slot_lifecycle() {
         let listed = client.windows().list().call().await.unwrap();
         assert_eq!(listed[0].browser, Some(BrowserSlot(0)));
 
-        // The page's load event moves the URL on.
-        let state = tokio::time::timeout(Duration::from_secs(5), async {
-            loop {
-                let state = slot.read_state().read().await.unwrap();
-                if state.url.as_deref() == Some("https://example.org/next") {
-                    break state;
-                }
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
+        // The page's load event moves the URL on, and observers hear it.
+        until("the next URL", &|s| {
+            s.url.as_deref() == Some("https://example.org/next")
         })
-        .await
-        .expect("the URL follows the page");
+        .await;
+        let state = slot.read_state().read().await.unwrap();
         assert_eq!(
             state,
             BrowserStateOwned {
@@ -558,6 +569,22 @@ fn browser_slot_lifecycle() {
             }
         );
 
+        // A new title of its window reaches observers too, with no events stream needed.
+        fake.windows.lock().unwrap()[0].title = Some("Next — Mozilla Firefox".to_owned());
+        fake.events
+            .send(niri_ipc::Event::WindowOpenedOrChanged {
+                window: ipc_window(7, Some(pid)),
+            })
+            .await
+            .unwrap();
+        until("the new title", &|s| {
+            s.title.as_deref() == Some("Next — Mozilla Firefox")
+        })
+        .await;
+        // The events stream, open here, has it as well.
+        assert!(matches!(next().await, EventOwned::WindowOpenedOrChanged(w)
+            if w.title.as_deref() == Some("Next — Mozilla Firefox")));
+
         // The fake ignores browser.close: SIGTERM ends it.
         slot.stop().call().await.unwrap();
         assert_eq!(
@@ -567,6 +594,7 @@ fn browser_slot_lifecycle() {
                 reason: StopReason::Stopped
             }
         );
+        until("Stopped", &|s| s.phase == BrowserPhase::Stopped).await;
         let state = slot.read_state().read().await.unwrap();
         assert_eq!(state.phase, BrowserPhase::Stopped);
         assert!(matches!(
@@ -860,6 +888,16 @@ fn media_players() {
             let media = client.media();
             let player0 = media.players(0);
             let playback = player0.playback();
+            let mut observed = playback
+                .observe_state(wire_weaver_client::observe::on_change(Duration::ZERO))
+                .subscribe()
+                .await
+                .unwrap();
+            let first = tokio::time::timeout(Duration::from_secs(5), observed.recv())
+                .await
+                .expect("the observed state comes at once")
+                .unwrap();
+            assert_eq!(first.value.status, PlaybackStatus::Playing);
             let state = playback.read_state().read().await.unwrap();
             assert_eq!(state.status, PlaybackStatus::Playing);
             assert_eq!(state.title.as_deref(), Some("A Song"));
@@ -890,15 +928,12 @@ fn media_players() {
                     "SetPosition /track/1 60000000"
                 ]
             );
-            // The pause changed its status: the player said so, and clients hear it.
-            match next().await {
-                EventOwned::PlaybackChanged { player, state } => {
-                    assert_eq!(player, PlayerId(0));
-                    assert_eq!(state.status, PlaybackStatus::Paused);
-                    assert_eq!(state.title.as_deref(), Some("A Song"));
-                }
-                other => panic!("expected PlaybackChanged, got {other:?}"),
-            }
+            // The pause changed its status: the player said so, and observers hear it.
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while observed.recv().await.unwrap().value.status != PlaybackStatus::Paused {}
+            })
+            .await
+            .expect("observers get Paused");
 
             // No browser slot runs: its playback has no player.
             let slot = client.browsers(0);
@@ -909,6 +944,18 @@ fn media_players() {
 
             drop(player);
             assert_eq!(next().await, EventOwned::PlayerGone(PlayerId(0)));
+            // Its observers end with it.
+            tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    match observed.recv_event().await {
+                        Ok(wire_weaver_client::observe::ObserveEvent::Ended) => break,
+                        Err(err) => panic!("{err:?} before Ended"),
+                        Ok(_) => (),
+                    }
+                }
+            })
+            .await
+            .expect("the observer ends when the player goes");
             assert!(client.media().list().call().await.unwrap().is_empty());
             assert!(playback.pause().call().await.is_err());
         },

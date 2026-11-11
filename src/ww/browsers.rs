@@ -233,6 +233,40 @@ impl Browsers {
         slots.get_mut(usize::from(slot))?.run.as_mut().map(f)
     }
 
+    /// Follows niri's window events, so that observers of a slot's state hear when its window's
+    /// title changes or the window goes, whether or not a client has the events stream open.
+    pub fn follow_windows(self: &Rc<Self>) {
+        let this = self.clone();
+        self.schedule(async move {
+            // niri drops a subscriber that falls behind: subscribe again.
+            while let Some(rx) = call(&this.run, |host| host.subscribe_events())
+                .await
+                .flatten()
+            {
+                while let Ok(event) = rx.recv().await {
+                    match event {
+                        niri_ipc::Event::WindowOpenedOrChanged { window } => {
+                            let slot = window.pid.and_then(|pid| this.slot_of_pid(pid as u32));
+                            if let Some(BrowserSlot(slot)) = slot {
+                                this.hub.browser_changed(slot);
+                            }
+                        }
+                        niri_ipc::Event::WindowClosed { .. }
+                        | niri_ipc::Event::WindowsChanged { .. } => this.all_changed(),
+                        _ => (),
+                    }
+                }
+                this.all_changed();
+            }
+        });
+    }
+
+    fn all_changed(&self) {
+        for slot in 0..self.slots.borrow().len() as u8 {
+            self.hub.browser_changed(slot);
+        }
+    }
+
     pub fn pid(&self, slot: u8) -> Option<u32> {
         self.with_run(slot, |run| run.pid)
     }
@@ -611,6 +645,7 @@ impl Browsers {
 
     fn window_mapped_now(&self, slot: u8) {
         self.with_run(slot, |run| run.window = true);
+        self.hub.browser_changed(slot);
         self.try_running(slot);
     }
 
@@ -641,6 +676,7 @@ impl Browsers {
             {
                 let url = event.params["url"].as_str().map(str::to_owned);
                 self.with_run(slot, |run| run.url = url);
+                self.hub.browser_changed(slot);
             }
             "browsingContext.contextDestroyed" if context.is_some() && context == ours => {
                 let this = self.clone();
