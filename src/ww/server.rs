@@ -7,25 +7,34 @@ use std::rc::Rc;
 use wire_weaver::prelude::*;
 
 use super::host::{call, Run, WwHost};
-use super::Browsers;
+use super::hub::Hub;
+use super::players::Action;
+use super::{Browsers, Players, Services};
 
 pub struct Server {
     /// Observed properties: what the client observes and when it is due.
     pub observe: api_impl::ObserveState,
     pub run: Run,
     pub peer: SocketAddr,
+    pub hub: Rc<Hub>,
     pub browsers: Rc<Browsers>,
+    pub players: Rc<Players>,
+    /// The live players as `valid_indices` last answered them.
+    player_ids: Vec<UNib32>,
     /// The client opened the `events` stream.
     pub events_open: bool,
 }
 
 impl Server {
-    pub fn new(run: Run, peer: SocketAddr, browsers: Rc<Browsers>) -> Self {
+    pub fn new(run: Run, peer: SocketAddr, services: Rc<Services>) -> Self {
         Self {
             observe: api_impl::ObserveState::new(Default::default()),
             run,
             peer,
-            browsers,
+            hub: services.hub.clone(),
+            browsers: services.browsers.clone(),
+            players: services.players.clone(),
+            player_ids: Vec::new(),
             events_open: false,
         }
     }
@@ -49,6 +58,41 @@ impl Server {
         })
         .await
         .flatten()
+    }
+
+    /// A browser slot's current player: the one of its Firefox process.
+    fn browser_player(&self, slot: u8) -> Result<u32, ww_niri_api::MediaErrorOwned> {
+        self.browsers
+            .pid(slot)
+            .and_then(|pid| self.players.of_pid(pid))
+            .map(|id| id.0)
+            .ok_or(ww_niri_api::MediaErrorOwned::NoPlayer)
+    }
+
+    async fn browser_act(
+        &self,
+        index_chain: [UNib32; 1],
+        action: Action,
+    ) -> RpcResult<Result<(), ww_niri_api::MediaErrorOwned>> {
+        let res = match self.browser_player(index_chain[0].0 as u8) {
+            // Gone in between: as if it had never played.
+            Ok(id) => (self.players.act(id, action).await)
+                .unwrap_or(Err(ww_niri_api::MediaErrorOwned::NoPlayer)),
+            Err(err) => Err(err),
+        };
+        RpcResult::Ready(res)
+    }
+
+    async fn player_act(
+        &self,
+        index_chain: [UNib32; 1],
+        action: Action,
+    ) -> RpcResult<Result<(), ww_niri_api::MediaErrorOwned>> {
+        // A player gone since the index check: as if it never played.
+        RpcResult::Ready(
+            (self.players.act(index_chain[0].0, action).await)
+                .unwrap_or(Err(ww_niri_api::MediaErrorOwned::NoPlayer)),
+        )
     }
 
     /// Marks a browser slot's window.
@@ -283,7 +327,9 @@ impl Server {
     ) -> GetResult<ww_niri_api::BrowserStateOwned, ()> {
         let slot = index_chain[0].0 as u8;
         let window = self.browser_window(slot).await;
-        Value(self.browsers.state(slot, window.as_ref()))
+        let mut state = self.browsers.state(slot, window.as_ref());
+        state.player = self.browser_player(slot).ok().map(ww_niri_api::PlayerId);
+        Value(state)
     }
 
     // ---- ww_niri_api::Playback at browsers[].playback ----
@@ -292,102 +338,110 @@ impl Server {
     async fn get_browsers_playback_state(
         &mut self,
         _cx: &mut Context<'_, impl EventOut>,
-        _index_chain: [UNib32; 1],
+        index_chain: [UNib32; 1],
     ) -> GetResult<ww_niri_api::PlaybackStateOwned, ()> {
-        Unimplemented.into()
+        let state = match self.browser_player(index_chain[0].0 as u8) {
+            Ok(id) => self.players.state(id).await.and_then(Result::ok),
+            Err(_) => None,
+        };
+        // Nothing playing: stopped, no track.
+        Value(state.unwrap_or_else(stopped))
     }
 
     async fn browsers_playback_play(
         &mut self,
         _cx: &mut Context<'_, impl EventOut>,
-        _index_chain: [UNib32; 1],
+        index_chain: [UNib32; 1],
     ) -> RpcResult<Result<(), ww_niri_api::MediaErrorOwned>> {
-        Unimplemented.into()
+        self.browser_act(index_chain, Action::Play).await
     }
 
     async fn browsers_playback_pause(
         &mut self,
         _cx: &mut Context<'_, impl EventOut>,
-        _index_chain: [UNib32; 1],
+        index_chain: [UNib32; 1],
     ) -> RpcResult<Result<(), ww_niri_api::MediaErrorOwned>> {
-        Unimplemented.into()
+        self.browser_act(index_chain, Action::Pause).await
     }
 
     async fn browsers_playback_play_pause(
         &mut self,
         _cx: &mut Context<'_, impl EventOut>,
-        _index_chain: [UNib32; 1],
+        index_chain: [UNib32; 1],
     ) -> RpcResult<Result<(), ww_niri_api::MediaErrorOwned>> {
-        Unimplemented.into()
+        self.browser_act(index_chain, Action::PlayPause).await
     }
 
     async fn browsers_playback_stop(
         &mut self,
         _cx: &mut Context<'_, impl EventOut>,
-        _index_chain: [UNib32; 1],
+        index_chain: [UNib32; 1],
     ) -> RpcResult<Result<(), ww_niri_api::MediaErrorOwned>> {
-        Unimplemented.into()
+        self.browser_act(index_chain, Action::Stop).await
     }
 
     async fn browsers_playback_next(
         &mut self,
         _cx: &mut Context<'_, impl EventOut>,
-        _index_chain: [UNib32; 1],
+        index_chain: [UNib32; 1],
     ) -> RpcResult<Result<(), ww_niri_api::MediaErrorOwned>> {
-        Unimplemented.into()
+        self.browser_act(index_chain, Action::Next).await
     }
 
     async fn browsers_playback_previous(
         &mut self,
         _cx: &mut Context<'_, impl EventOut>,
-        _index_chain: [UNib32; 1],
+        index_chain: [UNib32; 1],
     ) -> RpcResult<Result<(), ww_niri_api::MediaErrorOwned>> {
-        Unimplemented.into()
+        self.browser_act(index_chain, Action::Previous).await
     }
 
     /// Relative, MPRIS `Seek`; negative goes back.
     async fn browsers_playback_seek(
         &mut self,
         _cx: &mut Context<'_, impl EventOut>,
-        _index_chain: [UNib32; 1],
-        _by: exact_units::Fixed<
+        index_chain: [UNib32; 1],
+        by: exact_units::Fixed<
             exact_units::units::Second,
             exact_units::prefix::Micro,
             i64,
             exact_units::Unbounded,
         >,
     ) -> RpcResult<Result<(), ww_niri_api::MediaErrorOwned>> {
-        Unimplemented.into()
+        self.browser_act(index_chain, Action::Seek(by.get())).await
     }
 
     /// Absolute, MPRIS `SetPosition` on the current track.
     async fn browsers_playback_set_position(
         &mut self,
         _cx: &mut Context<'_, impl EventOut>,
-        _index_chain: [UNib32; 1],
-        _at: exact_units::Fixed<
+        index_chain: [UNib32; 1],
+        at: exact_units::Fixed<
             exact_units::units::Second,
             exact_units::prefix::Micro,
             u64,
             exact_units::Unbounded,
         >,
     ) -> RpcResult<Result<(), ww_niri_api::MediaErrorOwned>> {
-        Unimplemented.into()
+        self.browser_act(index_chain, Action::SetPosition(at.get()))
+            .await
     }
 
     // ---- ww_niri_api::Media at media ----
 
     /// Valid indices of `media.players[]`.
     fn valid_indices_root_media_players(&mut self) -> ValidIndices<'_> {
-        // TODO: no index is valid until implemented
-        ValidIndices::range_u32(0..0)
+        self.player_ids = self.players.ids().into_iter().map(UNib32).collect();
+        ValidIndices::List(RefVec::Slice {
+            slice: &self.player_ids,
+        })
     }
 
     async fn media_list(
         &mut self,
         _cx: &mut Context<'_, impl EventOut>,
     ) -> RpcResult<Vec<ww_niri_api::PlayerInfoOwned>> {
-        Unimplemented.into()
+        RpcResult::Ready(self.players.list().await)
     }
 
     // ---- ww_niri_api::Player at media.players[] ----
@@ -396,9 +450,10 @@ impl Server {
     async fn get_media_players_source(
         &mut self,
         _cx: &mut Context<'_, impl EventOut>,
-        _index_chain: [UNib32; 1],
+        index_chain: [UNib32; 1],
     ) -> GetResult<ww_niri_api::PlayerSourceOwned, ()> {
-        Unimplemented.into()
+        let source = self.players.source_of(index_chain[0].0).await;
+        Value(source.unwrap_or(ww_niri_api::PlayerSourceOwned::App { pid: None }))
     }
 
     // ---- ww_niri_api::Playback at media.players[].playback ----
@@ -407,87 +462,89 @@ impl Server {
     async fn get_media_players_playback_state(
         &mut self,
         _cx: &mut Context<'_, impl EventOut>,
-        _index_chain: [UNib32; 1],
+        index_chain: [UNib32; 1],
     ) -> GetResult<ww_niri_api::PlaybackStateOwned, ()> {
-        Unimplemented.into()
+        let state = self.players.state(index_chain[0].0).await;
+        Value(state.and_then(Result::ok).unwrap_or_else(stopped))
     }
 
     async fn media_players_playback_play(
         &mut self,
         _cx: &mut Context<'_, impl EventOut>,
-        _index_chain: [UNib32; 1],
+        index_chain: [UNib32; 1],
     ) -> RpcResult<Result<(), ww_niri_api::MediaErrorOwned>> {
-        Unimplemented.into()
+        self.player_act(index_chain, Action::Play).await
     }
 
     async fn media_players_playback_pause(
         &mut self,
         _cx: &mut Context<'_, impl EventOut>,
-        _index_chain: [UNib32; 1],
+        index_chain: [UNib32; 1],
     ) -> RpcResult<Result<(), ww_niri_api::MediaErrorOwned>> {
-        Unimplemented.into()
+        self.player_act(index_chain, Action::Pause).await
     }
 
     async fn media_players_playback_play_pause(
         &mut self,
         _cx: &mut Context<'_, impl EventOut>,
-        _index_chain: [UNib32; 1],
+        index_chain: [UNib32; 1],
     ) -> RpcResult<Result<(), ww_niri_api::MediaErrorOwned>> {
-        Unimplemented.into()
+        self.player_act(index_chain, Action::PlayPause).await
     }
 
     async fn media_players_playback_stop(
         &mut self,
         _cx: &mut Context<'_, impl EventOut>,
-        _index_chain: [UNib32; 1],
+        index_chain: [UNib32; 1],
     ) -> RpcResult<Result<(), ww_niri_api::MediaErrorOwned>> {
-        Unimplemented.into()
+        self.player_act(index_chain, Action::Stop).await
     }
 
     async fn media_players_playback_next(
         &mut self,
         _cx: &mut Context<'_, impl EventOut>,
-        _index_chain: [UNib32; 1],
+        index_chain: [UNib32; 1],
     ) -> RpcResult<Result<(), ww_niri_api::MediaErrorOwned>> {
-        Unimplemented.into()
+        self.player_act(index_chain, Action::Next).await
     }
 
     async fn media_players_playback_previous(
         &mut self,
         _cx: &mut Context<'_, impl EventOut>,
-        _index_chain: [UNib32; 1],
+        index_chain: [UNib32; 1],
     ) -> RpcResult<Result<(), ww_niri_api::MediaErrorOwned>> {
-        Unimplemented.into()
+        self.player_act(index_chain, Action::Previous).await
     }
 
     /// Relative, MPRIS `Seek`; negative goes back.
     async fn media_players_playback_seek(
         &mut self,
         _cx: &mut Context<'_, impl EventOut>,
-        _index_chain: [UNib32; 1],
-        _by: exact_units::Fixed<
+        index_chain: [UNib32; 1],
+        by: exact_units::Fixed<
             exact_units::units::Second,
             exact_units::prefix::Micro,
             i64,
             exact_units::Unbounded,
         >,
     ) -> RpcResult<Result<(), ww_niri_api::MediaErrorOwned>> {
-        Unimplemented.into()
+        self.player_act(index_chain, Action::Seek(by.get())).await
     }
 
     /// Absolute, MPRIS `SetPosition` on the current track.
     async fn media_players_playback_set_position(
         &mut self,
         _cx: &mut Context<'_, impl EventOut>,
-        _index_chain: [UNib32; 1],
-        _at: exact_units::Fixed<
+        index_chain: [UNib32; 1],
+        at: exact_units::Fixed<
             exact_units::units::Second,
             exact_units::prefix::Micro,
             u64,
             exact_units::Unbounded,
         >,
     ) -> RpcResult<Result<(), ww_niri_api::MediaErrorOwned>> {
-        Unimplemented.into()
+        self.player_act(index_chain, Action::SetPosition(at.get()))
+            .await
     }
 
     // ---- ww_niri_api::Audio at audio ----
@@ -578,4 +635,18 @@ pub mod api_impl {
         method_model = "_=immediate",
         property_model = "_=get_set",
     );
+}
+
+/// The state of a player that plays nothing.
+fn stopped() -> ww_niri_api::PlaybackStateOwned {
+    ww_niri_api::PlaybackStateOwned {
+        status: ww_niri_api::PlaybackStatus::Stopped,
+        title: None,
+        artist: None,
+        length: None,
+        position: exact_units::Fixed::new(0),
+        rate: exact_units::Fixed::new(1000),
+        can_seek: false,
+        can_pause: false,
+    }
 }

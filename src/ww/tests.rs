@@ -2,6 +2,7 @@
 //! fake host, a generated client calls it.
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::net::TcpListener;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
@@ -10,14 +11,14 @@ use std::time::Duration;
 use async_channel::{Receiver, Sender};
 use wire_weaver_client::{CallError, ClientConfig, Commander, WwClient};
 use ww_niri_api::{
-    EventOwned, LaunchErrorOwned, OutputOwned, Transition, WindowError, WindowId, WindowOwned,
-    WorkspaceId,
+    EventOwned, LaunchErrorOwned, MediaErrorOwned, OutputOwned, Transition, WindowError, WindowId,
+    WindowOwned, WorkspaceId,
 };
 
-use super::browsers::{LoopIo, Settings};
+use super::browsers::Settings;
 use super::connection::serve;
-use super::host::{runner, WwHost};
-use super::Browsers;
+use super::host::WwHost;
+use super::Services;
 
 struct NiriClient {
     cmd: Commander,
@@ -56,7 +57,7 @@ struct Hub {
 struct FakeHost {
     fake: Fake,
     hub: Rc<RefCell<Hub>>,
-    browsers: Option<Rc<Browsers>>,
+    services: Option<Rc<Services>>,
     stop: bool,
 }
 
@@ -132,8 +133,8 @@ impl WwHost for FakeHost {
         self.op(format!("fullscreen {id} {on}"), id)
     }
 
-    fn browsers(&mut self) -> Rc<Browsers> {
-        self.browsers.clone().unwrap()
+    fn services(&mut self) -> Rc<Services> {
+        self.services.clone().unwrap()
     }
 
     fn subscribe_events(&mut self) -> Option<Receiver<niri_ipc::Event>> {
@@ -156,11 +157,11 @@ struct Bench {
 
 /// Serves one connection against a fake host with `windows`, on a calloop loop of its own.
 fn bench(windows: Vec<WindowOwned>) -> Bench {
-    bench_with(windows, Settings::default())
+    bench_with(windows, Settings::default(), None)
 }
 
-/// The same, with browser slots as `settings` say.
-fn bench_with(windows: Vec<WindowOwned>, settings: Settings) -> Bench {
+/// The same, with browser slots as `settings` say, and players on the D-Bus at `bus`.
+fn bench_with(windows: Vec<WindowOwned>, settings: Settings, bus: Option<String>) -> Bench {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!("ws://{}/ww", listener.local_addr().unwrap());
     let (events_tx, events_rx) = async_channel::unbounded();
@@ -182,16 +183,18 @@ fn bench_with(windows: Vec<WindowOwned>, settings: Settings) -> Bench {
             .unwrap();
 
         let hub = Rc::new(RefCell::new(Hub::default()));
+        let services = Services::new(&handle, &scheduler, settings, 2);
+        if let Some(bus) = bus {
+            services.players.follow(&scheduler, async move {
+                zbus::connection::Builder::address(bus.as_str())?
+                    .build()
+                    .await
+            });
+        }
         let mut host = FakeHost {
             fake: host_fake,
             hub: hub.clone(),
-            browsers: Some(Browsers::new(
-                settings,
-                runner(handle.clone()),
-                LoopIo::new(handle.clone()),
-                scheduler.clone(),
-                2,
-            )),
+            services: Some(services),
             stop: false,
         };
         scheduler
@@ -463,7 +466,7 @@ fn browser_slot_lifecycle() {
         stop_grace: Duration::from_millis(100),
     };
 
-    bench_with(Vec::new(), settings).run(async |client, fake| {
+    bench_with(Vec::new(), settings, None).run(async |client, fake| {
         let mut events = client.events().call().await.unwrap();
         let mut next = async || {
             tokio::time::timeout(Duration::from_secs(5), events.recv())
@@ -618,7 +621,7 @@ fn browser_slot_real_firefox() {
     };
     let page = format!("http://{}/page", page_server());
 
-    bench_with(Vec::new(), settings).run(async |client, _| {
+    bench_with(Vec::new(), settings, None).run(async |client, _| {
         let mut events = client.events().call().await.unwrap();
         let slot = client.browsers(0);
         slot.start(false)
@@ -663,4 +666,225 @@ fn which(program: &str) -> Result<String, ()> {
         .find(|p| p.is_file())
         .map(|p| p.to_string_lossy().into_owned())
         .ok_or(())
+}
+
+/// A D-Bus daemon of the test's own, so no test sees the session's players.
+struct PrivateBus {
+    daemon: std::process::Child,
+    address: String,
+}
+
+impl PrivateBus {
+    fn start() -> Option<Self> {
+        use std::io::BufRead as _;
+
+        let mut daemon = std::process::Command::new("dbus-daemon")
+            .args(["--session", "--nofork", "--nopidfile", "--print-address=1"])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .ok()?;
+        let mut line = String::new();
+        let stdout = daemon.stdout.take().unwrap();
+        std::io::BufReader::new(stdout).read_line(&mut line).ok()?;
+        Some(Self {
+            daemon,
+            address: line.trim().to_owned(),
+        })
+    }
+}
+
+impl Drop for PrivateBus {
+    fn drop(&mut self) {
+        let _ = self.daemon.kill();
+        let _ = self.daemon.wait();
+    }
+}
+
+/// An MPRIS player that records what it is asked.
+struct FakePlayer {
+    calls: Arc<Mutex<Vec<String>>>,
+}
+
+struct FakeRoot;
+
+#[zbus::interface(name = "org.mpris.MediaPlayer2")]
+impl FakeRoot {
+    #[zbus(property)]
+    fn identity(&self) -> String {
+        "Fake Player".to_owned()
+    }
+}
+
+#[zbus::interface(name = "org.mpris.MediaPlayer2.Player")]
+impl FakePlayer {
+    fn play(&self) {
+        self.calls.lock().unwrap().push("Play".to_owned());
+    }
+    fn pause(&self) {
+        self.calls.lock().unwrap().push("Pause".to_owned());
+    }
+    fn next(&self) {
+        self.calls.lock().unwrap().push("Next".to_owned());
+    }
+    fn seek(&self, by: i64) {
+        self.calls.lock().unwrap().push(format!("Seek {by}"));
+    }
+    fn set_position(&self, track: zbus::zvariant::ObjectPath<'_>, at: i64) {
+        self.calls
+            .lock()
+            .unwrap()
+            .push(format!("SetPosition {track} {at}"));
+    }
+
+    #[zbus(property)]
+    fn playback_status(&self) -> String {
+        "Playing".to_owned()
+    }
+    #[zbus(property)]
+    fn metadata(&self) -> HashMap<String, zbus::zvariant::OwnedValue> {
+        use zbus::zvariant::{ObjectPath, Value};
+
+        let value = |v: Value<'_>| v.try_into().unwrap();
+        HashMap::from([
+            ("xesam:title".to_owned(), value(Value::from("A Song"))),
+            (
+                "xesam:artist".to_owned(),
+                value(Value::from(vec!["Someone", "Another"])),
+            ),
+            (
+                "mpris:length".to_owned(),
+                value(Value::from(180_000_000i64)),
+            ),
+            (
+                "mpris:trackid".to_owned(),
+                value(Value::from(ObjectPath::try_from("/track/1").unwrap())),
+            ),
+        ])
+    }
+    #[zbus(property)]
+    fn position(&self) -> i64 {
+        42_000_000
+    }
+    #[zbus(property)]
+    fn rate(&self) -> f64 {
+        1.0
+    }
+    #[zbus(property)]
+    fn can_seek(&self) -> bool {
+        true
+    }
+    #[zbus(property)]
+    fn can_pause(&self) -> bool {
+        true
+    }
+    #[zbus(property)]
+    fn can_play(&self) -> bool {
+        true
+    }
+    #[zbus(property)]
+    fn can_go_next(&self) -> bool {
+        false
+    }
+}
+
+#[test]
+fn media_players() {
+    use exact_units::Fixed;
+    use ww_niri_api::{PlaybackStatus, PlayerId, PlayerInfoOwned, PlayerSourceOwned};
+
+    let Some(bus) = PrivateBus::start() else {
+        eprintln!("media_players: skipped, no dbus-daemon");
+        return;
+    };
+    // The fake player runs in this process: its window is the one with our pid.
+    let mut mpv = window(3, "mpv");
+    mpv.pid = Some(std::process::id());
+
+    let address = bus.address.clone();
+    bench_with(vec![mpv], Settings::default(), Some(address.clone())).run(async |client, _| {
+        let mut events = client.events().call().await.unwrap();
+        let mut next = async || {
+            tokio::time::timeout(Duration::from_secs(5), events.recv())
+                .await
+                .expect("an event")
+                .unwrap()
+        };
+
+        let calls = Arc::default();
+        let player = zbus::connection::Builder::address(address.as_str())
+            .unwrap()
+            .name("org.mpris.MediaPlayer2.fake")
+            .unwrap()
+            .serve_at("/org/mpris/MediaPlayer2", FakeRoot)
+            .unwrap()
+            .serve_at(
+                "/org/mpris/MediaPlayer2",
+                FakePlayer {
+                    calls: Arc::clone(&calls),
+                },
+            )
+            .unwrap()
+            .build()
+            .await
+            .unwrap();
+
+        let info = PlayerInfoOwned {
+            id: PlayerId(0),
+            identity: "Fake Player".to_owned(),
+            source: PlayerSourceOwned::Window {
+                id: WindowId(3),
+                app_id: Some("mpv".to_owned()),
+            },
+        };
+        assert_eq!(next().await, EventOwned::PlayerAppeared(info.clone()));
+        assert_eq!(client.media().list().call().await.unwrap(), [info]);
+
+        let media = client.media();
+        let player0 = media.players(0);
+        let playback = player0.playback();
+        let state = playback.read_state().read().await.unwrap();
+        assert_eq!(state.status, PlaybackStatus::Playing);
+        assert_eq!(state.title.as_deref(), Some("A Song"));
+        assert_eq!(state.artist.as_deref(), Some("Someone, Another"));
+        assert_eq!(state.length, Some(Fixed::new(180_000_000)));
+        assert_eq!(state.position, Fixed::new(42_000_000));
+        assert_eq!(state.rate, Fixed::new(1000));
+        assert!(state.can_seek && state.can_pause);
+
+        playback.pause().call().await.unwrap();
+        playback.play().call().await.unwrap();
+        playback.seek(Fixed::new(-5_000_000)).call().await.unwrap();
+        playback
+            .set_position(Fixed::new(60_000_000))
+            .call()
+            .await
+            .unwrap();
+        assert!(matches!(
+            playback.next().call().await,
+            Err(CallError::Device(MediaErrorOwned::NotSupported))
+        ));
+        assert_eq!(
+            *calls.lock().unwrap(),
+            [
+                "Pause",
+                "Play",
+                "Seek -5000000",
+                "SetPosition /track/1 60000000"
+            ]
+        );
+
+        // No browser slot runs: its playback has no player.
+        let slot = client.browsers(0);
+        assert!(matches!(
+            slot.playback().pause().call().await,
+            Err(CallError::Device(MediaErrorOwned::NoPlayer))
+        ));
+
+        drop(player);
+        assert_eq!(next().await, EventOwned::PlayerGone(PlayerId(0)));
+        assert!(client.media().list().call().await.unwrap().is_empty());
+        assert!(playback.pause().call().await.is_err());
+    });
+    drop(bus);
 }

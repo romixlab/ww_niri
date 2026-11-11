@@ -19,7 +19,7 @@ use std::process::{Child, Stdio};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use async_channel::{Receiver, Sender};
+use async_channel::Sender;
 use calloop::futures::Scheduler;
 use calloop::io::Async;
 use calloop::timer::TimeoutFuture;
@@ -35,6 +35,7 @@ use ww_niri_api::{
 
 use super::bidi::{self, Bidi, BidiError};
 use super::host::{call, Run};
+use super::hub::Hub;
 
 /// How long Firefox may take to start listening for BiDi.
 const LISTEN_TIMEOUT: Duration = Duration::from_secs(20);
@@ -47,8 +48,6 @@ const SUBSCRIBED: [&str; 4] = [
     "browsingContext.navigationStarted",
     "browsingContext.load",
 ];
-/// Browser events wait here for a connection that reads slowly; past it, it gets `Resync`.
-const EVENT_QUEUE: usize = 64;
 
 pub struct Settings {
     /// The browser's command line, before the slot's own arguments.
@@ -135,7 +134,7 @@ pub struct Browsers {
     /// The count from ww.kdl; `slots` is longer while slots past it are still stopping.
     wanted: Cell<u8>,
     slots: RefCell<Vec<Slot>>,
-    subscribers: RefCell<Vec<Sender<EventOwned>>>,
+    hub: Rc<Hub>,
 }
 
 type Res = Result<(), BrowserErrorOwned>;
@@ -154,6 +153,7 @@ impl Browsers {
         run: Run,
         io: LoopIo,
         scheduler: Scheduler<()>,
+        hub: Rc<Hub>,
         count: u8,
     ) -> Rc<Self> {
         let slots = (0..count).map(|_| Slot::default()).collect();
@@ -164,7 +164,7 @@ impl Browsers {
             scheduler,
             wanted: Cell::new(count),
             slots: RefCell::new(slots),
-            subscribers: RefCell::new(Vec::new()),
+            hub,
         })
     }
 
@@ -207,18 +207,8 @@ impl Browsers {
         slots.truncate(running.max(usize::from(self.wanted.get())));
     }
 
-    /// Browser events from now on, for one connection.
-    pub fn subscribe(&self) -> Receiver<EventOwned> {
-        let (tx, rx) = async_channel::bounded(EVENT_QUEUE);
-        self.subscribers.borrow_mut().push(tx);
-        rx
-    }
-
     fn emit(&self, event: EventOwned) {
-        // A full queue: that connection fell behind, it notices the closed channel and resyncs.
-        self.subscribers
-            .borrow_mut()
-            .retain(|tx| tx.try_send(event.clone()).is_ok());
+        self.hub.emit(event);
     }
 
     fn schedule(&self, fut: impl Future<Output = ()> + 'static) {

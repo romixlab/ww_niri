@@ -24,8 +24,8 @@ pub trait WwHost: 'static {
     fn close_window(&mut self, id: u64) -> bool;
     fn set_fullscreen(&mut self, id: u64, on: bool) -> bool;
 
-    /// The browser slots, shared by every connection.
-    fn browsers(&mut self) -> Rc<super::Browsers>;
+    /// What every connection shares.
+    fn services(&mut self) -> Rc<super::Services>;
 
     /// niri's IPC event stream, without the replay of the current state; `None` when niri runs
     /// without IPC.
@@ -203,8 +203,8 @@ mod niri_state {
             true
         }
 
-        fn browsers(&mut self) -> std::rc::Rc<crate::ww::Browsers> {
-            self.niri.ww.browsers()
+        fn services(&mut self) -> std::rc::Rc<crate::ww::Services> {
+            self.niri.ww.services()
         }
 
         fn subscribe_events(&mut self) -> Option<async_channel::Receiver<niri_ipc::Event>> {

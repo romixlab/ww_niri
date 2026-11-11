@@ -22,6 +22,8 @@ mod clock;
 mod config;
 mod connection;
 mod host;
+mod hub;
+mod players;
 mod server;
 mod socket;
 #[cfg(test)]
@@ -30,6 +32,7 @@ mod tests;
 pub use browsers::Browsers;
 pub use config::WwConfig;
 pub use host::WwHost;
+pub use players::Players;
 
 const CONFIG_POLL_INTERVAL: Duration = Duration::from_secs(1);
 
@@ -38,7 +41,40 @@ pub struct WwServer {
     props: Option<config::Props>,
     config: WwConfig,
     listener: Option<(SocketAddr, RegistrationToken)>,
-    browsers: Rc<Browsers>,
+    services: Rc<Services>,
+}
+
+/// What every connection shares: the ww side's events, the browser slots and the players.
+pub struct Services {
+    pub hub: Rc<hub::Hub>,
+    pub browsers: Rc<Browsers>,
+    pub players: Rc<Players>,
+}
+
+impl Services {
+    pub fn new<D: WwHost>(
+        handle: &LoopHandle<'static, D>,
+        scheduler: &Scheduler<()>,
+        settings: browsers::Settings,
+        count: u8,
+    ) -> Rc<Self> {
+        let hub = Rc::new(hub::Hub::default());
+        let run = host::runner(handle.clone());
+        let browsers = Browsers::new(
+            settings,
+            run.clone(),
+            browsers::LoopIo::new(handle.clone()),
+            scheduler.clone(),
+            hub.clone(),
+            count,
+        );
+        let players = Players::new(hub.clone(), run, browsers.clone());
+        Rc::new(Self {
+            hub,
+            browsers,
+            players,
+        })
+    }
 }
 
 impl WwServer {
@@ -53,19 +89,23 @@ impl WwServer {
         };
 
         let config = WwConfig::default();
-        let browsers = Browsers::new(
+        let services = Services::new(
+            event_loop,
+            scheduler,
             browsers::Settings::default(),
-            host::runner(event_loop.clone()),
-            browsers::LoopIo::new(event_loop.clone()),
-            scheduler.clone(),
             config.browsers,
         );
+        if !cfg!(test) {
+            services
+                .players
+                .follow(scheduler, zbus::Connection::session());
+        }
         let mut ww = Self {
             path,
             props: None,
             config,
             listener: None,
-            browsers,
+            services,
         };
         ww.reload(event_loop);
 
@@ -84,8 +124,8 @@ impl WwServer {
         &self.config
     }
 
-    pub fn browsers(&self) -> Rc<Browsers> {
-        self.browsers.clone()
+    pub fn services(&self) -> Rc<Services> {
+        self.services.clone()
     }
 
     fn check_config(&mut self, event_loop: &LoopHandle<'static, State>) {
@@ -139,7 +179,7 @@ impl WwServer {
             }
         }
 
-        self.browsers.set_count(config.browsers);
+        self.services.browsers.set_count(config.browsers);
         self.config = config;
     }
 }

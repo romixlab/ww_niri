@@ -43,12 +43,12 @@ pub fn spawn(state: &mut State, stream: TcpStream, peer: SocketAddr) {
 }
 
 /// What the client's `events` stream follows while open: niri's events (`None` when niri runs
-/// without IPC) and the browser slots'.
+/// without IPC) and the ww side's own (browser slots, players).
 enum Events {
     Off,
     On {
         niri: Option<Receiver<niri_ipc::Event>>,
-        browsers: Receiver<EventOwned>,
+        ww: Receiver<EventOwned>,
     },
 }
 
@@ -88,10 +88,10 @@ pub async fn serve<D: WwHost>(
         &mut event_scratch,
     );
     let run = runner(handle);
-    let Some(browsers) = call(&run, |host| host.browsers()).await else {
+    let Some(services) = call(&run, |host| host.services()).await else {
         return;
     };
-    let mut backend = Server::new(run.clone(), peer, browsers);
+    let mut backend = Server::new(run.clone(), peer, services);
     let mut events = Events::Off;
 
     loop {
@@ -100,7 +100,7 @@ pub async fn serve<D: WwHost>(
             (Events::Off, true) => {
                 events = Events::On {
                     niri: call(&run, |host| host.subscribe_events()).await.flatten(),
-                    browsers: backend.browsers.subscribe(),
+                    ww: backend.hub.subscribe(),
                 };
             }
             (Events::On { .. }, false) => events = Events::Off,
@@ -109,7 +109,7 @@ pub async fn serve<D: WwHost>(
 
         let step = {
             let next_event = pin!(async {
-                let Events::On { niri, browsers } = &events else {
+                let Events::On { niri, ww } = &events else {
                     return std::future::pending().await;
                 };
                 let niri = pin!(async {
@@ -118,7 +118,7 @@ pub async fn serve<D: WwHost>(
                         None => std::future::pending().await,
                     }
                 });
-                let ww = pin!(async { browsers.recv().await.map_or(Next::Behind, Next::Ww) });
+                let ww = pin!(async { ww.recv().await.map_or(Next::Behind, Next::Ww) });
                 select(niri, ww).await.factor_first().0
             });
             match select(pin!(server.wait()), next_event).await {
