@@ -14,12 +14,11 @@ use async_channel::Sender;
 use async_tungstenite::tungstenite::Message;
 use async_tungstenite::{WebSocketReceiver, WebSocketSender};
 use calloop::io::Async;
-use calloop::LoopHandle;
 use futures_util::lock::Mutex;
 use futures_util::StreamExt as _;
 use serde_json::{json, Value};
 
-type Stream = Async<'static, TcpStream>;
+pub type Stream = Async<'static, TcpStream>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BidiError {
@@ -66,20 +65,12 @@ pub struct Reader {
     shared: Rc<Shared>,
 }
 
-/// Opens the WebSocket at `ws://ADDR/session` (no session yet: send `session.new`).
-pub async fn connect<D: 'static>(
-    handle: &LoopHandle<'static, D>,
-    addr: SocketAddr,
-) -> Result<(Bidi, Reader), BidiError> {
-    let io = |err: &dyn std::fmt::Display| BidiError::Io(err.to_string());
-
-    // Connecting to a port on this machine answers at once.
-    let stream = TcpStream::connect(addr).map_err(|err| io(&err))?;
-    stream.set_nodelay(true).map_err(|err| io(&err))?;
-    let stream = handle.adapt_io(stream).map_err(|err| io(&err))?;
+/// Opens the WebSocket at `ws://ADDR/session` over `stream`, connected to `addr` (no session
+/// yet: send `session.new`).
+pub async fn connect(stream: Stream, addr: SocketAddr) -> Result<(Bidi, Reader), BidiError> {
     let (ws, _) = async_tungstenite::client_async(format!("ws://{addr}/session"), stream)
         .await
-        .map_err(|err| io(&err))?;
+        .map_err(|err| BidiError::Io(err.to_string()))?;
 
     let (tx, rx) = ws.split();
     let shared = Rc::new(Shared::default());
@@ -113,11 +104,6 @@ impl Bidi {
         }
         // The reader drops the sender when the connection ends.
         rx.recv().await.unwrap_or(Err(BidiError::Closed))
-    }
-
-    /// Closes the WebSocket; the browser's end sees the close frame.
-    pub async fn close(&self) {
-        let _ = self.tx.lock().await.close(None).await;
     }
 }
 
@@ -232,7 +218,9 @@ mod tests {
         let task_handle = handle.clone();
         scheduler
             .schedule(async move {
-                let (bidi, mut reader) = connect(&task_handle, addr).await.unwrap();
+                let stream = TcpStream::connect(addr).unwrap();
+                let stream = task_handle.adapt_io(stream).unwrap();
+                let (bidi, mut reader) = connect(stream, addr).await.unwrap();
                 let (closed_tx, closed_rx) = async_channel::bounded(1);
                 task_scheduler
                     .schedule(async move {

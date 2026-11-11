@@ -2,26 +2,30 @@
 //! ww_niri_api --alloc --use-async`; handlers not done yet answer `Unimplemented`.
 
 use std::net::SocketAddr;
+use std::rc::Rc;
 
 use wire_weaver::prelude::*;
 
 use super::host::{call, Run, WwHost};
+use super::Browsers;
 
 pub struct Server {
     /// Observed properties: what the client observes and when it is due.
     pub observe: api_impl::ObserveState,
     pub run: Run,
     pub peer: SocketAddr,
+    pub browsers: Rc<Browsers>,
     /// The client opened the `events` stream.
     pub events_open: bool,
 }
 
 impl Server {
-    pub fn new(run: Run, peer: SocketAddr) -> Self {
+    pub fn new(run: Run, peer: SocketAddr, browsers: Rc<Browsers>) -> Self {
         Self {
             observe: api_impl::ObserveState::new(Default::default()),
             run,
             peer,
+            browsers,
             events_open: false,
         }
     }
@@ -35,6 +39,21 @@ impl Server {
             Some(false) => RpcResult::Ready(Err(ww_niri_api::WindowError::NoSuchWindow)),
             None => Unimplemented.into(),
         }
+    }
+
+    /// The slot's window, found by its Firefox's pid.
+    async fn browser_window(&self, slot: u8) -> Option<ww_niri_api::WindowOwned> {
+        let pid = self.browsers.pid(slot)?;
+        call(&self.run, move |host| {
+            host.windows().into_iter().find(|w| w.pid == Some(pid))
+        })
+        .await
+        .flatten()
+    }
+
+    /// Marks a browser slot's window.
+    pub fn mark_browser(&self, window: &mut ww_niri_api::WindowOwned) {
+        window.browser = window.pid.and_then(|pid| self.browsers.slot_of_pid(pid));
     }
 
     // ---- ww_niri_api::WwNiri at root ----
@@ -54,8 +73,7 @@ impl Server {
 
     /// Valid indices of `browsers[]`.
     fn valid_indices_root_browsers(&mut self) -> ValidIndices<'_> {
-        // TODO: no index is valid until implemented
-        ValidIndices::range_u32(0..0)
+        ValidIndices::range_u32(0..u32::from(self.browsers.count()))
     }
 
     /// Windows, outputs, browsers and players coming and going, in order. After
@@ -88,7 +106,10 @@ impl Server {
         _cx: &mut Context<'_, impl EventOut>,
     ) -> RpcResult<Vec<ww_niri_api::WindowOwned>> {
         match call(&self.run, |host| host.windows()).await {
-            Some(windows) => RpcResult::Ready(windows),
+            Some(mut windows) => {
+                windows.iter_mut().for_each(|w| self.mark_browser(w));
+                RpcResult::Ready(windows)
+            }
             None => Unimplemented.into(),
         }
     }
@@ -172,7 +193,10 @@ impl Server {
                 let _ = tx.try_send(crate::utils::spawning::spawn_with_pid(&argv));
             });
         let res = match spawned {
-            Ok(_) => rx.recv().await.unwrap_or_else(|_| Err(std::io::ErrorKind::Other.into())),
+            Ok(_) => rx
+                .recv()
+                .await
+                .unwrap_or_else(|_| Err(std::io::ErrorKind::Other.into())),
             Err(err) => Err(err),
         };
         RpcResult::Ready(match res {
@@ -193,10 +217,11 @@ impl Server {
     async fn browsers_start(
         &mut self,
         _cx: &mut Context<'_, impl EventOut>,
-        _index_chain: [UNib32; 1],
-        _fullscreen: bool,
+        index_chain: [UNib32; 1],
+        fullscreen: bool,
     ) -> RpcResult<Result<(), ww_niri_api::BrowserErrorOwned>> {
-        Unimplemented.into()
+        let slot = index_chain[0].0 as u8;
+        RpcResult::Ready(self.browsers.start(slot, fullscreen).await)
     }
 
     /// Loads `url` (http or https) in the slot's tab and returns when the navigation is
@@ -204,39 +229,61 @@ impl Server {
     async fn browsers_open(
         &mut self,
         _cx: &mut Context<'_, impl EventOut>,
-        _index_chain: [UNib32; 1],
-        _url: String,
+        index_chain: [UNib32; 1],
+        url: String,
     ) -> RpcResult<Result<(), ww_niri_api::BrowserErrorOwned>> {
-        Unimplemented.into()
+        let slot = index_chain[0].0 as u8;
+        RpcResult::Ready(self.browsers.open(slot, &url).await)
     }
 
     /// Ends the slot's Firefox; its profile stays.
     async fn browsers_stop(
         &mut self,
         _cx: &mut Context<'_, impl EventOut>,
-        _index_chain: [UNib32; 1],
+        index_chain: [UNib32; 1],
     ) -> RpcResult<Result<(), ww_niri_api::BrowserErrorOwned>> {
-        Unimplemented.into()
+        RpcResult::Ready(self.browsers.stop(index_chain[0].0 as u8).await)
     }
 
     /// Shows the slot's window, as [Windows::show].
     async fn browsers_show(
         &mut self,
         _cx: &mut Context<'_, impl EventOut>,
-        _index_chain: [UNib32; 1],
-        _transition: Option<ww_niri_api::Transition>,
-        _fullscreen: Option<bool>,
+        index_chain: [UNib32; 1],
+        transition: Option<ww_niri_api::Transition>,
+        fullscreen: Option<bool>,
     ) -> RpcResult<Result<(), ww_niri_api::BrowserErrorOwned>> {
-        Unimplemented.into()
+        use ww_niri_api::BrowserErrorOwned;
+
+        let slot = index_chain[0].0 as u8;
+        if self.browsers.pid(slot).is_none() {
+            return RpcResult::Ready(Err(BrowserErrorOwned::NotRunning));
+        }
+        let Some(window) = self.browser_window(slot).await else {
+            return RpcResult::Ready(Err(BrowserErrorOwned::NoWindow));
+        };
+        let id = window.id.0;
+        match call(&self.run, move |host| {
+            host.show_window(id, transition, fullscreen)
+        })
+        .await
+        {
+            Some(true) => RpcResult::Ready(Ok(())),
+            // Closed in between.
+            Some(false) => RpcResult::Ready(Err(BrowserErrorOwned::NoWindow)),
+            None => Unimplemented.into(),
+        }
     }
 
     /// Phase, URL, window and current player of the slot.
     async fn get_browsers_state(
         &mut self,
         _cx: &mut Context<'_, impl EventOut>,
-        _index_chain: [UNib32; 1],
+        index_chain: [UNib32; 1],
     ) -> GetResult<ww_niri_api::BrowserStateOwned, ()> {
-        Unimplemented.into()
+        let slot = index_chain[0].0 as u8;
+        let window = self.browser_window(slot).await;
+        Value(self.browsers.state(slot, window.as_ref()))
     }
 
     // ---- ww_niri_api::Playback at browsers[].playback ----

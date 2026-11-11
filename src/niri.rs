@@ -2854,7 +2854,7 @@ impl Niri {
         };
 
         #[cfg(feature = "ww")]
-        let ww = crate::ww::WwServer::start(&event_loop);
+        let ww = crate::ww::WwServer::start(&event_loop, &scheduler);
 
         #[cfg(feature = "xdp-gnome-screencast")]
         let screencasting = Screencasting::new(&event_loop);

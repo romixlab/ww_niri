@@ -113,28 +113,10 @@ fn spawn_sync(
     }
 }
 
-fn try_spawn_sync(
-    command: impl AsRef<OsStr>,
-    args: impl IntoIterator<Item = impl AsRef<OsStr>>,
-    token: Option<XdgActivationToken>,
-) -> io::Result<Option<u32>> {
-    let _span = tracy_client::span!();
-
-    let mut command = command.as_ref();
-
-    // Expand `~` at the start.
-    let expanded = expand_home(Path::new(command));
-    match &expanded {
-        Ok(Some(expanded)) => command = expanded.as_ref(),
-        Ok(None) => (),
-        Err(err) => {
-            warn!("error expanding ~: {err:?}");
-        }
-    }
-
+/// A command with the environment niri gives its children, and its stdio going nowhere.
+pub fn child_command(command: impl AsRef<OsStr>) -> Command {
     let mut process = Command::new(command);
     process
-        .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
@@ -169,12 +151,38 @@ fn try_spawn_sync(
     }
     drop(env);
 
+    unsafe { process.pre_exec(crate::utils::signals::unblock_all) };
+
+    process
+}
+
+fn try_spawn_sync(
+    command: impl AsRef<OsStr>,
+    args: impl IntoIterator<Item = impl AsRef<OsStr>>,
+    token: Option<XdgActivationToken>,
+) -> io::Result<Option<u32>> {
+    let _span = tracy_client::span!();
+
+    let mut command = command.as_ref();
+
+    // Expand `~` at the start.
+    let expanded = expand_home(Path::new(command));
+    match &expanded {
+        Ok(Some(expanded)) => command = expanded.as_ref(),
+        Ok(None) => (),
+        Err(err) => {
+            warn!("error expanding ~: {err:?}");
+        }
+    }
+
+    let mut process = child_command(command);
+    process.args(args);
+
     if let Some(token) = token.as_ref() {
         process.env("XDG_ACTIVATION_TOKEN", token.as_str());
         process.env("DESKTOP_STARTUP_ID", token.as_str());
     }
 
-    unsafe { process.pre_exec(crate::utils::signals::unblock_all) };
 
     let (mut child, pid) = do_spawn(command, process)?;
 

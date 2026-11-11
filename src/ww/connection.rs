@@ -42,12 +42,21 @@ pub fn spawn(state: &mut State, stream: TcpStream, peer: SocketAddr) {
     }
 }
 
-/// niri's event stream as the client's `events` stream sees it.
+/// What the client's `events` stream follows while open: niri's events (`None` when niri runs
+/// without IPC) and the browser slots'.
 enum Events {
     Off,
-    On(Receiver<niri_ipc::Event>),
-    /// niri runs without IPC: there are no events to follow.
-    Unavailable,
+    On {
+        niri: Option<Receiver<niri_ipc::Event>>,
+        browsers: Receiver<EventOwned>,
+    },
+}
+
+enum Next {
+    Niri(niri_ipc::Event),
+    Ww(EventOwned),
+    /// A queue was dropped for falling behind.
+    Behind,
 }
 
 pub async fn serve<D: WwHost>(
@@ -79,28 +88,38 @@ pub async fn serve<D: WwHost>(
         &mut event_scratch,
     );
     let run = runner(handle);
-    let mut backend = Server::new(run.clone(), peer);
+    let Some(browsers) = call(&run, |host| host.browsers()).await else {
+        return;
+    };
+    let mut backend = Server::new(run.clone(), peer, browsers);
     let mut events = Events::Off;
 
     loop {
         // Follow niri's events while the client has the stream open.
         match (&events, backend.events_open) {
             (Events::Off, true) => {
-                events = match call(&run, |host| host.subscribe_events()).await.flatten() {
-                    Some(rx) => Events::On(rx),
-                    None => Events::Unavailable,
+                events = Events::On {
+                    niri: call(&run, |host| host.subscribe_events()).await.flatten(),
+                    browsers: backend.browsers.subscribe(),
                 };
             }
-            (Events::On(_) | Events::Unavailable, false) => events = Events::Off,
+            (Events::On { .. }, false) => events = Events::Off,
             _ => (),
         }
 
         let step = {
             let next_event = pin!(async {
-                match &events {
-                    Events::On(rx) => rx.recv().await.ok(),
-                    Events::Off | Events::Unavailable => std::future::pending().await,
-                }
+                let Events::On { niri, browsers } = &events else {
+                    return std::future::pending().await;
+                };
+                let niri = pin!(async {
+                    match niri {
+                        Some(rx) => rx.recv().await.map_or(Next::Behind, Next::Niri),
+                        None => std::future::pending().await,
+                    }
+                });
+                let ww = pin!(async { browsers.recv().await.map_or(Next::Behind, Next::Ww) });
+                select(niri, ww).await.factor_first().0
             });
             match select(pin!(server.wait()), next_event).await {
                 Either::Left((ready, _)) => Either::Left(ready),
@@ -119,10 +138,19 @@ pub async fn serve<D: WwHost>(
             },
             Either::Right(event) => {
                 let out = match event {
-                    Some(event) => map_event(&run, event).await,
-                    None => {
-                        // niri dropped the subscription, as for any client too slow to read:
-                        // subscribe again and have the client list again.
+                    Next::Niri(event) => {
+                        let mut out = map_event(&run, event).await;
+                        for event in &mut out {
+                            if let EventOwned::WindowOpenedOrChanged(window) = event {
+                                backend.mark_browser(window);
+                            }
+                        }
+                        out
+                    }
+                    Next::Ww(event) => vec![event],
+                    Next::Behind => {
+                        // A subscription was dropped, as niri does for any client too slow to
+                        // read: subscribe again and have the client list again.
                         debug!("ww: {peer} fell behind on events");
                         events = Events::Off;
                         vec![EventOwned::Resync]

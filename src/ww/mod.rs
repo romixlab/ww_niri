@@ -6,8 +6,10 @@
 
 use std::net::{SocketAddr, TcpListener};
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::time::Duration;
 
+use calloop::futures::Scheduler;
 use calloop::generic::Generic;
 use calloop::timer::{TimeoutAction, Timer};
 use calloop::{Interest, LoopHandle, Mode, PostAction, RegistrationToken};
@@ -15,6 +17,7 @@ use calloop::{Interest, LoopHandle, Mode, PostAction, RegistrationToken};
 use crate::niri::State;
 
 mod bidi;
+mod browsers;
 mod clock;
 mod config;
 mod connection;
@@ -24,6 +27,7 @@ mod socket;
 #[cfg(test)]
 mod tests;
 
+pub use browsers::Browsers;
 pub use config::WwConfig;
 pub use host::WwHost;
 
@@ -34,10 +38,11 @@ pub struct WwServer {
     props: Option<config::Props>,
     config: WwConfig,
     listener: Option<(SocketAddr, RegistrationToken)>,
+    browsers: Rc<Browsers>,
 }
 
 impl WwServer {
-    pub fn start(event_loop: &LoopHandle<'static, State>) -> Self {
+    pub fn start(event_loop: &LoopHandle<'static, State>, scheduler: &Scheduler<()>) -> Self {
         // Tests never read the user's ww.kdl.
         let path = if cfg!(test) {
             None
@@ -47,11 +52,20 @@ impl WwServer {
                 .or_else(config::default_path)
         };
 
+        let config = WwConfig::default();
+        let browsers = Browsers::new(
+            browsers::Settings::default(),
+            host::runner(event_loop.clone()),
+            browsers::LoopIo::new(event_loop.clone()),
+            scheduler.clone(),
+            config.browsers,
+        );
         let mut ww = Self {
             path,
             props: None,
-            config: WwConfig::default(),
+            config,
             listener: None,
+            browsers,
         };
         ww.reload(event_loop);
 
@@ -68,6 +82,10 @@ impl WwServer {
 
     pub fn config(&self) -> &WwConfig {
         &self.config
+    }
+
+    pub fn browsers(&self) -> Rc<Browsers> {
+        self.browsers.clone()
     }
 
     fn check_config(&mut self, event_loop: &LoopHandle<'static, State>) {
@@ -121,6 +139,7 @@ impl WwServer {
             }
         }
 
+        self.browsers.set_count(config.browsers);
         self.config = config;
     }
 }
