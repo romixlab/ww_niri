@@ -44,7 +44,7 @@ fn create_window(f: &mut Fixture, id: ClientId, w: u16, h: u16) -> WlSurface {
     surface
 }
 
-fn set_time(niri: &mut Niri, time: Duration) {
+pub(super) fn set_time(niri: &mut Niri, time: Duration) {
     // This is a bit involved because we're dealing with an AdjustableClock that maintains its own
     // internal current_time.
 
