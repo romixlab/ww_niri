@@ -74,6 +74,8 @@ impl Action {
 
 struct Live {
     name: String,
+    /// The unique name that owns `name`, which signals come from.
+    owner: Option<String>,
     identity: String,
     pid: Option<u32>,
 }
@@ -131,13 +133,36 @@ impl Players {
     async fn watch(&self, conn: Connection) -> zbus::Result<()> {
         let dbus = DBusProxy::new(&conn).await?;
         // Changes first, so none falls between the list and the stream.
-        let mut changes = dbus.receive_name_owner_changed().await?;
+        let changes = dbus.receive_name_owner_changed().await?;
+        let rule = zbus::MatchRule::builder()
+            .msg_type(zbus::message::Type::Signal)
+            .interface("org.freedesktop.DBus.Properties")?
+            .member("PropertiesChanged")?
+            .path(PATH)?
+            .build();
+        let properties = zbus::MessageStream::for_match_rule(rule, &conn, None).await?;
         for name in dbus.list_names().await? {
             if name.starts_with(PREFIX) {
                 self.appeared(&conn, &dbus, name.as_str()).await;
             }
         }
-        while let Some(signal) = changes.next().await {
+
+        enum Signal {
+            Owner(zbus::fdo::NameOwnerChanged),
+            Properties(zbus::Message),
+        }
+        let mut signals = futures_util::stream::select(
+            changes.map(Signal::Owner),
+            properties.filter_map(|msg| std::future::ready(msg.ok().map(Signal::Properties))),
+        );
+        while let Some(signal) = signals.next().await {
+            let signal = match signal {
+                Signal::Owner(signal) => signal,
+                Signal::Properties(msg) => {
+                    self.properties_changed(&msg).await;
+                    continue;
+                }
+            };
             let Ok(args) = signal.args() else { continue };
             let name = args.name().as_str();
             if !name.starts_with(PREFIX) {
@@ -156,6 +181,14 @@ impl Players {
     async fn appeared(&self, conn: &Connection, dbus: &DBusProxy<'_>, name: &str) {
         let pid = match BusName::try_from(name) {
             Ok(bus_name) => dbus.get_connection_unix_process_id(bus_name).await.ok(),
+            Err(_) => None,
+        };
+        let owner = match BusName::try_from(name) {
+            Ok(bus_name) => dbus
+                .get_name_owner(bus_name)
+                .await
+                .ok()
+                .map(|owner| owner.to_string()),
             Err(_) => None,
         };
         let identity = match proxy(conn, name, ROOT).await {
@@ -181,12 +214,47 @@ impl Players {
         );
         let live = Live {
             name: name.to_owned(),
+            owner,
             identity,
             pid,
         };
         let info = self.info(id, &live).await;
         self.live.borrow_mut().insert(id.0, live);
         self.hub.emit(ww_niri_api::EventOwned::PlayerAppeared(info));
+    }
+
+    /// A player's `PropertiesChanged`: a new status or track gives `PlaybackChanged`.
+    async fn properties_changed(&self, msg: &zbus::Message) {
+        let header = msg.header();
+        let Some(sender) = header.sender() else {
+            return;
+        };
+        let Ok((interface, changed, _)) =
+            msg.body()
+                .deserialize::<(String, HashMap<String, OwnedValue>, Vec<String>)>()
+        else {
+            return;
+        };
+        if interface != PLAYER
+            || !["PlaybackStatus", "Metadata", "CanSeek", "CanPause", "Rate"]
+                .iter()
+                .any(|key| changed.contains_key(*key))
+        {
+            return;
+        }
+        let found = self
+            .live
+            .borrow()
+            .iter()
+            .find(|(_, p)| p.owner.as_deref() == Some(sender.as_str()))
+            .map(|(id, p)| (PlayerId(*id), p.name.clone()));
+        let Some((player, name)) = found else { return };
+        match self.read_state(&name).await {
+            Ok(state) => self
+                .hub
+                .emit(ww_niri_api::EventOwned::PlaybackChanged { player, state }),
+            Err(err) => debug!("ww: error reading the state of {name}: {err:?}"),
+        }
     }
 
     fn gone(&self, name: &str) {

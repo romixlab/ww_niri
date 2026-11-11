@@ -716,6 +716,7 @@ impl Drop for PrivateBus {
 /// An MPRIS player that records what it is asked.
 struct FakePlayer {
     calls: Arc<Mutex<Vec<String>>>,
+    status: Mutex<&'static str>,
 }
 
 struct FakeRoot;
@@ -733,8 +734,10 @@ impl FakePlayer {
     fn play(&self) {
         self.calls.lock().unwrap().push("Play".to_owned());
     }
-    fn pause(&self) {
+    async fn pause(&self, #[zbus(signal_emitter)] emitter: zbus::object_server::SignalEmitter<'_>) {
         self.calls.lock().unwrap().push("Pause".to_owned());
+        *self.status.lock().unwrap() = "Paused";
+        self.playback_status_changed(&emitter).await.unwrap();
     }
     fn next(&self) {
         self.calls.lock().unwrap().push("Next".to_owned());
@@ -751,7 +754,7 @@ impl FakePlayer {
 
     #[zbus(property)]
     fn playback_status(&self) -> String {
-        "Playing".to_owned()
+        (*self.status.lock().unwrap()).to_owned()
     }
     #[zbus(property)]
     fn metadata(&self) -> HashMap<String, zbus::zvariant::OwnedValue> {
@@ -835,6 +838,7 @@ fn media_players() {
                     "/org/mpris/MediaPlayer2",
                     FakePlayer {
                         calls: Arc::clone(&calls),
+                        status: Mutex::new("Playing"),
                     },
                 )
                 .unwrap()
@@ -886,6 +890,15 @@ fn media_players() {
                     "SetPosition /track/1 60000000"
                 ]
             );
+            // The pause changed its status: the player said so, and clients hear it.
+            match next().await {
+                EventOwned::PlaybackChanged { player, state } => {
+                    assert_eq!(player, PlayerId(0));
+                    assert_eq!(state.status, PlaybackStatus::Paused);
+                    assert_eq!(state.title.as_deref(), Some("A Song"));
+                }
+                other => panic!("expected PlaybackChanged, got {other:?}"),
+            }
 
             // No browser slot runs: its playback has no player.
             let slot = client.browsers(0);

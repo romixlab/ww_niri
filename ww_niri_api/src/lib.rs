@@ -340,6 +340,13 @@ pub enum Event<'i> {
     PlayerGone(PlayerId),
     /// The client fell behind and missed events: list everything again.
     Resync,
+    /// A player's status or track changed (not its position, which moves on its own). Until
+    /// properties under `browsers[]` and `media.players[]` can be observed, this is how a
+    /// client follows `playback.state`.
+    PlaybackChanged {
+        player: PlayerId,
+        state: PlaybackState<'i>,
+    },
 }
 
 #[derive_shrink_wrap(borrowed, owned(feature = "std"), derive(Copy, Clone, Debug, PartialEq, Eq), ww_repr = unib32)]
