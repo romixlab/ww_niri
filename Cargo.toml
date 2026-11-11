@@ -205,3 +205,30 @@ assets = [
     ["resources/niri.service", "/usr/lib/systemd/user/", "644"],
     ["resources/niri-shutdown.target", "/usr/lib/systemd/user/", "644"],
 ]
+
+[patch."https://github.com/vhrdtech/wire_weaver"]
+shrink_wrap = { path = "/home/roman/git/.wt/ww-array-observe/wire_weaver/shrink_wrap/shrink_wrap" }
+shrink_wrap_derive = { path = "/home/roman/git/.wt/ww-array-observe/wire_weaver/shrink_wrap/shrink_wrap_derive" }
+stm32_dfu_host = { path = "/home/roman/git/.wt/ww-array-observe/wire_weaver/stm32_dfu_host" }
+wire_weaver = { path = "/home/roman/git/.wt/ww-array-observe/wire_weaver/wire_weaver" }
+wire_weaver_client = { path = "/home/roman/git/.wt/ww-array-observe/wire_weaver/wire_weaver_client" }
+wire_weaver_core = { path = "/home/roman/git/.wt/ww-array-observe/wire_weaver/wire_weaver_core" }
+wire_weaver_derive = { path = "/home/roman/git/.wt/ww-array-observe/wire_weaver/wire_weaver_derive" }
+wire_weaver_evolution = { path = "/home/roman/git/.wt/ww-array-observe/wire_weaver/wire_weaver_evolution" }
+wire_weaver_snapshots = { path = "/home/roman/git/.wt/ww-array-observe/wire_weaver/wire_weaver_snapshots" }
+ww_block = { path = "/home/roman/git/.wt/ww-array-observe/wire_weaver/ww_stdlib/ww_block" }
+ww_client_server = { path = "/home/roman/git/.wt/ww-array-observe/wire_weaver/ww_stdlib/ww_client_server" }
+ww_device = { path = "/home/roman/git/.wt/ww-array-observe/wire_weaver/ww_device" }
+ww_error = { path = "/home/roman/git/.wt/ww-array-observe/wire_weaver/ww_stdlib/ww_error" }
+ww_framer = { path = "/home/roman/git/.wt/ww-array-observe/wire_weaver/ww_framer" }
+ww_global = { path = "/home/roman/git/.wt/ww-array-observe/wire_weaver/ww_global" }
+ww_link = { path = "/home/roman/git/.wt/ww-array-observe/wire_weaver/ww_link" }
+ww_local_socket = { path = "/home/roman/git/.wt/ww-array-observe/wire_weaver/ww_local_socket" }
+ww_lz4 = { path = "/home/roman/git/.wt/ww-array-observe/wire_weaver/ww_lz4" }
+ww_numeric = { path = "/home/roman/git/.wt/ww-array-observe/wire_weaver/ww_stdlib/ww_numeric" }
+ww_self = { path = "/home/roman/git/.wt/ww-array-observe/wire_weaver/ww_self" }
+ww_si = { path = "/home/roman/git/.wt/ww-array-observe/wire_weaver/ww_stdlib/ww_si" }
+ww_stream = { path = "/home/roman/git/.wt/ww-array-observe/wire_weaver/ww_stream" }
+ww_tap = { path = "/home/roman/git/.wt/ww-array-observe/wire_weaver/ww_tap" }
+ww_tape = { path = "/home/roman/git/.wt/ww-array-observe/wire_weaver/ww_tape" }
+ww_version = { path = "/home/roman/git/.wt/ww-array-observe/wire_weaver/ww_stdlib/ww_version" }

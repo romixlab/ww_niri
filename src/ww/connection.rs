@@ -59,6 +59,8 @@ enum Next {
     Behind,
     /// The default sink changed.
     Audio,
+    /// One of the ww side's events, for observed properties under `browsers[]` and `players[]`.
+    Mark(EventOwned),
 }
 
 pub async fn serve<D: WwHost>(
@@ -96,6 +98,9 @@ pub async fn serve<D: WwHost>(
     let mut backend = Server::new(run.clone(), peer, services);
     let mut events = Events::Off;
     let audio_changed = backend.audio.watch();
+    // Observed element properties follow the ww side's events whether or not the events stream
+    // is open.
+    let mut marks = backend.hub.subscribe();
     let mut observe_buf = vec![0u8; MAX_MESSAGE_LEN];
 
     loop {
@@ -125,12 +130,20 @@ pub async fn serve<D: WwHost>(
                 let ww = pin!(async { ww.recv().await.map_or(Next::Behind, Next::Ww) });
                 select(niri, ww).await.factor_first().0
             });
-            let changed = pin!(async {
+            let audio = pin!(async {
                 match audio_changed.recv().await {
                     Ok(()) => Next::Audio,
                     Err(_) => std::future::pending().await,
                 }
             });
+            let mark = pin!(async {
+                match marks.recv().await {
+                    Ok(event) => Next::Mark(event),
+                    // Fell behind: resubscribed below.
+                    Err(_) => Next::Behind,
+                }
+            });
+            let changed = select(audio, mark);
             let next = select(next_event, changed);
             // Observed properties: wake when one is due (a period, a held-back change).
             let wake = backend
@@ -139,7 +152,10 @@ pub async fn serve<D: WwHost>(
                 .map(ww_device::Instant::from_micros);
             match select(pin!(server.wait_until(wake)), next).await {
                 Either::Left((ready, _)) => Either::Left(ready),
-                Either::Right((next, _)) => Either::Right(next.factor_first().0),
+                Either::Right((next, _)) => match next {
+                    Either::Left((next, _)) => Either::Right(next),
+                    Either::Right((changed, _)) => Either::Right(changed.factor_first().0),
+                },
             }
         };
         match step {
@@ -164,6 +180,15 @@ pub async fn serve<D: WwHost>(
                         out
                     }
                     Next::Ww(event) => vec![event],
+                    Next::Mark(event) => {
+                        backend.mark(&event).await;
+                        Vec::new()
+                    }
+                    Next::Behind if marks.is_closed() => {
+                        marks = backend.hub.subscribe();
+                        backend.mark_all();
+                        Vec::new()
+                    }
                     Next::Audio => {
                         backend.mark_changed_audio_volume();
                         backend.mark_changed_audio_muted();

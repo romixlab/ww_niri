@@ -41,6 +41,56 @@ impl Server {
         }
     }
 
+    /// Marks the observed element properties an event of the ww side changes.
+    pub async fn mark(&mut self, event: &ww_niri_api::EventOwned) {
+        use ww_niri_api::{BrowserSlot, EventOwned, PlayerSourceOwned};
+
+        match event {
+            EventOwned::PlaybackChanged { player, .. } => {
+                self.mark_changed_media_players_playback_state([UNib32(player.0)]);
+                if let Some(PlayerSourceOwned::Browser(BrowserSlot(slot))) =
+                    self.players.source_of(player.0).await
+                {
+                    self.mark_changed_browsers_playback_state([UNib32(u32::from(slot))]);
+                }
+            }
+            EventOwned::PlayerAppeared(info) => {
+                if let PlayerSourceOwned::Browser(BrowserSlot(slot)) = info.source {
+                    self.mark_changed_browsers_state([UNib32(u32::from(slot))]);
+                    self.mark_changed_browsers_playback_state([UNib32(u32::from(slot))]);
+                }
+            }
+            EventOwned::PlayerGone(player) => {
+                self.element_removed_media_players([UNib32(player.0)]);
+                // A slot's player may have gone: its state says so.
+                for slot in 0..self.browsers.count() {
+                    self.mark_changed_browsers_state([UNib32(u32::from(slot))]);
+                    self.mark_changed_browsers_playback_state([UNib32(u32::from(slot))]);
+                }
+            }
+            EventOwned::BrowserStarted(BrowserSlot(slot))
+            | EventOwned::BrowserStopped {
+                slot: BrowserSlot(slot),
+                ..
+            } => {
+                self.mark_changed_browsers_state([UNib32(u32::from(*slot))]);
+                self.mark_changed_browsers_playback_state([UNib32(u32::from(*slot))]);
+            }
+            _ => (),
+        }
+    }
+
+    /// After missed events: every observed element property may have changed.
+    pub fn mark_all(&mut self) {
+        for slot in 0..self.browsers.count() {
+            self.mark_changed_browsers_state([UNib32(u32::from(slot))]);
+            self.mark_changed_browsers_playback_state([UNib32(u32::from(slot))]);
+        }
+        for id in self.players.ids() {
+            self.mark_changed_media_players_playback_state([UNib32(id)]);
+        }
+    }
+
     async fn window_op(
         &self,
         f: impl FnOnce(&mut dyn WwHost) -> bool + 'static,
