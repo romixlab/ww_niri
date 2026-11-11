@@ -1203,3 +1203,69 @@ fn live_read_only() {
         );
     });
 }
+
+/// A running ww_niri, with actions that leave it as it was: `WW_NIRI_URL=ws://ADDR:7590/ww` and
+/// `WW_NIRI_LIVE_ACTIONS=1` set the volume and put it back, then start browser slot 1, open a
+/// page in it and stop it again.
+#[test]
+fn live_actions() {
+    let (Some(url), Some(_)) = (
+        std::env::var_os("WW_NIRI_URL"),
+        std::env::var_os("WW_NIRI_LIVE_ACTIONS"),
+    ) else {
+        eprintln!("live_actions: skipped, set WW_NIRI_URL and WW_NIRI_LIVE_ACTIONS=1 to run against a running niri");
+        return;
+    };
+    let url = url.into_string().unwrap();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        let client = NiriClient::config(|c| c.websocket_url(url.clone()))
+            .connect()
+            .await
+            .unwrap();
+
+        let audio = client.audio();
+        let before = audio.read_volume().read().await.unwrap();
+        let other = ww_niri_api::Volume::try_new(if before.get() == 50 { 60 } else { 50 }).unwrap();
+        audio.write_volume(other).write().await.unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while audio.read_volume().read().await.unwrap() != other {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the volume follows");
+        audio.write_volume(before).write().await.unwrap();
+        eprintln!("audio: {} % -> {} % -> back", before.get(), other.get());
+
+        let mut events = client.events().call().await.unwrap();
+        let slot = client.browsers(1);
+        slot.start(true)
+            .with_timeout(Duration::from_secs(60))
+            .call()
+            .await
+            .unwrap();
+        slot.open("https://example.org/".to_owned())
+            .with_timeout(Duration::from_secs(20))
+            .call()
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        eprintln!("browser 1: {:?}", slot.read_state().read().await.unwrap());
+        for window in client.windows().list().call().await.unwrap() {
+            eprintln!("window: {window:?}");
+        }
+        slot.stop()
+            .with_timeout(Duration::from_secs(20))
+            .call()
+            .await
+            .unwrap();
+        while let Ok(Ok(event)) = tokio::time::timeout(Duration::from_secs(2), events.recv()).await
+        {
+            eprintln!("event: {event:?}");
+        }
+    });
+}
