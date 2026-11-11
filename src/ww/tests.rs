@@ -1166,3 +1166,40 @@ fn audio_real_server() {
         assert_eq!(audio.read_volume().read().await.unwrap(), volume);
     });
 }
+
+/// A running ww_niri, read only: `WW_NIRI_URL=ws://ADDR:7590/ww` lists what it serves.
+#[test]
+fn live_read_only() {
+    let Some(url) = std::env::var_os("WW_NIRI_URL") else {
+        eprintln!("live_read_only: skipped, set WW_NIRI_URL=ws://ADDR:7590/ww to run against a running niri");
+        return;
+    };
+    let url = url.into_string().unwrap();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        let client = NiriClient::config(|c| c.websocket_url(url.clone()))
+            .connect()
+            .await
+            .unwrap();
+        eprintln!("info: {:?}", client.info().call().await.unwrap());
+        for output in client.outputs().list().call().await.unwrap() {
+            eprintln!("output: {output:?}");
+        }
+        for window in client.windows().list().call().await.unwrap() {
+            eprintln!("window: {window:?}");
+        }
+        for player in client.media().list().call().await.unwrap() {
+            eprintln!("player: {player:?}");
+        }
+        let audio = client.audio();
+        eprintln!(
+            "audio: {:?} at {:?} %, muted {:?}",
+            audio.read_sink().read().await.ok(),
+            audio.read_volume().read().await.ok().map(|v| v.get()),
+            audio.read_muted().read().await.ok()
+        );
+    });
+}
