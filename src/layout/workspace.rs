@@ -1870,10 +1870,19 @@ impl<W: LayoutElement> Workspace<W> {
     }
 
     pub fn activate_window(&mut self, window: &W::Id) -> bool {
+        self.activate_window_with_anim_config(window, None)
+    }
+
+    /// `config` (when given) moves the view instead of the configured animation.
+    pub fn activate_window_with_anim_config(
+        &mut self,
+        window: &W::Id,
+        config: Option<niri_config::Animation>,
+    ) -> bool {
         if self.floating.activate_window(window) {
             self.floating_is_active = FloatingActive::Yes;
             true
-        } else if self.scrolling.activate_window(window) {
+        } else if self.scrolling.activate_window_with_anim_config(window, config) {
             self.floating_is_active = FloatingActive::No;
             true
         } else {

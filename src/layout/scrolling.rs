@@ -1463,6 +1463,15 @@ impl<W: LayoutElement> ScrollingSpace<W> {
     }
 
     pub fn activate_window(&mut self, window: &W::Id) -> bool {
+        self.activate_window_with_anim_config(window, None)
+    }
+
+    /// `config` (when given) moves the view instead of the configured animation.
+    pub fn activate_window_with_anim_config(
+        &mut self,
+        window: &W::Id,
+        config: Option<niri_config::Animation>,
+    ) -> bool {
         let column_idx = self.columns.iter().position(|col| col.contains(window));
         let Some(column_idx) = column_idx else {
             return false;
@@ -1470,7 +1479,8 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         let column = &mut self.columns[column_idx];
 
         column.activate_window(window);
-        self.activate_column(column_idx);
+        let config = config.unwrap_or(self.options.animations.horizontal_view_movement.0);
+        self.activate_column_with_anim_config(column_idx, config);
 
         true
     }

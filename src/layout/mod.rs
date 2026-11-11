@@ -1566,6 +1566,16 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     pub fn activate_window(&mut self, window: &W::Id) {
+        self.activate_window_with_anim_config(window, None);
+    }
+
+    /// Like [Self::activate_window], with `config` (when given) for the workspace switch and the
+    /// view movement instead of the configured animations.
+    pub fn activate_window_with_anim_config(
+        &mut self,
+        window: &W::Id,
+        config: Option<niri_config::Animation>,
+    ) {
         if let Some(InteractiveMoveState::Moving(move_)) = &self.interactive_move {
             if move_.tile.window().id() == window {
                 return;
@@ -1583,7 +1593,7 @@ impl<W: LayoutElement> Layout<W> {
 
         for (monitor_idx, mon) in monitors.iter_mut().enumerate() {
             for (workspace_idx, ws) in mon.workspaces.iter_mut().enumerate() {
-                if ws.activate_window(window) {
+                if ws.activate_window_with_anim_config(window, config) {
                     *active_monitor_idx = monitor_idx;
 
                     // If currently in the middle of a vertical swipe between the target workspace
@@ -1592,7 +1602,7 @@ impl<W: LayoutElement> Layout<W> {
                         Some(WorkspaceSwitch::Gesture(gesture))
                             if gesture.current_idx.floor() == workspace_idx as f64
                                 || gesture.current_idx.ceil() == workspace_idx as f64 => {}
-                        _ => mon.switch_workspace(workspace_idx),
+                        _ => mon.activate_workspace_with_anim_config(workspace_idx, config),
                     }
 
                     return;

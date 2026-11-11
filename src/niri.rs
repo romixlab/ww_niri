@@ -1174,9 +1174,19 @@ impl State {
     /// Focus a specific window, taking care of a potential active output change and cursor
     /// warp.
     pub fn focus_window(&mut self, window: &Window) {
+        self.focus_window_with_anim_config(window, None);
+    }
+
+    /// Like [Self::focus_window], with `config` (when given) for the workspace switch and the
+    /// view movement instead of the configured animations.
+    pub fn focus_window_with_anim_config(
+        &mut self,
+        window: &Window,
+        config: Option<niri_config::Animation>,
+    ) {
         let active_output = self.niri.layout.active_output().cloned();
 
-        self.niri.layout.activate_window(window);
+        self.niri.layout.activate_window_with_anim_config(window, config);
 
         let new_active = self.niri.layout.active_output().cloned();
         if new_active != active_output {

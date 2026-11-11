@@ -50,6 +50,27 @@ pub async fn call<R: 'static>(
     rx.recv().await.ok()
 }
 
+/// niri's animation for an API transition.
+pub fn animation(transition: Transition) -> niri_config::Animation {
+    use niri_config::animations::{Curve as NiriCurve, EasingParams, Kind};
+    use ww_niri_api::Curve;
+
+    let curve = match transition.curve {
+        Curve::Linear => NiriCurve::Linear,
+        Curve::EaseOutQuad => NiriCurve::EaseOutQuad,
+        // A curve from a newer client: the closest one this side knows.
+        Curve::EaseOutCubic | Curve::Unknown(_) => NiriCurve::EaseOutCubic,
+        Curve::EaseOutExpo => NiriCurve::EaseOutExpo,
+    };
+    niri_config::Animation {
+        off: false,
+        kind: Kind::Easing(EasingParams {
+            duration_ms: u32::from(transition.duration.get()),
+            curve,
+        }),
+    }
+}
+
 mod niri_state {
     use smithay::desktop::Window;
     use smithay::output::Output;
@@ -146,13 +167,13 @@ mod niri_state {
         fn show_window(
             &mut self,
             id: u64,
-            _transition: Option<Transition>,
+            transition: Option<Transition>,
             fullscreen: Option<bool>,
         ) -> bool {
             let Some(window) = self.ww_find(id) else {
                 return false;
             };
-            self.focus_window(&window);
+            self.focus_window_with_anim_config(&window, transition.map(super::animation));
             if let Some(on) = fullscreen {
                 self.niri.layout.set_fullscreen(&window, on);
                 self.niri.queue_redraw_all();
