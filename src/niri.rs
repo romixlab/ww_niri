@@ -476,6 +476,9 @@ pub struct Niri {
     pub ipc_server: Option<IpcServer>,
     pub ipc_outputs_changed: bool,
 
+    #[cfg(feature = "ww")]
+    pub ww: crate::ww::WwServer,
+
     pub satellite: Option<Satellite>,
 
     #[cfg(feature = "xdp-gnome-screencast")]
@@ -2840,6 +2843,9 @@ impl Niri {
             }
         };
 
+        #[cfg(feature = "ww")]
+        let ww = crate::ww::WwServer::start(&event_loop);
+
         #[cfg(feature = "xdp-gnome-screencast")]
         let screencasting = Screencasting::new(&event_loop);
 
@@ -3025,6 +3031,9 @@ impl Niri {
 
             ipc_server,
             ipc_outputs_changed: false,
+
+            #[cfg(feature = "ww")]
+            ww,
 
             satellite: None,
 

@@ -24,6 +24,8 @@ pub mod screencasting;
 pub mod ui;
 pub mod utils;
 pub mod window;
+#[cfg(feature = "ww")]
+pub mod ww;
 
 #[cfg(test)]
 mod tests;

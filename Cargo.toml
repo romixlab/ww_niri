@@ -98,6 +98,15 @@ wayland-server = "0.31.14"
 xcursor = "0.3.11"
 zbus = { version = "5", optional = true }
 
+# ww: the WireWeaver control API server (src/ww/); the generated server names exact_units and ww_stream
+exact_units = { git = "https://github.com/romixlab/exact_units", default-features = false, features = ["std", "shrink_wrap", "time", "dimensionless"], optional = true }
+knuffel = { version = "3.2.0", optional = true }
+wire_weaver = { git = "https://github.com/vhrdtech/wire_weaver", default-features = false, features = ["std"], optional = true }
+ww_client_server = { git = "https://github.com/vhrdtech/wire_weaver", default-features = false, features = ["std"], optional = true }
+ww_device = { git = "https://github.com/vhrdtech/wire_weaver", default-features = false, features = ["ws", "log"], optional = true }
+ww_niri_api = { path = "ww_niri_api", optional = true }
+ww_stream = { git = "https://github.com/vhrdtech/wire_weaver", default-features = false, features = ["std"], optional = true }
+
 [dependencies.smithay]
 workspace = true
 features = [
@@ -125,12 +134,17 @@ proptest-derive = { version = "0.8.0", features = ["boxed_union"] }
 rayon = "1.12.0"
 wayland-client = "0.31.15"
 xshell = "0.2.7"
+# ww: a real client against the server in tests
+tokio = { version = "1", default-features = false, features = ["rt", "macros", "time"] }
+wire_weaver_client = { git = "https://github.com/vhrdtech/wire_weaver", default-features = false, features = ["ws"] }
 
 [build-dependencies]
 pkg-config = "0.3"
 
 [features]
-default = ["dbus", "systemd", "xdp-gnome-screencast"]
+default = ["dbus", "systemd", "xdp-gnome-screencast", "ww"]
+# Enables the WireWeaver control API server (ww_niri_api over WebSocket, configured in ww.kdl).
+ww = ["dep:exact_units", "dep:knuffel", "dep:wire_weaver", "dep:ww_client_server", "dep:ww_device", "dep:ww_niri_api", "dep:ww_stream"]
 # Enables D-Bus support (serve various freedesktop and GNOME interfaces, accessibility tree, power button handling).
 dbus = ["dep:zbus", "dep:async-io", "dep:accesskit", "dep:accesskit_unix"]
 # Enables systemd integration (global environment, apps in transient scopes).

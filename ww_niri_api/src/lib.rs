@@ -153,20 +153,36 @@ pub struct Info<'i> {
 }
 
 /// niri's window id, the same as in `niri msg windows`.
-#[derive_shrink_wrap(borrowed, owned(feature = "std"), derive(Copy, Clone, Debug, PartialEq, Eq, Hash))]
+#[derive_shrink_wrap(
+    borrowed,
+    owned(feature = "std"),
+    derive(Copy, Clone, Debug, PartialEq, Eq, Hash)
+)]
 pub struct WindowId(pub u64);
 
 /// niri's workspace id.
-#[derive_shrink_wrap(borrowed, owned(feature = "std"), derive(Copy, Clone, Debug, PartialEq, Eq, Hash))]
+#[derive_shrink_wrap(
+    borrowed,
+    owned(feature = "std"),
+    derive(Copy, Clone, Debug, PartialEq, Eq, Hash)
+)]
 pub struct WorkspaceId(pub u64);
 
 /// The index of `browsers[]`.
-#[derive_shrink_wrap(borrowed, owned(feature = "std"), derive(Copy, Clone, Debug, PartialEq, Eq, Hash))]
+#[derive_shrink_wrap(
+    borrowed,
+    owned(feature = "std"),
+    derive(Copy, Clone, Debug, PartialEq, Eq, Hash)
+)]
 pub struct BrowserSlot(pub u8);
 
 /// The index of `media.players[]`: given when an MPRIS name appears, never reused while the
 /// compositor runs.
-#[derive_shrink_wrap(borrowed, owned(feature = "std"), derive(Copy, Clone, Debug, PartialEq, Eq, Hash))]
+#[derive_shrink_wrap(
+    borrowed,
+    owned(feature = "std"),
+    derive(Copy, Clone, Debug, PartialEq, Eq, Hash)
+)]
 pub struct PlayerId(pub u32);
 
 #[derive_shrink_wrap(owned(feature = "std"), derive(Clone, Debug, PartialEq, Eq))]
@@ -197,7 +213,11 @@ pub struct Output<'i> {
 }
 
 /// An eased move, for [Windows::show].
-#[derive_shrink_wrap(borrowed, owned(feature = "std"), derive(Copy, Clone, Debug, PartialEq, Eq))]
+#[derive_shrink_wrap(
+    borrowed,
+    owned(feature = "std"),
+    derive(Copy, Clone, Debug, PartialEq, Eq)
+)]
 pub struct Transition {
     pub duration: Millis<u16>,
     pub curve: Curve,
@@ -212,7 +232,11 @@ pub enum Curve {
     EaseOutExpo,
 }
 
-#[derive_shrink_wrap(borrowed, owned(feature = "std"), derive(Copy, Clone, Debug, PartialEq, Eq))]
+#[derive_shrink_wrap(
+    borrowed,
+    owned(feature = "std"),
+    derive(Copy, Clone, Debug, PartialEq, Eq)
+)]
 pub struct Launched {
     pub pid: u32,
 }
@@ -260,7 +284,9 @@ pub enum PlayerSource<'i> {
         app_id: Option<&'i str>,
     },
     /// No window found for its process.
-    App { pid: Option<u32> },
+    App {
+        pid: Option<u32>,
+    },
 }
 
 #[derive_shrink_wrap(owned(feature = "std"), derive(Clone, Debug, PartialEq, Eq))]
