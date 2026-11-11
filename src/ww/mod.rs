@@ -16,6 +16,7 @@ use calloop::{Interest, LoopHandle, Mode, PostAction, RegistrationToken};
 
 use crate::niri::State;
 
+mod audio;
 mod bidi;
 mod browsers;
 mod clock;
@@ -29,6 +30,7 @@ mod socket;
 #[cfg(test)]
 mod tests;
 
+pub use audio::Audio;
 pub use browsers::Browsers;
 pub use config::WwConfig;
 pub use host::WwHost;
@@ -44,11 +46,13 @@ pub struct WwServer {
     services: Rc<Services>,
 }
 
-/// What every connection shares: the ww side's events, the browser slots and the players.
+/// What every connection shares: the ww side's events, the browser slots, the players and the
+/// audio server.
 pub struct Services {
     pub hub: Rc<hub::Hub>,
     pub browsers: Rc<Browsers>,
     pub players: Rc<Players>,
+    pub audio: Rc<Audio>,
 }
 
 impl Services {
@@ -73,6 +77,7 @@ impl Services {
             hub,
             browsers,
             players,
+            audio: Audio::new(),
         })
     }
 }
@@ -99,6 +104,14 @@ impl WwServer {
             services
                 .players
                 .follow(scheduler, zbus::Connection::session());
+            match audio::Target::from_env() {
+                Some(target) => services.audio.follow(
+                    scheduler,
+                    browsers::LoopIo::new(event_loop.clone()),
+                    target,
+                ),
+                None => warn!("ww: no audio server socket found, volume is not available"),
+            }
         }
         let mut ww = Self {
             path,

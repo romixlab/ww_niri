@@ -86,6 +86,7 @@ pipewire = { version = "0.10", optional = true, features = ["v0_3_33"] }
 png = "0.18.1"
 portable-atomic = "1"
 profiling = "1.0.18"
+pulseaudio = { version = "0.3.2", default-features = false, optional = true }
 sd-notify = "0.5.0"
 serde.workspace = true
 serde_json.workspace = true
@@ -146,7 +147,7 @@ pkg-config = "0.3"
 default = ["dbus", "systemd", "xdp-gnome-screencast", "ww"]
 # Enables the WireWeaver control API server (ww_niri_api over WebSocket, configured in ww.kdl).
 # Needs systemd: its spawn hands back the launched app's pid.
-ww = ["systemd", "dep:async-tungstenite", "dep:exact_units", "dep:knuffel", "dep:wire_weaver", "dep:ww_client_server", "dep:ww_device", "dep:ww_niri_api", "dep:ww_stream"]
+ww = ["systemd", "dep:async-tungstenite", "dep:exact_units", "dep:knuffel", "dep:pulseaudio", "dep:wire_weaver", "dep:ww_client_server", "dep:ww_device", "dep:ww_niri_api", "dep:ww_stream"]
 # Enables D-Bus support (serve various freedesktop and GNOME interfaces, accessibility tree, power button handling).
 dbus = ["dep:zbus", "dep:async-io", "dep:accesskit", "dep:accesskit_unix"]
 # Enables systemd integration (global environment, apps in transient scopes).

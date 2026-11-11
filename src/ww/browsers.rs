@@ -12,6 +12,7 @@ use std::future::Future;
 use std::io;
 use std::net::{SocketAddr, TcpStream};
 use std::os::fd::{FromRawFd as _, OwnedFd};
+use std::os::unix::net::UnixStream;
 use std::os::unix::process::{CommandExt as _, ExitStatusExt as _};
 use std::path::PathBuf;
 use std::pin::Pin;
@@ -78,21 +79,31 @@ impl Default for Settings {
 pub struct LoopIo {
     tcp: Box<dyn Fn(TcpStream) -> io::Result<Async<'static, TcpStream>>>,
     file: Box<dyn Fn(File) -> io::Result<Async<'static, File>>>,
+    unix: Box<dyn Fn(UnixStream) -> io::Result<Async<'static, UnixStream>>>,
     deadline: Box<dyn Fn(Instant) -> TimeoutFuture>,
 }
 
 impl LoopIo {
     pub fn new<D: 'static>(handle: LoopHandle<'static, D>) -> Self {
-        let (tcp, file) = (handle.clone(), handle.clone());
+        let (tcp, file, unix) = (handle.clone(), handle.clone(), handle.clone());
         Self {
             tcp: Box::new(move |stream| tcp.adapt_io(stream).map_err(io::Error::other)),
             file: Box::new(move |f| file.adapt_io(f).map_err(io::Error::other)),
+            unix: Box::new(move |stream| unix.adapt_io(stream).map_err(io::Error::other)),
             deadline: Box::new(move |at| TimeoutFuture::from_deadline(&handle, at)),
         }
     }
 
     fn timeout(&self, after: Duration) -> TimeoutFuture {
         (self.deadline)(Instant::now() + after)
+    }
+
+    pub fn unix(&self, stream: UnixStream) -> io::Result<Async<'static, UnixStream>> {
+        (self.unix)(stream)
+    }
+
+    pub async fn sleep(&self, time: Duration) {
+        self.timeout(time).await;
     }
 }
 

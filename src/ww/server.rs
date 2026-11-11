@@ -9,7 +9,7 @@ use wire_weaver::prelude::*;
 use super::host::{call, Run, WwHost};
 use super::hub::Hub;
 use super::players::Action;
-use super::{Browsers, Players, Services};
+use super::{Audio, Browsers, Players, Services};
 
 pub struct Server {
     /// Observed properties: what the client observes and when it is due.
@@ -19,6 +19,7 @@ pub struct Server {
     pub hub: Rc<Hub>,
     pub browsers: Rc<Browsers>,
     pub players: Rc<Players>,
+    pub audio: Rc<Audio>,
     /// The live players as `valid_indices` last answered them.
     player_ids: Vec<UNib32>,
     /// The client opened the `events` stream.
@@ -34,6 +35,7 @@ impl Server {
             hub: services.hub.clone(),
             browsers: services.browsers.clone(),
             players: services.players.clone(),
+            audio: services.audio.clone(),
             player_ids: Vec::new(),
             events_open: false,
         }
@@ -553,47 +555,41 @@ impl Server {
     async fn set_audio_volume(
         &mut self,
         _cx: &mut Context<'_, impl EventOut>,
-        _value: exact_units::Fixed<
-            exact_units::units::Ratio,
-            exact_units::prefix::Centi,
-            u16,
-            exact_units::Range<0, 150>,
-        >,
+        value: ww_niri_api::Volume,
     ) -> SetResult<()> {
         // observers get it after `SetResult::Set`: the generated code calls `mark_changed_audio_volume()`
-        Unimplemented.into()
+        audio_set(self.audio.set_volume(value.get()).await)
     }
 
     /// The default sink's volume, up to 150 %.
     async fn get_audio_volume(
         &mut self,
         _cx: &mut Context<'_, impl EventOut>,
-    ) -> GetResult<
-        exact_units::Fixed<
-            exact_units::units::Ratio,
-            exact_units::prefix::Centi,
-            u16,
-            exact_units::Range<0, 150>,
-        >,
-        (),
-    > {
-        Unimplemented.into()
+    ) -> GetResult<ww_niri_api::Volume, ()> {
+        match self.audio.sink() {
+            Some(sink) => ww_niri_api::Volume::try_new(sink.volume)
+                .map_or(GetResult::GetError(()), GetResult::Value),
+            None => GetResult::GetError(()),
+        }
     }
 
     async fn set_audio_muted(
         &mut self,
         _cx: &mut Context<'_, impl EventOut>,
-        _value: bool,
+        value: bool,
     ) -> SetResult<()> {
         // observers get it after `SetResult::Set`: the generated code calls `mark_changed_audio_muted()`
-        Unimplemented.into()
+        audio_set(self.audio.set_muted(value).await)
     }
 
     async fn get_audio_muted(
         &mut self,
         _cx: &mut Context<'_, impl EventOut>,
     ) -> GetResult<bool, ()> {
-        Unimplemented.into()
+        match self.audio.sink() {
+            Some(sink) => GetResult::Value(sink.muted),
+            None => GetResult::GetError(()),
+        }
     }
 
     /// The default sink, to show where the sound goes.
@@ -601,7 +597,13 @@ impl Server {
         &mut self,
         _cx: &mut Context<'_, impl EventOut>,
     ) -> GetResult<ww_niri_api::SinkOwned, ()> {
-        Unimplemented.into()
+        match self.audio.sink() {
+            Some(sink) => GetResult::Value(ww_niri_api::SinkOwned {
+                name: sink.name,
+                description: sink.description,
+            }),
+            None => GetResult::GetError(()),
+        }
     }
 
     /// Settings and send state of observed properties, for `Observe` requests and `poll_properties`.
@@ -635,6 +637,17 @@ pub mod api_impl {
         method_model = "_=immediate",
         property_model = "_=get_set",
     );
+}
+
+/// The audio errors carry no detail on the wire (the properties' error type is `()`): log it here.
+fn audio_set(res: Result<(), super::audio::AudioError>) -> SetResult<()> {
+    match res {
+        Ok(()) => SetResult::Set,
+        Err(err) => {
+            debug!("ww: error setting audio: {err}");
+            SetResult::SetError(())
+        }
+    }
 }
 
 /// The state of a player that plays nothing.

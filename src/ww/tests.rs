@@ -15,7 +15,8 @@ use ww_niri_api::{
     WindowOwned, WorkspaceId,
 };
 
-use super::browsers::Settings;
+use super::audio::Target;
+use super::browsers::{LoopIo, Settings};
 use super::connection::serve;
 use super::host::WwHost;
 use super::Services;
@@ -157,11 +158,17 @@ struct Bench {
 
 /// Serves one connection against a fake host with `windows`, on a calloop loop of its own.
 fn bench(windows: Vec<WindowOwned>) -> Bench {
-    bench_with(windows, Settings::default(), None)
+    bench_with(windows, Settings::default(), None, None)
 }
 
-/// The same, with browser slots as `settings` say, and players on the D-Bus at `bus`.
-fn bench_with(windows: Vec<WindowOwned>, settings: Settings, bus: Option<String>) -> Bench {
+/// The same, with browser slots as `settings` say, players on the D-Bus at `bus` and the audio
+/// server at `audio`.
+fn bench_with(
+    windows: Vec<WindowOwned>,
+    settings: Settings,
+    bus: Option<String>,
+    audio: Option<Target>,
+) -> Bench {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!("ws://{}/ww", listener.local_addr().unwrap());
     let (events_tx, events_rx) = async_channel::unbounded();
@@ -190,6 +197,11 @@ fn bench_with(windows: Vec<WindowOwned>, settings: Settings, bus: Option<String>
                     .build()
                     .await
             });
+        }
+        if let Some(target) = audio {
+            services
+                .audio
+                .follow(&scheduler, LoopIo::new(handle.clone()), target);
         }
         let mut host = FakeHost {
             fake: host_fake,
@@ -466,7 +478,7 @@ fn browser_slot_lifecycle() {
         stop_grace: Duration::from_millis(100),
     };
 
-    bench_with(Vec::new(), settings, None).run(async |client, fake| {
+    bench_with(Vec::new(), settings, None, None).run(async |client, fake| {
         let mut events = client.events().call().await.unwrap();
         let mut next = async || {
             tokio::time::timeout(Duration::from_secs(5), events.recv())
@@ -621,7 +633,7 @@ fn browser_slot_real_firefox() {
     };
     let page = format!("http://{}/page", page_server());
 
-    bench_with(Vec::new(), settings, None).run(async |client, _| {
+    bench_with(Vec::new(), settings, None, None).run(async |client, _| {
         let mut events = client.events().call().await.unwrap();
         let slot = client.browsers(0);
         slot.start(false)
@@ -802,89 +814,341 @@ fn media_players() {
     mpv.pid = Some(std::process::id());
 
     let address = bus.address.clone();
-    bench_with(vec![mpv], Settings::default(), Some(address.clone())).run(async |client, _| {
-        let mut events = client.events().call().await.unwrap();
-        let mut next = async || {
-            tokio::time::timeout(Duration::from_secs(5), events.recv())
-                .await
-                .expect("an event")
+    bench_with(vec![mpv], Settings::default(), Some(address.clone()), None).run(
+        async |client, _| {
+            let mut events = client.events().call().await.unwrap();
+            let mut next = async || {
+                tokio::time::timeout(Duration::from_secs(5), events.recv())
+                    .await
+                    .expect("an event")
+                    .unwrap()
+            };
+
+            let calls = Arc::default();
+            let player = zbus::connection::Builder::address(address.as_str())
                 .unwrap()
-        };
+                .name("org.mpris.MediaPlayer2.fake")
+                .unwrap()
+                .serve_at("/org/mpris/MediaPlayer2", FakeRoot)
+                .unwrap()
+                .serve_at(
+                    "/org/mpris/MediaPlayer2",
+                    FakePlayer {
+                        calls: Arc::clone(&calls),
+                    },
+                )
+                .unwrap()
+                .build()
+                .await
+                .unwrap();
 
-        let calls = Arc::default();
-        let player = zbus::connection::Builder::address(address.as_str())
-            .unwrap()
-            .name("org.mpris.MediaPlayer2.fake")
-            .unwrap()
-            .serve_at("/org/mpris/MediaPlayer2", FakeRoot)
-            .unwrap()
-            .serve_at(
-                "/org/mpris/MediaPlayer2",
-                FakePlayer {
-                    calls: Arc::clone(&calls),
+            let info = PlayerInfoOwned {
+                id: PlayerId(0),
+                identity: "Fake Player".to_owned(),
+                source: PlayerSourceOwned::Window {
+                    id: WindowId(3),
+                    app_id: Some("mpv".to_owned()),
                 },
-            )
-            .unwrap()
-            .build()
-            .await
-            .unwrap();
+            };
+            assert_eq!(next().await, EventOwned::PlayerAppeared(info.clone()));
+            assert_eq!(client.media().list().call().await.unwrap(), [info]);
 
-        let info = PlayerInfoOwned {
-            id: PlayerId(0),
-            identity: "Fake Player".to_owned(),
-            source: PlayerSourceOwned::Window {
-                id: WindowId(3),
-                app_id: Some("mpv".to_owned()),
-            },
-        };
-        assert_eq!(next().await, EventOwned::PlayerAppeared(info.clone()));
-        assert_eq!(client.media().list().call().await.unwrap(), [info]);
+            let media = client.media();
+            let player0 = media.players(0);
+            let playback = player0.playback();
+            let state = playback.read_state().read().await.unwrap();
+            assert_eq!(state.status, PlaybackStatus::Playing);
+            assert_eq!(state.title.as_deref(), Some("A Song"));
+            assert_eq!(state.artist.as_deref(), Some("Someone, Another"));
+            assert_eq!(state.length, Some(Fixed::new(180_000_000)));
+            assert_eq!(state.position, Fixed::new(42_000_000));
+            assert_eq!(state.rate, Fixed::new(1000));
+            assert!(state.can_seek && state.can_pause);
 
-        let media = client.media();
-        let player0 = media.players(0);
-        let playback = player0.playback();
-        let state = playback.read_state().read().await.unwrap();
-        assert_eq!(state.status, PlaybackStatus::Playing);
-        assert_eq!(state.title.as_deref(), Some("A Song"));
-        assert_eq!(state.artist.as_deref(), Some("Someone, Another"));
-        assert_eq!(state.length, Some(Fixed::new(180_000_000)));
-        assert_eq!(state.position, Fixed::new(42_000_000));
-        assert_eq!(state.rate, Fixed::new(1000));
-        assert!(state.can_seek && state.can_pause);
+            playback.pause().call().await.unwrap();
+            playback.play().call().await.unwrap();
+            playback.seek(Fixed::new(-5_000_000)).call().await.unwrap();
+            playback
+                .set_position(Fixed::new(60_000_000))
+                .call()
+                .await
+                .unwrap();
+            assert!(matches!(
+                playback.next().call().await,
+                Err(CallError::Device(MediaErrorOwned::NotSupported))
+            ));
+            assert_eq!(
+                *calls.lock().unwrap(),
+                [
+                    "Pause",
+                    "Play",
+                    "Seek -5000000",
+                    "SetPosition /track/1 60000000"
+                ]
+            );
 
-        playback.pause().call().await.unwrap();
-        playback.play().call().await.unwrap();
-        playback.seek(Fixed::new(-5_000_000)).call().await.unwrap();
-        playback
-            .set_position(Fixed::new(60_000_000))
-            .call()
-            .await
-            .unwrap();
-        assert!(matches!(
-            playback.next().call().await,
-            Err(CallError::Device(MediaErrorOwned::NotSupported))
-        ));
-        assert_eq!(
-            *calls.lock().unwrap(),
-            [
-                "Pause",
-                "Play",
-                "Seek -5000000",
-                "SetPosition /track/1 60000000"
-            ]
-        );
+            // No browser slot runs: its playback has no player.
+            let slot = client.browsers(0);
+            assert!(matches!(
+                slot.playback().pause().call().await,
+                Err(CallError::Device(MediaErrorOwned::NoPlayer))
+            ));
 
-        // No browser slot runs: its playback has no player.
-        let slot = client.browsers(0);
-        assert!(matches!(
-            slot.playback().pause().call().await,
-            Err(CallError::Device(MediaErrorOwned::NoPlayer))
-        ));
-
-        drop(player);
-        assert_eq!(next().await, EventOwned::PlayerGone(PlayerId(0)));
-        assert!(client.media().list().call().await.unwrap().is_empty());
-        assert!(playback.pause().call().await.is_err());
-    });
+            drop(player);
+            assert_eq!(next().await, EventOwned::PlayerGone(PlayerId(0)));
+            assert!(client.media().list().call().await.unwrap().is_empty());
+            assert!(playback.pause().call().await.is_err());
+        },
+    );
     drop(bus);
+}
+
+/// A PulseAudio server with one sink, `fake_sink`, on a thread: it serves one connection with what
+/// the audio service asks for and sends a sink event after each change.
+struct FakePulse {
+    socket: std::path::PathBuf,
+    /// The connection, to send events on as if the sink changed elsewhere.
+    conn: Arc<Mutex<Option<std::os::unix::net::UnixStream>>>,
+    sink: Arc<Mutex<pulseaudio::protocol::SinkInfo>>,
+    /// The commands that changed something, as text.
+    calls: Arc<Mutex<Vec<String>>>,
+}
+
+impl FakePulse {
+    fn start(dir: &std::path::Path) -> Self {
+        use pulseaudio::protocol::{self, ChannelVolume, Volume};
+
+        let socket = dir.join("native");
+        let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        let mut sink = protocol::SinkInfo::new_dummy(7);
+        sink.name = c"fake_sink".to_owned();
+        sink.description = Some(c"Fake HDMI".to_owned());
+        let mut volume = ChannelVolume::empty();
+        volume.push(Volume::from_u32_clamped(0x10000 * 40 / 100));
+        volume.push(Volume::from_u32_clamped(0x10000 * 30 / 100));
+        sink.cvolume = volume;
+
+        let fake = Self {
+            socket,
+            conn: Arc::default(),
+            sink: Arc::new(Mutex::new(sink)),
+            calls: Arc::default(),
+        };
+        let (conn, sink, calls) = (fake.conn.clone(), fake.sink.clone(), fake.calls.clone());
+        std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            *conn.lock().unwrap() = Some(stream.try_clone().unwrap());
+            let mut reader = std::io::BufReader::new(stream);
+            let version = protocol::MAX_VERSION;
+            let write = |f: &mut dyn FnMut(&mut std::os::unix::net::UnixStream)| {
+                f(conn.lock().unwrap().as_mut().unwrap())
+            };
+            while let Ok((seq, command)) = protocol::read_command_message(&mut reader, version) {
+                match command {
+                    protocol::Command::Auth(_) => write(&mut |w| {
+                        let reply = protocol::AuthReply {
+                            version,
+                            ..Default::default()
+                        };
+                        protocol::write_reply_message(w, seq, &reply, version).unwrap()
+                    }),
+                    protocol::Command::SetClientName(_) => write(&mut |w| {
+                        let reply = protocol::SetClientNameReply { client_id: 1 };
+                        protocol::write_reply_message(w, seq, &reply, version).unwrap()
+                    }),
+                    protocol::Command::Subscribe(_) => {
+                        write(&mut |w| protocol::write_ack_message(w, seq).unwrap())
+                    }
+                    protocol::Command::GetServerInfo => write(&mut |w| {
+                        let info = protocol::ServerInfo {
+                            default_sink_name: Some(c"fake_sink".to_owned()),
+                            ..Default::default()
+                        };
+                        protocol::write_reply_message(w, seq, &info, version).unwrap()
+                    }),
+                    protocol::Command::GetSinkInfo(get) => {
+                        assert_eq!(get.name.as_deref(), Some(c"fake_sink"));
+                        let info = sink.lock().unwrap().clone();
+                        write(&mut |w| {
+                            protocol::write_reply_message(w, seq, &info, version).unwrap()
+                        })
+                    }
+                    protocol::Command::SetSinkVolume(set) => {
+                        calls.lock().unwrap().push(format!(
+                            "volume {:?} {:?}",
+                            set.device_name,
+                            set.volume
+                                .channels()
+                                .iter()
+                                .map(|v| v.as_u32())
+                                .collect::<Vec<_>>()
+                        ));
+                        sink.lock().unwrap().cvolume = set.volume;
+                        write(&mut |w| {
+                            protocol::write_ack_message(w, seq).unwrap();
+                            sink_changed(w);
+                        })
+                    }
+                    protocol::Command::SetSinkMute(set) => {
+                        calls
+                            .lock()
+                            .unwrap()
+                            .push(format!("mute {:?} {}", set.device_name, set.mute));
+                        sink.lock().unwrap().muted = set.mute;
+                        write(&mut |w| {
+                            protocol::write_ack_message(w, seq).unwrap();
+                            sink_changed(w);
+                        })
+                    }
+                    other => panic!("the fake PulseAudio server got {other:?}"),
+                }
+            }
+        });
+        fake
+    }
+
+    fn target(&self) -> Target {
+        Target {
+            socket: self.socket.clone(),
+            cookie: vec![0; 256],
+        }
+    }
+
+    /// Changes the sink as another client would.
+    fn mute_elsewhere(&self) {
+        self.sink.lock().unwrap().muted = true;
+        sink_changed(self.conn.lock().unwrap().as_mut().unwrap());
+    }
+
+    /// Ends the connection, as a server that stops.
+    fn hang_up(&self) {
+        let conn = self.conn.lock().unwrap();
+        conn.as_ref()
+            .unwrap()
+            .shutdown(std::net::Shutdown::Both)
+            .unwrap();
+    }
+}
+
+fn sink_changed(w: &mut std::os::unix::net::UnixStream) {
+    use pulseaudio::protocol::{
+        self, SubscriptionEvent, SubscriptionEventFacility, SubscriptionEventType,
+    };
+    let event = protocol::Command::SubscribeEvent(SubscriptionEvent {
+        event_facility: SubscriptionEventFacility::Sink,
+        event_type: SubscriptionEventType::Changed,
+        index: Some(7),
+    });
+    protocol::write_command_message(w, u32::MAX, &event, protocol::MAX_VERSION).unwrap();
+}
+
+#[test]
+fn audio_volume_and_mute() {
+    let volume = |percent| ww_niri_api::Volume::try_new(percent).unwrap();
+
+    let dir = Scratch::new("audio");
+    let pulse = FakePulse::start(&dir.0);
+    bench_with(Vec::new(), Settings::default(), None, Some(pulse.target())).run(
+        async |client, _| {
+            let audio = client.audio();
+            // The task connects on its own: wait until it has read the sink.
+            let sink = tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    if let Ok(sink) = audio.read_sink().read().await {
+                        break sink;
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("the audio service reads the sink");
+            assert_eq!(sink.name, "fake_sink");
+            assert_eq!(sink.description, "Fake HDMI");
+            // The loudest channel.
+            assert_eq!(audio.read_volume().read().await.unwrap(), volume(40));
+            assert!(!audio.read_muted().read().await.unwrap());
+
+            // Each change comes back as a sink event, and the service reads the sink again.
+            let wait_for = async |muted: bool, percent: u16| {
+                tokio::time::timeout(Duration::from_secs(5), async {
+                    loop {
+                        let now = (
+                            audio.read_muted().read().await.unwrap(),
+                            audio.read_volume().read().await.unwrap(),
+                        );
+                        if now == (muted, volume(percent)) {
+                            break;
+                        }
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                    }
+                })
+                .await
+                .expect("the change reaches the service")
+            };
+            audio.write_volume(volume(125)).write().await.unwrap();
+            wait_for(false, 125).await;
+            audio.write_muted(true).write().await.unwrap();
+            wait_for(true, 125).await;
+            audio.write_muted(false).write().await.unwrap();
+            wait_for(false, 125).await;
+            assert_eq!(
+                *pulse.calls.lock().unwrap(),
+                [
+                    "volume Some(\"fake_sink\") [81920, 81920]",
+                    "mute Some(\"fake_sink\") true",
+                    "mute Some(\"fake_sink\") false",
+                ]
+            );
+
+            pulse.mute_elsewhere();
+            wait_for(true, 125).await;
+
+            // Without the server there is nothing to read or set.
+            pulse.hang_up();
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while audio.read_sink().read().await.is_ok() {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("the service notices the server is gone");
+            assert!(audio.read_volume().read().await.is_err());
+            assert!(audio.write_volume(volume(50)).write().await.is_err());
+        },
+    );
+}
+
+/// The fake checked against a real server: `WW_REAL_PULSE=1` reads this session's default sink
+/// and sets its volume and mute to what they are, so nothing audible changes.
+#[test]
+fn audio_real_server() {
+    if std::env::var_os("WW_REAL_PULSE").is_none() {
+        eprintln!(
+            "audio_real_server: skipped, set WW_REAL_PULSE=1 to run against this session's server"
+        );
+        return;
+    }
+    let target = Target::from_env().expect("a PulseAudio socket");
+    bench_with(Vec::new(), Settings::default(), None, Some(target)).run(async |client, _| {
+        let audio = client.audio();
+        let sink = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if let Ok(sink) = audio.read_sink().read().await {
+                    break sink;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the audio service reads the sink");
+        let volume = audio.read_volume().read().await.unwrap();
+        let muted = audio.read_muted().read().await.unwrap();
+        eprintln!(
+            "audio_real_server: {sink:?} at {} %, muted {muted}",
+            volume.get()
+        );
+        audio.write_volume(volume).write().await.unwrap();
+        audio.write_muted(muted).write().await.unwrap();
+        assert_eq!(audio.read_volume().read().await.unwrap(), volume);
+    });
 }
