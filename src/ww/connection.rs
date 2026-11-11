@@ -2,13 +2,18 @@
 //! API handlers, as one task on the compositor's executor.
 
 use std::net::{SocketAddr, TcpStream};
+use std::pin::pin;
 
+use async_channel::Receiver;
 use calloop::io::Async;
 use calloop::LoopHandle;
+use futures_util::future::{select, Either};
 use ww_device::ws::{WsConnection, WsRx, WsTx, WS_OVERHEAD};
 use ww_device::LinkEvent;
+use ww_niri_api::{EventOwned, WindowId};
 
 use super::clock::LoopClock;
+use super::host::{call, runner, Run, WwHost};
 use super::server::{api_impl, Server};
 use super::socket::StreamSocket;
 use crate::niri::State;
@@ -37,7 +42,15 @@ pub fn spawn(state: &mut State, stream: TcpStream, peer: SocketAddr) {
     }
 }
 
-pub async fn serve<D: 'static>(
+/// niri's event stream as the client's `events` stream sees it.
+enum Events {
+    Off,
+    On(Receiver<niri_ipc::Event>),
+    /// niri runs without IPC: there are no events to follow.
+    Unavailable,
+}
+
+pub async fn serve<D: WwHost>(
     handle: LoopHandle<'static, D>,
     stream: Async<'static, TcpStream>,
     peer: SocketAddr,
@@ -61,22 +74,98 @@ pub async fn serve<D: 'static>(
         config,
         WsTx::new(&conn, &mut tx_buf),
         WsRx::new(&conn, &mut rx_buf),
-        LoopClock::new(handle),
+        LoopClock::new(handle.clone()),
         &mut scratch,
         &mut event_scratch,
     );
-    let mut backend = Server::new();
+    let run = runner(handle);
+    let mut backend = Server::new(run.clone());
+    let mut events = Events::Off;
 
     loop {
-        let ready = server.wait().await;
-        match server.handle(ready, &mut backend).await {
-            Some(LinkEvent::Up) => debug!("ww: link to {peer} is up"),
-            Some(LinkEvent::Down(reason)) => {
-                // A connection is served once: the client reconnects with a new one.
-                debug!("ww: link to {peer} is down: {reason:?}");
-                break;
+        // Follow niri's events while the client has the stream open.
+        match (&events, backend.events_open) {
+            (Events::Off, true) => {
+                events = match call(&run, |host| host.subscribe_events()).await.flatten() {
+                    Some(rx) => Events::On(rx),
+                    None => Events::Unavailable,
+                };
             }
-            None => {}
+            (Events::On(_) | Events::Unavailable, false) => events = Events::Off,
+            _ => (),
         }
+
+        let step = {
+            let next_event = pin!(async {
+                match &events {
+                    Events::On(rx) => rx.recv().await.ok(),
+                    Events::Off | Events::Unavailable => std::future::pending().await,
+                }
+            });
+            match select(pin!(server.wait()), next_event).await {
+                Either::Left((ready, _)) => Either::Left(ready),
+                Either::Right((event, _)) => Either::Right(event),
+            }
+        };
+        match step {
+            Either::Left(ready) => match server.handle(ready, &mut backend).await {
+                Some(LinkEvent::Up) => debug!("ww: link to {peer} is up"),
+                Some(LinkEvent::Down(reason)) => {
+                    // A connection is served once: the client reconnects with a new one.
+                    debug!("ww: link to {peer} is down: {reason:?}");
+                    break;
+                }
+                None => {}
+            },
+            Either::Right(event) => {
+                let out = match event {
+                    Some(event) => map_event(&run, event).await,
+                    None => {
+                        // niri dropped the subscription, as for any client too slow to read:
+                        // subscribe again and have the client list again.
+                        debug!("ww: {peer} fell behind on events");
+                        events = Events::Off;
+                        vec![EventOwned::Resync]
+                    }
+                };
+                if server.is_up() && backend.events_open {
+                    for event in out {
+                        let _ = api_impl::stream_data_ser()
+                            .events_send(&event, &mut server.sink())
+                            .await;
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// The API's events for one of niri's; most of niri's have no counterpart.
+async fn map_event(run: &Run, event: niri_ipc::Event) -> Vec<EventOwned> {
+    use niri_ipc::Event;
+
+    let changed = |ids: Vec<u64>| async move {
+        call(run, move |host| {
+            ids.into_iter()
+                .filter_map(|id| host.window(id))
+                .map(EventOwned::WindowOpenedOrChanged)
+                .collect()
+        })
+        .await
+        .unwrap_or_default()
+    };
+
+    match event {
+        Event::WindowOpenedOrChanged { window } => changed(vec![window.id]).await,
+        // Fullscreen and moves between outputs show up as layout changes.
+        Event::WindowLayoutsChanged { changes } => {
+            changed(changes.into_iter().map(|(id, _)| id).collect()).await
+        }
+        Event::WindowClosed { id } => vec![EventOwned::WindowClosed(WindowId(id))],
+        Event::WindowFocusChanged { id } => {
+            vec![EventOwned::WindowFocusChanged(id.map(WindowId))]
+        }
+        Event::WindowsChanged { .. } => vec![EventOwned::Resync],
+        _ => Vec::new(),
     }
 }

@@ -14,3 +14,5 @@ mod remove_output;
 mod transactions;
 mod virtual_pointer;
 mod window_opening;
+#[cfg(feature = "ww")]
+mod ww;

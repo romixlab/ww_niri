@@ -3,15 +3,33 @@
 
 use wire_weaver::prelude::*;
 
+use super::host::{call, Run, WwHost};
+
 pub struct Server {
     /// Observed properties: what the client observes and when it is due.
     pub observe: api_impl::ObserveState,
+    pub run: Run,
+    /// The client opened the `events` stream.
+    pub events_open: bool,
 }
 
 impl Server {
-    pub fn new() -> Self {
+    pub fn new(run: Run) -> Self {
         Self {
             observe: api_impl::ObserveState::new(Default::default()),
+            run,
+            events_open: false,
+        }
+    }
+
+    async fn window_op(
+        &self,
+        f: impl FnOnce(&mut dyn WwHost) -> bool + 'static,
+    ) -> RpcResult<Result<(), ww_niri_api::WindowError>> {
+        match call(&self.run, f).await {
+            Some(true) => RpcResult::Ready(Ok(())),
+            Some(false) => RpcResult::Ready(Err(ww_niri_api::WindowError::NoSuchWindow)),
+            None => Unimplemented.into(),
         }
     }
 
@@ -41,11 +59,14 @@ impl Server {
     ///
     /// Opens the stream (a new session): `Ok` / `Ready` starts it.
     async fn events(&mut self, _cx: &mut Context<'_, impl EventOut>) -> RpcResult<()> {
+        self.events_open = true;
         RpcResult::Ready(())
     }
 
     /// The host closed the stream.
-    async fn close_events(&mut self, _cx: &mut Context<'_, impl EventOut>) {}
+    async fn close_events(&mut self, _cx: &mut Context<'_, impl EventOut>) {
+        self.events_open = false;
+    }
 
     async fn sideband_events(
         &mut self,
@@ -62,7 +83,10 @@ impl Server {
         &mut self,
         _cx: &mut Context<'_, impl EventOut>,
     ) -> RpcResult<Vec<ww_niri_api::WindowOwned>> {
-        Unimplemented.into()
+        match call(&self.run, |host| host.windows()).await {
+            Some(windows) => RpcResult::Ready(windows),
+            None => Unimplemented.into(),
+        }
     }
 
     /// Brings the window on screen: switches to its workspace and output, scrolls to its column
@@ -71,38 +95,40 @@ impl Server {
     async fn windows_show(
         &mut self,
         _cx: &mut Context<'_, impl EventOut>,
-        _id: ww_niri_api::WindowId,
-        _transition: Option<ww_niri_api::Transition>,
-        _fullscreen: Option<bool>,
+        id: ww_niri_api::WindowId,
+        transition: Option<ww_niri_api::Transition>,
+        fullscreen: Option<bool>,
     ) -> RpcResult<Result<(), ww_niri_api::WindowError>> {
-        Unimplemented.into()
+        self.window_op(move |host| host.show_window(id.0, transition, fullscreen))
+            .await
     }
 
     /// Keyboard focus only, as niri's `focus-window`.
     async fn windows_focus(
         &mut self,
         _cx: &mut Context<'_, impl EventOut>,
-        _id: ww_niri_api::WindowId,
+        id: ww_niri_api::WindowId,
     ) -> RpcResult<Result<(), ww_niri_api::WindowError>> {
-        Unimplemented.into()
+        self.window_op(move |host| host.focus(id.0)).await
     }
 
     /// Asks the app to close the window; the app may refuse or ask first.
     async fn windows_close(
         &mut self,
         _cx: &mut Context<'_, impl EventOut>,
-        _id: ww_niri_api::WindowId,
+        id: ww_niri_api::WindowId,
     ) -> RpcResult<Result<(), ww_niri_api::WindowError>> {
-        Unimplemented.into()
+        self.window_op(move |host| host.close_window(id.0)).await
     }
 
     async fn windows_set_fullscreen(
         &mut self,
         _cx: &mut Context<'_, impl EventOut>,
-        _id: ww_niri_api::WindowId,
-        _on: bool,
+        id: ww_niri_api::WindowId,
+        on: bool,
     ) -> RpcResult<Result<(), ww_niri_api::WindowError>> {
-        Unimplemented.into()
+        self.window_op(move |host| host.set_fullscreen(id.0, on))
+            .await
     }
 
     // ---- ww_niri_api::Outputs at outputs ----
@@ -111,7 +137,10 @@ impl Server {
         &mut self,
         _cx: &mut Context<'_, impl EventOut>,
     ) -> RpcResult<Vec<ww_niri_api::OutputOwned>> {
-        Unimplemented.into()
+        match call(&self.run, |host| host.outputs()).await {
+            Some(outputs) => RpcResult::Ready(outputs),
+            None => Unimplemented.into(),
+        }
     }
 
     // ---- ww_niri_api::Apps at apps ----

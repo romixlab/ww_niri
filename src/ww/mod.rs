@@ -17,12 +17,14 @@ use crate::niri::State;
 mod clock;
 mod config;
 mod connection;
+mod host;
 mod server;
 mod socket;
 #[cfg(test)]
 mod tests;
 
 pub use config::WwConfig;
+pub use host::WwHost;
 
 const CONFIG_POLL_INTERVAL: Duration = Duration::from_secs(1);
 

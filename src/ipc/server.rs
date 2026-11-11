@@ -114,6 +114,19 @@ impl IpcServer {
         })
     }
 
+    /// The event stream for a client inside niri (the ww control API), without the replay of the
+    /// current state. Dropped like any other client when it reads too slowly.
+    #[cfg(feature = "ww")]
+    pub fn subscribe_internal(&self) -> Receiver<Event> {
+        let (events_tx, events_rx) = async_channel::bounded(EVENT_STREAM_BUFFER_SIZE);
+        let (disconnect_tx, _) = async_channel::bounded(1);
+        self.event_streams.borrow_mut().push(EventStreamSender {
+            events: events_tx,
+            disconnect: disconnect_tx,
+        });
+        events_rx
+    }
+
     fn send_event(&self, event: Event) {
         let mut streams = self.event_streams.borrow_mut();
         let mut to_remove = Vec::new();
