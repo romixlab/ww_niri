@@ -179,6 +179,11 @@ impl Players {
     }
 
     async fn appeared(&self, conn: &Connection, dbus: &DBusProxy<'_>, name: &str) {
+        // A name that appears while `watch` subscribes comes both in the list and as a change.
+        let known = self.ids.borrow().get(name).copied();
+        if known.is_some_and(|id| self.live.borrow().contains_key(&id.0)) {
+            return;
+        }
         let pid = match BusName::try_from(name) {
             Ok(bus_name) => dbus.get_connection_unix_process_id(bus_name).await.ok(),
             Err(_) => None,
