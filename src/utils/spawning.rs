@@ -93,11 +93,31 @@ pub fn spawn_sh(command: String, token: Option<XdgActivationToken>) {
     spawn(vec![String::from("sh"), String::from("-c"), command], token);
 }
 
+/// Spawns the command as [spawn] does, but waits until it runs: the pid of the spawned process
+/// (known with the `systemd` feature), or why it could not start. Takes some milliseconds.
+pub fn spawn_with_pid<T: AsRef<OsStr>>(command: &[T]) -> io::Result<Option<u32>> {
+    let Some((command, args)) = command.split_first() else {
+        return Err(io::ErrorKind::InvalidInput.into());
+    };
+    try_spawn_sync(command, args, None)
+}
+
 fn spawn_sync(
     command: impl AsRef<OsStr>,
     args: impl IntoIterator<Item = impl AsRef<OsStr>>,
     token: Option<XdgActivationToken>,
 ) {
+    let command = command.as_ref();
+    if let Err(err) = try_spawn_sync(command, args, token) {
+        warn!("error spawning {command:?}: {err:?}");
+    }
+}
+
+fn try_spawn_sync(
+    command: impl AsRef<OsStr>,
+    args: impl IntoIterator<Item = impl AsRef<OsStr>>,
+    token: Option<XdgActivationToken>,
+) -> io::Result<Option<u32>> {
     let _span = tracy_client::span!();
 
     let mut command = command.as_ref();
@@ -156,9 +176,7 @@ fn spawn_sync(
 
     unsafe { process.pre_exec(crate::utils::signals::unblock_all) };
 
-    let Some(mut child) = do_spawn(command, process) else {
-        return;
-    };
+    let (mut child, pid) = do_spawn(command, process)?;
 
     match child.wait() {
         Ok(status) => {
@@ -170,10 +188,13 @@ fn spawn_sync(
             warn!("error waiting for child: {err:?}");
         }
     }
+
+    Ok(pid)
 }
 
+/// The intermediate child, and the spawned process's pid when known.
 #[cfg(not(feature = "systemd"))]
-fn do_spawn(command: &OsStr, mut process: Command) -> Option<Child> {
+fn do_spawn(_command: &OsStr, mut process: Command) -> io::Result<(Child, Option<u32>)> {
     unsafe {
         // Double-fork to avoid having to waitpid the child.
         process.pre_exec(move || {
@@ -189,15 +210,7 @@ fn do_spawn(command: &OsStr, mut process: Command) -> Option<Child> {
         });
     }
 
-    let child = match process.spawn() {
-        Ok(child) => child,
-        Err(err) => {
-            warn!("error spawning {command:?}: {err:?}");
-            return None;
-        }
-    };
-
-    Some(child)
+    Ok((process.spawn()?, None))
 }
 
 #[cfg(feature = "systemd")]
@@ -213,7 +226,7 @@ mod systemd {
 
     use super::*;
 
-    pub fn do_spawn(command: &OsStr, mut process: Command) -> Option<Child> {
+    pub fn do_spawn(command: &OsStr, mut process: Command) -> io::Result<(Child, Option<u32>)> {
         #[cfg(target_env = "gnu")]
         use libc::close_range;
         #[cfg(target_os = "openbsd")]
@@ -300,7 +313,9 @@ mod systemd {
                             let _ = write_all(pipe, &grandchild_pid.to_ne_bytes());
                         }
 
-                        // Wait until the parent signals us to exit.
+                        // Wait until the parent signals us to exit, or until the grandchild
+                        // exits: when its exec fails, Command::spawn() in the parent waits for
+                        // us before returning the error, so the parent can't signal.
                         if let Some(pipe) = pipe_wait_read {
                             // We're going to exit afterwards. Close all other FDs to allow
                             // Command::spawn() to return in the parent process.
@@ -319,6 +334,9 @@ mod systemd {
                                 closefrom(raw + 1);
                             }
 
+                            #[cfg(target_os = "linux")]
+                            wait_for_parent_or_exit(&pipe, grandchild_pid);
+                            #[cfg(not(target_os = "linux"))]
                             let _ = read_all(pipe, &mut [0]);
                         }
 
@@ -332,24 +350,20 @@ mod systemd {
             });
         }
 
-        let child = match process.spawn() {
-            Ok(child) => child,
-            Err(err) => {
-                warn!("error spawning {command:?}: {err:?}");
-                return None;
-            }
-        };
+        let child = process.spawn()?;
 
         drop(pipe_pid_write);
         drop(pipe_wait_read);
 
         // Wait for the grandchild PID.
+        let mut spawned = None;
         if let Some(pipe) = pipe_pid_read {
             let mut buf = [0; 4];
             match read_all(pipe, &mut buf) {
                 Ok(()) => {
                     let pid = i32::from_ne_bytes(buf);
                     trace!("spawned PID: {pid}");
+                    spawned = Some(pid as u32);
 
                     // Start a systemd scope for the grandchild.
                     if let Err(err) = start_systemd_scope(command, child.id(), pid as u32) {
@@ -367,7 +381,34 @@ mod systemd {
         trace!("signaling child to exit");
         drop(pipe_wait_write);
 
-        Some(child)
+        Ok((child, spawned))
+    }
+
+    /// Blocks until `pipe` is readable (the parent wrote or closed it) or `pid` exits.
+    #[cfg(target_os = "linux")]
+    fn wait_for_parent_or_exit(pipe: &OwnedFd, pid: libc::pid_t) {
+        unsafe {
+            let pidfd = libc::syscall(libc::SYS_pidfd_open, pid, 0) as libc::c_int;
+            if pidfd < 0 {
+                let _ = read_all(pipe, &mut [0]);
+                return;
+            }
+            let mut fds = [
+                libc::pollfd {
+                    fd: pipe.as_raw_fd(),
+                    events: libc::POLLIN,
+                    revents: 0,
+                },
+                libc::pollfd {
+                    fd: pidfd,
+                    events: libc::POLLIN,
+                    revents: 0,
+                },
+            ];
+            while libc::poll(fds.as_mut_ptr(), 2, -1) < 0
+                && io::Error::last_os_error().kind() == io::ErrorKind::Interrupted
+            {}
+        }
     }
 
     fn write_all(fd: impl AsFd, buf: &[u8]) -> rustix::io::Result<()> {
