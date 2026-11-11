@@ -860,6 +860,16 @@ fn media_players() {
             let media = client.media();
             let player0 = media.players(0);
             let playback = player0.playback();
+            let mut observed = playback
+                .observe_state(wire_weaver_client::observe::on_change(Duration::ZERO))
+                .subscribe()
+                .await
+                .unwrap();
+            let first = tokio::time::timeout(Duration::from_secs(5), observed.recv())
+                .await
+                .expect("the observed state comes at once")
+                .unwrap();
+            assert_eq!(first.value.status, PlaybackStatus::Playing);
             let state = playback.read_state().read().await.unwrap();
             assert_eq!(state.status, PlaybackStatus::Playing);
             assert_eq!(state.title.as_deref(), Some("A Song"));
@@ -899,6 +909,12 @@ fn media_players() {
                 }
                 other => panic!("expected PlaybackChanged, got {other:?}"),
             }
+            // Observers of the player's playback hear it too.
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while observed.recv().await.unwrap().value.status != PlaybackStatus::Paused {}
+            })
+            .await
+            .expect("observers get Paused");
 
             // No browser slot runs: its playback has no player.
             let slot = client.browsers(0);
@@ -909,6 +925,18 @@ fn media_players() {
 
             drop(player);
             assert_eq!(next().await, EventOwned::PlayerGone(PlayerId(0)));
+            // Its observers end with it.
+            tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    match observed.recv_event().await {
+                        Ok(wire_weaver_client::observe::ObserveEvent::Ended) => break,
+                        Err(err) => panic!("{err:?} before Ended"),
+                        Ok(_) => (),
+                    }
+                }
+            })
+            .await
+            .expect("the observer ends when the player goes");
             assert!(client.media().list().call().await.unwrap().is_empty());
             assert!(playback.pause().call().await.is_err());
         },
