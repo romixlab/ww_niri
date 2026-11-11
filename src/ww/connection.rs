@@ -57,6 +57,8 @@ enum Next {
     Ww(EventOwned),
     /// A queue was dropped for falling behind.
     Behind,
+    /// The default sink changed.
+    Audio,
 }
 
 pub async fn serve<D: WwHost>(
@@ -93,6 +95,8 @@ pub async fn serve<D: WwHost>(
     };
     let mut backend = Server::new(run.clone(), peer, services);
     let mut events = Events::Off;
+    let audio_changed = backend.audio.watch();
+    let mut observe_buf = vec![0u8; MAX_MESSAGE_LEN];
 
     loop {
         // Follow niri's events while the client has the stream open.
@@ -121,9 +125,21 @@ pub async fn serve<D: WwHost>(
                 let ww = pin!(async { ww.recv().await.map_or(Next::Behind, Next::Ww) });
                 select(niri, ww).await.factor_first().0
             });
-            match select(pin!(server.wait()), next_event).await {
+            let changed = pin!(async {
+                match audio_changed.recv().await {
+                    Ok(()) => Next::Audio,
+                    Err(_) => std::future::pending().await,
+                }
+            });
+            let next = select(next_event, changed);
+            // Observed properties: wake when one is due (a period, a held-back change).
+            let wake = backend
+                .observe
+                .next_wake(server.now().as_micros())
+                .map(ww_device::Instant::from_micros);
+            match select(pin!(server.wait_until(wake)), next).await {
                 Either::Left((ready, _)) => Either::Left(ready),
-                Either::Right((event, _)) => Either::Right(event),
+                Either::Right((next, _)) => Either::Right(next.factor_first().0),
             }
         };
         match step {
@@ -148,6 +164,12 @@ pub async fn serve<D: WwHost>(
                         out
                     }
                     Next::Ww(event) => vec![event],
+                    Next::Audio => {
+                        backend.mark_changed_audio_volume();
+                        backend.mark_changed_audio_muted();
+                        backend.mark_changed_audio_sink();
+                        Vec::new()
+                    }
                     Next::Behind => {
                         // A subscription was dropped, as niri does for any client too slow to
                         // read: subscribe again and have the client list again.
@@ -164,6 +186,12 @@ pub async fn serve<D: WwHost>(
                     }
                 }
             }
+        }
+        if server.is_up() {
+            let now = server.now().as_micros();
+            let _ = backend
+                .poll_properties(&mut server.sink(), (), now, &mut observe_buf)
+                .await;
         }
     }
 }

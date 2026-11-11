@@ -1044,6 +1044,8 @@ fn sink_changed(w: &mut std::os::unix::net::UnixStream) {
 
 #[test]
 fn audio_volume_and_mute() {
+    use wire_weaver_client::observe::on_change;
+
     let volume = |percent| ww_niri_api::Volume::try_new(percent).unwrap();
 
     let dir = Scratch::new("audio");
@@ -1051,46 +1053,56 @@ fn audio_volume_and_mute() {
     bench_with(Vec::new(), Settings::default(), None, Some(pulse.target())).run(
         async |client, _| {
             let audio = client.audio();
-            // The task connects on its own: wait until it has read the sink.
-            let sink = tokio::time::timeout(Duration::from_secs(5), async {
-                loop {
-                    if let Ok(sink) = audio.read_sink().read().await {
-                        break sink;
-                    }
-                    tokio::time::sleep(Duration::from_millis(10)).await;
-                }
-            })
-            .await
-            .expect("the audio service reads the sink");
+            let mut sinks = audio
+                .observe_sink(on_change(Duration::ZERO))
+                .subscribe()
+                .await
+                .unwrap();
+            let mut volumes = audio
+                .observe_volume(on_change(Duration::ZERO))
+                .subscribe()
+                .await
+                .unwrap();
+            let mut mutes = audio
+                .observe_muted(on_change(Duration::ZERO))
+                .subscribe()
+                .await
+                .unwrap();
+
+            // The task connects on its own; the sink comes once it has read it.
+            let sink = tokio::time::timeout(Duration::from_secs(5), sinks.recv())
+                .await
+                .expect("the audio service reads the sink")
+                .unwrap()
+                .value;
             assert_eq!(sink.name, "fake_sink");
             assert_eq!(sink.description, "Fake HDMI");
+            assert_eq!(audio.read_sink().read().await.unwrap(), sink);
             // The loudest channel.
             assert_eq!(audio.read_volume().read().await.unwrap(), volume(40));
             assert!(!audio.read_muted().read().await.unwrap());
 
-            // Each change comes back as a sink event, and the service reads the sink again.
-            let wait_for = async |muted: bool, percent: u16| {
+            // Each change comes back from the server as a sink event, the service reads the sink
+            // again and observers get the new value (a write may first send the old one).
+            async fn until<T: PartialEq + std::fmt::Debug>(
+                observer: &mut wire_weaver_client::observe::Observer<
+                    impl wire_weaver_client::observe::LevelUpdate,
+                    T,
+                >,
+                value: T,
+            ) {
                 tokio::time::timeout(Duration::from_secs(5), async {
-                    loop {
-                        let now = (
-                            audio.read_muted().read().await.unwrap(),
-                            audio.read_volume().read().await.unwrap(),
-                        );
-                        if now == (muted, volume(percent)) {
-                            break;
-                        }
-                        tokio::time::sleep(Duration::from_millis(10)).await;
-                    }
+                    while observer.recv().await.unwrap().value != value {}
                 })
                 .await
-                .expect("the change reaches the service")
-            };
+                .unwrap_or_else(|_| panic!("observers get {value:?}"))
+            }
             audio.write_volume(volume(125)).write().await.unwrap();
-            wait_for(false, 125).await;
+            until(&mut volumes, volume(125)).await;
             audio.write_muted(true).write().await.unwrap();
-            wait_for(true, 125).await;
+            until(&mut mutes, true).await;
             audio.write_muted(false).write().await.unwrap();
-            wait_for(false, 125).await;
+            until(&mut mutes, false).await;
             assert_eq!(
                 *pulse.calls.lock().unwrap(),
                 [
@@ -1100,8 +1112,10 @@ fn audio_volume_and_mute() {
                 ]
             );
 
+            // A change made elsewhere reaches observers too.
             pulse.mute_elsewhere();
-            wait_for(true, 125).await;
+            until(&mut mutes, true).await;
+            assert_eq!(audio.read_volume().read().await.unwrap(), volume(125));
 
             // Without the server there is nothing to read or set.
             pulse.hang_up();
