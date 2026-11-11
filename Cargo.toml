@@ -58,6 +58,7 @@ anyhow.workspace = true
 arrayvec = "0.7.8"
 async-channel = "2.5.0"
 async-io = { version = "2.6.0", optional = true }
+async-tungstenite = { version = "0.35", default-features = false, features = ["handshake", "futures-03-sink"], optional = true }
 atomic = "0.6.1"
 bitflags.workspace = true
 bytemuck = { version = "1.25.2", features = ["derive"] }
@@ -145,7 +146,7 @@ pkg-config = "0.3"
 default = ["dbus", "systemd", "xdp-gnome-screencast", "ww"]
 # Enables the WireWeaver control API server (ww_niri_api over WebSocket, configured in ww.kdl).
 # Needs systemd: its spawn hands back the launched app's pid.
-ww = ["systemd", "dep:exact_units", "dep:knuffel", "dep:wire_weaver", "dep:ww_client_server", "dep:ww_device", "dep:ww_niri_api", "dep:ww_stream"]
+ww = ["systemd", "dep:async-tungstenite", "dep:exact_units", "dep:knuffel", "dep:wire_weaver", "dep:ww_client_server", "dep:ww_device", "dep:ww_niri_api", "dep:ww_stream"]
 # Enables D-Bus support (serve various freedesktop and GNOME interfaces, accessibility tree, power button handling).
 dbus = ["dep:zbus", "dep:async-io", "dep:accesskit", "dep:accesskit_unix"]
 # Enables systemd integration (global environment, apps in transient scopes).

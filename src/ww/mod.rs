@@ -14,6 +14,7 @@ use calloop::{Interest, LoopHandle, Mode, PostAction, RegistrationToken};
 
 use crate::niri::State;
 
+mod bidi;
 mod clock;
 mod config;
 mod connection;
