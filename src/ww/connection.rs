@@ -79,7 +79,7 @@ pub async fn serve<D: WwHost>(
         &mut event_scratch,
     );
     let run = runner(handle);
-    let mut backend = Server::new(run.clone());
+    let mut backend = Server::new(run.clone(), peer);
     let mut events = Events::Off;
 
     loop {

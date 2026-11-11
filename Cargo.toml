@@ -144,7 +144,8 @@ pkg-config = "0.3"
 [features]
 default = ["dbus", "systemd", "xdp-gnome-screencast", "ww"]
 # Enables the WireWeaver control API server (ww_niri_api over WebSocket, configured in ww.kdl).
-ww = ["dep:exact_units", "dep:knuffel", "dep:wire_weaver", "dep:ww_client_server", "dep:ww_device", "dep:ww_niri_api", "dep:ww_stream"]
+# Needs systemd: its spawn hands back the launched app's pid.
+ww = ["systemd", "dep:exact_units", "dep:knuffel", "dep:wire_weaver", "dep:ww_client_server", "dep:ww_device", "dep:ww_niri_api", "dep:ww_stream"]
 # Enables D-Bus support (serve various freedesktop and GNOME interfaces, accessibility tree, power button handling).
 dbus = ["dep:zbus", "dep:async-io", "dep:accesskit", "dep:accesskit_unix"]
 # Enables systemd integration (global environment, apps in transient scopes).

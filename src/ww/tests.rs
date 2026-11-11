@@ -8,7 +8,8 @@ use std::time::Duration;
 use async_channel::{Receiver, Sender};
 use wire_weaver_client::{CallError, ClientConfig, Commander, WwClient};
 use ww_niri_api::{
-    EventOwned, OutputOwned, Transition, WindowError, WindowId, WindowOwned, WorkspaceId,
+    EventOwned, LaunchErrorOwned, OutputOwned, Transition, WindowError, WindowId, WindowOwned,
+    WorkspaceId,
 };
 
 use super::connection::serve;
@@ -267,5 +268,41 @@ fn events_follow_niri() {
             EventOwned::WindowFocusChanged(Some(WindowId(1)))
         );
         assert_eq!(next().await, EventOwned::WindowClosed(WindowId(1)));
+    });
+}
+
+#[test]
+fn apps_launch() {
+    bench(Vec::new()).run(async |client, _, _| {
+        // The launched shell writes its own pid: the one `launch` hands back.
+        let file = std::env::temp_dir().join(format!("ww-launch-{}", std::process::id()));
+        let script = format!("echo $$ > {}.tmp && mv {0}.tmp {0}", file.display());
+        let argv = ["sh", "-c", script.as_str()].map(String::from).to_vec();
+        let launched = client.apps().launch(argv).call().await.unwrap();
+
+        let written = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if let Ok(text) = std::fs::read_to_string(&file) {
+                    break text;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the launched shell writes its pid");
+        let _ = std::fs::remove_file(&file);
+        assert_eq!(written.trim(), launched.pid.to_string());
+
+        assert!(matches!(
+            client.apps().launch(Vec::new()).call().await,
+            Err(CallError::Device(LaunchErrorOwned::EmptyArgv))
+        ));
+        let missing = vec!["/nonexistent/ww-launch".to_owned()];
+        match client.apps().launch(missing).call().await {
+            Err(CallError::Device(LaunchErrorOwned::Spawn(err))) => {
+                assert!(err.contains("No such file"), "{err}")
+            }
+            other => panic!("{other:?}"),
+        }
     });
 }

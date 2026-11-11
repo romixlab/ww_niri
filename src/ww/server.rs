@@ -1,6 +1,8 @@
 //! Handlers of `ww_niri_api::WwNiri`, one [Server] per connection. Started from `ww api scaffold
 //! ww_niri_api --alloc --use-async`; handlers not done yet answer `Unimplemented`.
 
+use std::net::SocketAddr;
+
 use wire_weaver::prelude::*;
 
 use super::host::{call, Run, WwHost};
@@ -9,15 +11,17 @@ pub struct Server {
     /// Observed properties: what the client observes and when it is due.
     pub observe: api_impl::ObserveState,
     pub run: Run,
+    pub peer: SocketAddr,
     /// The client opened the `events` stream.
     pub events_open: bool,
 }
 
 impl Server {
-    pub fn new(run: Run) -> Self {
+    pub fn new(run: Run, peer: SocketAddr) -> Self {
         Self {
             observe: api_impl::ObserveState::new(Default::default()),
             run,
+            peer,
             events_open: false,
         }
     }
@@ -150,9 +154,36 @@ impl Server {
     async fn apps_launch(
         &mut self,
         _cx: &mut Context<'_, impl EventOut>,
-        _argv: Vec<String>,
+        argv: Vec<String>,
     ) -> RpcResult<Result<ww_niri_api::Launched, ww_niri_api::LaunchErrorOwned>> {
-        Unimplemented.into()
+        use ww_niri_api::{LaunchErrorOwned, Launched};
+
+        if argv.is_empty() {
+            return RpcResult::Ready(Err(LaunchErrorOwned::EmptyArgv));
+        }
+        // Any command runs: every launch is on record with who asked.
+        info!("ww: {} launches {argv:?}", self.peer);
+
+        // Spawning blocks for some milliseconds: off the loop.
+        let (tx, rx) = async_channel::bounded(1);
+        let spawned = std::thread::Builder::new()
+            .name("ww launch".to_owned())
+            .spawn(move || {
+                let _ = tx.try_send(crate::utils::spawning::spawn_with_pid(&argv));
+            });
+        let res = match spawned {
+            Ok(_) => rx.recv().await.unwrap_or_else(|_| Err(std::io::ErrorKind::Other.into())),
+            Err(err) => Err(err),
+        };
+        RpcResult::Ready(match res {
+            Ok(Some(pid)) => Ok(Launched { pid }),
+            // The `ww` feature enables `systemd`, whose spawn hands the pid back.
+            Ok(None) => Err(LaunchErrorOwned::Spawn("pid unknown".to_owned())),
+            Err(err) => {
+                debug!("ww: launch for {} failed: {err}", self.peer);
+                Err(LaunchErrorOwned::Spawn(err.to_string()))
+            }
+        })
     }
 
     // ---- ww_niri_api::Browser at browsers[] ----
