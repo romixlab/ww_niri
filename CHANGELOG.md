@@ -4,6 +4,8 @@ Changes of ww_niri on top of upstream niri. Upstream's own changes are in its re
 
 ## [Unreleased]
 
+## [26.5.0] - 2026-11-12
+
 ### Added
 
 - Control API: observed properties under the resource arrays (wire_weaver API-63). `browsers[i].state` follows the slot's phase, URL, window and window title, `browsers[i].playback.state` and `media.players[j].playback.state` follow the player's status, track, rate and capabilities (MPRIS `PropertiesChanged`); observers of a player that leaves the bus get `Ended`. Changes reach observers whether or not the client has the events stream open.
