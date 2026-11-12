@@ -27,6 +27,8 @@ pub trait WwNiri {
     ww_impl!(browsers[]: Browser);
     ww_impl!(media: Media);
     ww_impl!(audio: Audio);
+    /// Pointer and keyboard, injected through kernel uinput devices as real devices.
+    ww_impl!(input: Input);
 
     /// Windows, outputs, browsers and players coming and going, in order. After
     /// [Event::Resync] the client lists again.
@@ -212,6 +214,62 @@ pub struct Output<'i> {
     pub focused: bool,
 }
 
+#[ww_trait]
+pub trait Input {
+    ww_impl!(pointer: Pointer);
+    ww_impl!(keyboard: Keyboard);
+}
+
+#[ww_trait]
+pub trait Pointer {
+    /// Where the pointer is, and the window under it with the point in its own coordinates.
+    property!(ro position: PointerPosition);
+
+    /// Moves the pointer there.
+    fn move_to(to: Point) -> Result<(), InputError<'i>>;
+
+    /// Presses and releases `button` `count` times (2 is a double click, at most 3), at `at` when
+    /// given, else where the pointer is, with `modifiers` held around the clicks.
+    fn click(
+        at: Option<Point>,
+        button: Button,
+        count: u8,
+        modifiers: Modifiers,
+    ) -> Result<(), InputError<'i>>;
+
+    /// Holds a button down; it stays down until [Pointer::release] or the connection ends.
+    fn press(button: Button) -> Result<(), InputError<'i>>;
+    fn release(button: Button) -> Result<(), InputError<'i>>;
+
+    /// Presses at `from`, moves to `to` in steps over `duration`, releases there.
+    fn drag(
+        from: Point,
+        to: Point,
+        button: Button,
+        duration: Millis<u16>,
+    ) -> Result<(), InputError<'i>>;
+
+    /// Wheel notches, positive down and right, at `at` when given.
+    fn scroll(at: Option<Point>, dx: i16, dy: i16) -> Result<(), InputError<'i>>;
+}
+
+#[ww_trait]
+pub trait Keyboard {
+    /// Types the text with key presses of the configured keymap; nothing is typed when a
+    /// character is on no key.
+    fn type_text(text: &'i str) -> Result<(), InputError<'i>>;
+
+    /// A key or a combination, pressed in order and released in reverse: `Return`, `ctrl+l`,
+    /// `Ctrl+Shift+Tab`. The last part is an xkb keysym name, the others the modifiers ctrl,
+    /// shift, alt and super in any case.
+    fn press_keys(combo: &'i str) -> Result<(), InputError<'i>>;
+
+    /// Holds a key (a keysym name or a modifier) down; it stays down until [Keyboard::key_up] or
+    /// the connection ends.
+    fn key_down(key: &'i str) -> Result<(), InputError<'i>>;
+    fn key_up(key: &'i str) -> Result<(), InputError<'i>>;
+}
+
 /// An eased move, for [Windows::show].
 #[derive_shrink_wrap(
     borrowed,
@@ -340,6 +398,80 @@ pub enum Event<'i> {
     PlayerGone(PlayerId),
     /// The client fell behind and missed events: list everything again.
     Resync,
+}
+
+/// Logical pixels, as niri lays the outputs out.
+pub type Px = Fixed<Pixel, One, i32>;
+
+/// A point for the pointer.
+#[derive_shrink_wrap(borrowed, owned(feature = "std"), derive(Copy, Clone, Debug, PartialEq, Eq), ww_repr = unib32)]
+pub enum Point {
+    /// niri's global space: the outputs as laid out.
+    Global { x: Px, y: Px },
+    /// The window's own coordinates: (0, 0) is the top left of what it draws.
+    Window { id: WindowId, x: Px, y: Px },
+}
+
+#[derive_shrink_wrap(
+    borrowed,
+    owned(feature = "std"),
+    derive(Copy, Clone, Debug, PartialEq, Eq)
+)]
+pub struct WindowPoint {
+    pub id: WindowId,
+    pub x: Px,
+    pub y: Px,
+}
+
+#[derive_shrink_wrap(
+    borrowed,
+    owned(feature = "std"),
+    derive(Copy, Clone, Debug, PartialEq, Eq)
+)]
+pub struct PointerPosition {
+    pub x: Px,
+    pub y: Px,
+    /// The window under the pointer, and the point in its coordinates.
+    pub window: Option<WindowPoint>,
+}
+
+#[derive_shrink_wrap(borrowed, owned(feature = "std"), derive(Copy, Clone, Debug, PartialEq, Eq), ww_repr = unib32)]
+pub enum Button {
+    Left,
+    Right,
+    Middle,
+    Back,
+    Forward,
+}
+
+/// Modifiers held around a click.
+#[derive_shrink_wrap(
+    borrowed,
+    owned(feature = "std"),
+    derive(Copy, Clone, Debug, Default, PartialEq, Eq)
+)]
+pub struct Modifiers {
+    pub ctrl: bool,
+    pub shift: bool,
+    pub alt: bool,
+    pub super_key: bool,
+}
+
+#[derive_shrink_wrap(owned(feature = "std"), derive(Clone, Debug, PartialEq, Eq), ww_repr = unib32)]
+pub enum InputError<'i> {
+    NoSuchWindow,
+    /// The window is not on screen: another workspace, scrolled out, or the overview is open.
+    WindowNotVisible,
+    /// The point is on no output.
+    OffScreen,
+    /// Not a keysym name, or no key of the keymap makes it.
+    UnknownKey(&'i str),
+    /// A character on no key of the configured keymap, as a Unicode scalar value.
+    NotTypeable(u32),
+    /// `button` or `count` out of range.
+    BadArgument,
+    /// The input devices can't be made or written (no access to /dev/uinput).
+    Unavailable(&'i str),
 }
 
 #[derive_shrink_wrap(borrowed, owned(feature = "std"), derive(Copy, Clone, Debug, PartialEq, Eq), ww_repr = unib32)]

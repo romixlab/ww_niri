@@ -9,8 +9,11 @@ use ww_client_server::ResourceIndex;
 
 use super::host::{call, Run, WwHost};
 use super::hub::{Hub, Mark};
+use super::input::Input;
 use super::players::Action;
 use super::{Audio, Browsers, Players, Services};
+
+type InputRes = Result<(), ww_niri_api::InputErrorOwned>;
 
 pub struct Server {
     /// Observed properties: what the client observes and when it is due.
@@ -25,12 +28,15 @@ pub struct Server {
     player_ids: Vec<UNib32>,
     /// The client opened the `events` stream.
     pub events_open: bool,
+    /// What the client injects, and holds down.
+    pub input: Input,
 }
 
 impl Server {
     pub fn new(run: Run, peer: SocketAddr, services: Rc<Services>) -> Self {
         Self {
             observe: api_impl::ObserveState::new(Default::default()),
+            input: Input::new(run.clone(), services.io.clone()),
             run,
             peer,
             hub: services.hub.clone(),
@@ -664,6 +670,115 @@ impl Server {
             }),
             None => GetResult::GetError(audio_unavailable("no default sink")),
         }
+    }
+
+    // ---- ww_niri_api::Input at input ----
+
+    /// Where the pointer is, and the window under it with the point in its own coordinates.
+    async fn get_input_pointer_position(
+        &mut self,
+        _cx: &mut Context<'_, impl EventOut>,
+    ) -> GetResult<ww_niri_api::PointerPosition, ()> {
+        match self.input.position().await {
+            Some(position) => GetResult::Value(position),
+            None => GetResult::GetError(()),
+        }
+    }
+
+    async fn input_pointer_move_to(
+        &mut self,
+        _cx: &mut Context<'_, impl EventOut>,
+        to: ww_niri_api::Point,
+    ) -> RpcResult<InputRes> {
+        RpcResult::Ready(self.input.move_to(to).await)
+    }
+
+    async fn input_pointer_click(
+        &mut self,
+        _cx: &mut Context<'_, impl EventOut>,
+        at: Option<ww_niri_api::Point>,
+        button: ww_niri_api::Button,
+        count: u8,
+        modifiers: ww_niri_api::Modifiers,
+    ) -> RpcResult<InputRes> {
+        RpcResult::Ready(self.input.click(at, button, count, modifiers).await)
+    }
+
+    async fn input_pointer_press(
+        &mut self,
+        _cx: &mut Context<'_, impl EventOut>,
+        button: ww_niri_api::Button,
+    ) -> RpcResult<InputRes> {
+        RpcResult::Ready(self.input.button(button, true).await)
+    }
+
+    async fn input_pointer_release(
+        &mut self,
+        _cx: &mut Context<'_, impl EventOut>,
+        button: ww_niri_api::Button,
+    ) -> RpcResult<InputRes> {
+        RpcResult::Ready(self.input.button(button, false).await)
+    }
+
+    async fn input_pointer_drag(
+        &mut self,
+        _cx: &mut Context<'_, impl EventOut>,
+        from: ww_niri_api::Point,
+        to: ww_niri_api::Point,
+        button: ww_niri_api::Button,
+        duration: exact_units::Millis<u16>,
+    ) -> RpcResult<InputRes> {
+        let time = std::time::Duration::from_millis(u64::from(duration.get()));
+        RpcResult::Ready(self.input.drag(from, to, button, time).await)
+    }
+
+    async fn input_pointer_scroll(
+        &mut self,
+        _cx: &mut Context<'_, impl EventOut>,
+        at: Option<ww_niri_api::Point>,
+        dx: i16,
+        dy: i16,
+    ) -> RpcResult<InputRes> {
+        RpcResult::Ready(self.input.scroll(at, dx, dy).await)
+    }
+
+    async fn input_keyboard_type_text(
+        &mut self,
+        _cx: &mut Context<'_, impl EventOut>,
+        text: String,
+    ) -> RpcResult<InputRes> {
+        // The text may be a password: its length only.
+        info!(
+            "ww: {} types {} characters",
+            self.peer,
+            text.chars().count()
+        );
+        RpcResult::Ready(self.input.type_text(&text).await)
+    }
+
+    async fn input_keyboard_press_keys(
+        &mut self,
+        _cx: &mut Context<'_, impl EventOut>,
+        combo: String,
+    ) -> RpcResult<InputRes> {
+        info!("ww: {} presses {combo}", self.peer);
+        RpcResult::Ready(self.input.press_keys(&combo).await)
+    }
+
+    async fn input_keyboard_key_down(
+        &mut self,
+        _cx: &mut Context<'_, impl EventOut>,
+        key: String,
+    ) -> RpcResult<InputRes> {
+        RpcResult::Ready(self.input.key_updown(&key, true).await)
+    }
+
+    async fn input_keyboard_key_up(
+        &mut self,
+        _cx: &mut Context<'_, impl EventOut>,
+        key: String,
+    ) -> RpcResult<InputRes> {
+        RpcResult::Ready(self.input.key_updown(&key, false).await)
     }
 
     /// Settings and send state of observed properties, for `Observe` requests and `poll_properties`.

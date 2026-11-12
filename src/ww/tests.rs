@@ -11,14 +11,15 @@ use std::time::Duration;
 use async_channel::{Receiver, Sender};
 use wire_weaver_client::{CallError, ClientConfig, Commander, WwClient};
 use ww_niri_api::{
-    EventOwned, LaunchErrorOwned, MediaErrorOwned, OutputOwned, Transition, WindowError, WindowId,
-    WindowOwned, WorkspaceId,
+    EventOwned, InputErrorOwned, LaunchErrorOwned, MediaErrorOwned, OutputOwned, Transition,
+    WindowError, WindowId, WindowOwned, WorkspaceId,
 };
 
 use super::audio::Target;
 use super::browsers::{LoopIo, Settings};
 use super::connection::serve;
 use super::host::WwHost;
+use super::input::{Key, Op};
 use super::Services;
 
 struct NiriClient {
@@ -147,6 +148,66 @@ impl WwHost for FakeHost {
         hub.subscribers.push(tx);
         Some(rx)
     }
+
+    // A 1920x1080 output at (0, 0); window 7 at (100, 50); the pointer at (10, 20); keys: a
+    // keycode per keysym, Shift with upper case letters.
+    fn input_devices(&mut self) -> Result<bool, String> {
+        Ok(true)
+    }
+
+    fn inject(&mut self, ops: &[Op]) -> Result<(), InputErrorOwned> {
+        for op in ops {
+            if let Op::Motion { x, y } = *op {
+                if !self.on_screen(x, y) {
+                    return Err(InputErrorOwned::OffScreen);
+                }
+            }
+        }
+        let mut calls = self.fake.calls.lock().unwrap();
+        calls.extend(ops.iter().map(|op| format!("{op:?}")));
+        Ok(())
+    }
+
+    fn on_screen(&mut self, x: f64, y: f64) -> bool {
+        (0. ..1920.).contains(&x) && (0. ..1080.).contains(&y)
+    }
+
+    fn window_point(&mut self, id: u64, x: f64, y: f64) -> Result<(f64, f64), InputErrorOwned> {
+        match id {
+            7 => Ok((100. + x, 50. + y)),
+            8 => Err(InputErrorOwned::WindowNotVisible),
+            _ => Err(InputErrorOwned::NoSuchWindow),
+        }
+    }
+
+    fn pointer_position(&mut self) -> ww_niri_api::PointerPosition {
+        ww_niri_api::PointerPosition {
+            x: 110.into(),
+            y: 70.into(),
+            window: Some(ww_niri_api::WindowPoint {
+                id: WindowId(7),
+                x: 10.into(),
+                y: 20.into(),
+            }),
+        }
+    }
+
+    fn key_for(&mut self, keysym: u32) -> Option<Key> {
+        use smithay::input::keyboard::Keysym;
+
+        let sym = Keysym::new(keysym);
+        if sym == Keysym::Shift_L {
+            return Some(Key {
+                code: 50,
+                shift: false,
+            });
+        }
+        let ch = sym.key_char().filter(|c| c.is_ascii())?;
+        Some(Key {
+            code: u32::from(ch.to_ascii_lowercase()),
+            shift: ch.is_ascii_uppercase(),
+        })
+    }
 }
 
 struct Bench {
@@ -265,6 +326,183 @@ fn info_over_websocket() {
         let info = client.info().call().await.unwrap();
         assert_eq!(info.ww_niri_version, env!("CARGO_PKG_VERSION"));
         assert!(!info.niri_version.is_empty());
+    });
+}
+
+/// The device's error of a call that should fail with one.
+fn device_err<T: std::fmt::Debug, E: std::fmt::Debug>(res: Result<T, CallError<E>>) -> E {
+    match res {
+        Err(CallError::Device(err)) => err,
+        other => panic!("expected a device error, got {other:?}"),
+    }
+}
+
+#[test]
+fn input_pointer_and_keyboard() {
+    use exact_units::Millis;
+    use ww_niri_api::{Button, Modifiers, Point};
+
+    bench(Vec::new()).run(async |client, fake| {
+        let taken = || std::mem::take(&mut *fake.calls.lock().unwrap());
+        {
+            let input = client.input();
+            let (pointer, keyboard) = (input.pointer(), input.keyboard());
+            let window = |x: i32, y: i32| Point::Window {
+                id: WindowId(7),
+                x: x.into(),
+                y: y.into(),
+            };
+
+            pointer.move_to(window(10, 20)).call().await.unwrap();
+            assert_eq!(taken(), ["Motion { x: 110.0, y: 70.0 }"]);
+            let position = pointer.read_position().read().await.unwrap();
+            assert_eq!(position.window.unwrap().x.get(), 10);
+
+            // A double click with ctrl held around it.
+            let ctrl = Modifiers {
+                ctrl: true,
+                ..Modifiers::default()
+            };
+            pointer
+                .click(None, Button::Left, 2, ctrl)
+                .call()
+                .await
+                .unwrap_err();
+            // The fake keymap has no Control_L: nothing went in.
+            assert_eq!(taken(), Vec::<String>::new());
+            pointer
+                .click(Some(window(0, 0)), Button::Right, 2, Modifiers::default())
+                .call()
+                .await
+                .unwrap();
+            let (down, up) = (
+                "Button { code: 273, pressed: true }",
+                "Button { code: 273, pressed: false }",
+            );
+            assert_eq!(
+                taken(),
+                ["Motion { x: 100.0, y: 50.0 }", down, up, down, up]
+            );
+
+            for (point, err) in [
+                (
+                    Point::Global {
+                        x: 5000.into(),
+                        y: 0.into(),
+                    },
+                    InputErrorOwned::OffScreen,
+                ),
+                (
+                    Point::Window {
+                        id: WindowId(8),
+                        x: 0.into(),
+                        y: 0.into(),
+                    },
+                    InputErrorOwned::WindowNotVisible,
+                ),
+                (
+                    Point::Window {
+                        id: WindowId(9),
+                        x: 0.into(),
+                        y: 0.into(),
+                    },
+                    InputErrorOwned::NoSuchWindow,
+                ),
+            ] {
+                assert_eq!(device_err(pointer.move_to(point).call().await), err);
+            }
+            assert!(matches!(
+                pointer
+                    .click(None, Button::Left, 4, Modifiers::default())
+                    .call()
+                    .await,
+                Err(CallError::Device(InputErrorOwned::BadArgument))
+            ));
+
+            pointer.scroll(None, 0, -2).call().await.unwrap();
+            assert_eq!(taken(), ["Wheel { dx: 0.0, dy: -240.0 }"]);
+
+            // A drag moves in steps over its time and ends where it was asked to.
+            pointer
+                .drag(window(0, 0), window(100, 0), Button::Left, Millis::new(64))
+                .call()
+                .await
+                .unwrap();
+            let steps = taken();
+            assert_eq!(
+                steps[..2],
+                [
+                    "Motion { x: 100.0, y: 50.0 }",
+                    "Button { code: 272, pressed: true }"
+                ]
+            );
+            assert_eq!(steps.len(), 2 + 4 + 1);
+            assert_eq!(steps[5], "Motion { x: 200.0, y: 50.0 }");
+            assert_eq!(steps[6], "Button { code: 272, pressed: false }");
+
+            // Shift around the upper case letter.
+            keyboard.type_text("aB".to_owned()).call().await.unwrap();
+            assert_eq!(
+                taken(),
+                [
+                    "Key { code: 97, pressed: true }",
+                    "Key { code: 97, pressed: false }",
+                    "Key { code: 50, pressed: true }",
+                    "Key { code: 98, pressed: true }",
+                    "Key { code: 98, pressed: false }",
+                    "Key { code: 50, pressed: false }",
+                ]
+            );
+            // Nothing typed when one character has no key.
+            assert_eq!(
+                device_err(keyboard.type_text("aж".to_owned()).call().await),
+                InputErrorOwned::NotTypeable(u32::from('ж'))
+            );
+            assert_eq!(taken(), Vec::<String>::new());
+
+            keyboard
+                .press_keys("shift+x".to_owned())
+                .call()
+                .await
+                .unwrap();
+            assert_eq!(
+                taken(),
+                [
+                    "Key { code: 50, pressed: true }",
+                    "Key { code: 120, pressed: true }",
+                    "Key { code: 120, pressed: false }",
+                    "Key { code: 50, pressed: false }",
+                ]
+            );
+            assert_eq!(
+                device_err(keyboard.press_keys("hyper+x".to_owned()).call().await),
+                InputErrorOwned::UnknownKey("hyper".to_owned())
+            );
+
+            // What a connection holds goes up when it ends.
+            keyboard.key_down("x".to_owned()).call().await.unwrap();
+            pointer.press(Button::Middle).call().await.unwrap();
+            taken();
+        }
+        drop(client);
+        let released = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let calls = fake.calls.lock().unwrap().clone();
+                if !calls.is_empty() {
+                    break calls;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("released when the connection ends");
+        assert_eq!(
+            released,
+            [
+                "Button { code: 274, pressed: false }",
+                "Key { code: 120, pressed: false }",
+            ]
+        );
     });
 }
 
@@ -1449,5 +1687,175 @@ fn live_screen() {
         for slot in [&page, &tv] {
             slot.stop().with_timeout(long).call().await.unwrap();
         }
+    });
+}
+
+/// The page of `live_input`: one text field over the whole window, and the last pointer or text
+/// event in the title, which the slot's state reports.
+const INPUT_PAGE: &str = r#"<!doctype html><title>ready</title>
+<style>html,body{margin:0;height:100%}input{position:fixed;inset:0;width:100%;height:100%;border:0;font-size:40px}</style>
+<form action="/done"><input name="q" autocomplete="off"></form>
+<script>
+const i = document.querySelector("input"), t = s => document.title = s;
+let down = null;
+addEventListener("mousedown", e => { down = [e.clientX, e.clientY]; });
+addEventListener("mouseup", e => {
+  if (down && Math.hypot(e.clientX - down[0], e.clientY - down[1]) > 5)
+    { t(`drag ${down[0]} ${down[1]} ${e.clientX} ${e.clientY}`); down = "dragged"; }
+});
+addEventListener("click", e => { if (down !== "dragged") t(`click ${e.button} ${e.clientX} ${e.clientY}`); down = null; });
+addEventListener("dblclick", e => t(`dblclick ${e.clientX} ${e.clientY}`));
+addEventListener("contextmenu", e => { e.preventDefault(); t(`context ${e.clientX} ${e.clientY}`); });
+addEventListener("wheel", e => t(`wheel ${Math.sign(e.deltaY)}`));
+i.addEventListener("input", () => t(`text ${i.value}`));
+</script>"#;
+
+/// A running ww_niri with a screen: `WW_NIRI_URL=ws://ADDR:7590/ww` and `WW_NIRI_LIVE_INPUT=1`
+/// serve [INPUT_PAGE] on the niri host (python3 there, started through `apps.launch`: the host
+/// may not reach the test's PC), open it in browser slot 0, then click, double click, right
+/// click, scroll, drag and type into it and read each back from the page's title. Screenshots
+/// to `/tmp/ww-input-*.png` there, as `live_screen` takes them.
+#[test]
+fn live_input() {
+    use exact_units::Millis;
+    use ww_niri_api::{Button, Modifiers, Point};
+
+    let (Some(url), Some(_)) = (
+        std::env::var_os("WW_NIRI_URL"),
+        std::env::var_os("WW_NIRI_LIVE_INPUT"),
+    ) else {
+        eprintln!("live_input: skipped, set WW_NIRI_URL and WW_NIRI_LIVE_INPUT=1 to run against a running niri");
+        return;
+    };
+    let url = url.into_string().unwrap();
+    let niri = std::env::var("WW_NIRI_BIN").unwrap_or_else(|_| "niri".to_owned());
+    let port = 8799;
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        let client = NiriClient::config(|c| c.websocket_url(url.clone()))
+            .connect()
+            .await
+            .unwrap();
+        let long = Duration::from_secs(60);
+        let launch = async |argv: Vec<String>| client.apps().launch(argv).call().await.unwrap();
+        let screenshot = async |name: &str| {
+            let path = format!("/tmp/ww-input-{name}.png");
+            let argv = [&niri, "msg", "action", "screenshot-screen", "--path", &path];
+            launch(argv.map(|s| s.to_string()).to_vec()).await;
+        };
+
+        let server = format!(
+            "import http.server\nP={:?}.encode()\nclass H(http.server.BaseHTTPRequestHandler):\n def do_GET(s):\n  s.send_response(200); s.send_header('Content-Type', 'text/html'); s.end_headers(); s.wfile.write(P)\n def log_message(*a): pass\nhttp.server.HTTPServer(('127.0.0.1', {port}), H).serve_forever()\n",
+            INPUT_PAGE
+        );
+        let server = launch(vec!["python3".into(), "-c".into(), server]).await;
+
+        let slot = client.browsers(0);
+        slot.start(true).with_timeout(long).call().await.unwrap();
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        slot.open(format!("http://127.0.0.1:{port}/"))
+            .with_timeout(long)
+            .call()
+            .await
+            .unwrap();
+        slot.show(None, Some(true)).call().await.unwrap();
+
+        // Waits until the page's title starts with `want`.
+        let title = async |want: &str| {
+            let got = tokio::time::timeout(Duration::from_secs(10), async {
+                loop {
+                    let state = slot.read_state().read().await.unwrap();
+                    let title = state.title.unwrap_or_default();
+                    if title.starts_with(want) {
+                        break title;
+                    }
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+            })
+            .await;
+            match got {
+                Ok(title) => eprintln!("title: {title}"),
+                Err(_) => panic!(
+                    "the page's title starts with {want:?}; it is {:?}",
+                    slot.read_state().read().await.unwrap().title
+                ),
+            }
+        };
+        title("ready").await;
+        let window = slot.read_state().read().await.unwrap().window.unwrap();
+        let at = |x: i32, y: i32| Point::Window {
+            id: window,
+            x: x.into(),
+            y: y.into(),
+        };
+        let input = client.input();
+        let (pointer, keyboard) = (input.pointer(), input.keyboard());
+        let none = Modifiers::default();
+
+        pointer.move_to(at(300, 200)).call().await.unwrap();
+        let position = pointer.read_position().read().await.unwrap();
+        eprintln!("position: {position:?}");
+
+        pointer
+            .click(Some(at(300, 200)), Button::Left, 1, none)
+            .call()
+            .await
+            .unwrap();
+        title("click 0 300 200").await;
+        screenshot("1-clicked").await;
+        pointer
+            .click(Some(at(500, 250)), Button::Left, 2, none)
+            .call()
+            .await
+            .unwrap();
+        title("dblclick 500 250").await;
+        pointer
+            .click(Some(at(400, 300)), Button::Right, 1, none)
+            .call()
+            .await
+            .unwrap();
+        title("context 400 300").await;
+        pointer.scroll(None, 0, 1).call().await.unwrap();
+        title("wheel 1").await;
+        pointer
+            .drag(at(100, 100), at(600, 400), Button::Left, Millis::new(300))
+            .call()
+            .await
+            .unwrap();
+        title("drag 100 100 600 400").await;
+
+        // The drag selected nothing worth keeping: select all, then type over it.
+        pointer
+            .click(Some(at(300, 200)), Button::Left, 1, none)
+            .call()
+            .await
+            .unwrap();
+        keyboard.press_keys("ctrl+a".to_owned()).call().await.unwrap();
+        keyboard
+            .type_text("Hello, ww_niri! 42".to_owned())
+            .call()
+            .await
+            .unwrap();
+        title("text Hello, ww_niri! 42").await;
+        screenshot("2-typed").await;
+        keyboard.press_keys("Return".to_owned()).call().await.unwrap();
+        let sent = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let url = slot.read_state().read().await.unwrap().url.unwrap_or_default();
+                if url.contains("/done?q=") {
+                    break url;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .expect("Return sends the form");
+        assert!(sent.ends_with("q=Hello%2C+ww_niri%21+42"), "{sent}");
+
+        slot.stop().with_timeout(long).call().await.unwrap();
+        launch(vec!["kill".into(), server.pid.to_string()]).await;
     });
 }

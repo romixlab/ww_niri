@@ -6,7 +6,9 @@ use std::rc::Rc;
 
 use async_channel::Receiver;
 use calloop::LoopHandle;
-use ww_niri_api::{OutputOwned, Transition, WindowOwned};
+use ww_niri_api::{InputErrorOwned, OutputOwned, PointerPosition, Transition, WindowOwned};
+
+use super::input::{Key, Op};
 
 pub trait WwHost: 'static {
     fn windows(&mut self) -> Vec<WindowOwned>;
@@ -30,6 +32,17 @@ pub trait WwHost: 'static {
     /// niri's IPC event stream, without the replay of the current state; `None` when niri runs
     /// without IPC.
     fn subscribe_events(&mut self) -> Option<Receiver<niri_ipc::Event>>;
+
+    /// Creates the input devices when missing; whether the compositor has them yet.
+    fn input_devices(&mut self) -> Result<bool, String>;
+    /// Injects the steps in order; a motion off every output refuses them all.
+    fn inject(&mut self, ops: &[Op]) -> Result<(), InputErrorOwned>;
+    fn on_screen(&mut self, x: f64, y: f64) -> bool;
+    /// A point of the window's surface in global space.
+    fn window_point(&mut self, id: u64, x: f64, y: f64) -> Result<(f64, f64), InputErrorOwned>;
+    fn pointer_position(&mut self) -> PointerPosition;
+    /// The key of the configured keymap that makes the keysym.
+    fn key_for(&mut self, keysym: u32) -> Option<Key>;
 }
 
 /// Runs a closure on the loop with the host.
@@ -77,9 +90,12 @@ pub fn animation(transition: Transition) -> niri_config::Animation {
 mod niri_state {
     use smithay::desktop::Window;
     use smithay::output::Output;
-    use ww_niri_api::{OutputOwned, Transition, WindowId, WindowOwned, WorkspaceId};
+    use ww_niri_api::{
+        InputErrorOwned, OutputOwned, PointerPosition, Transition, WindowId, WindowOwned,
+        WorkspaceId,
+    };
 
-    use super::WwHost;
+    use super::{Key, Op, WwHost};
     use crate::layout::LayoutElement as _;
     use crate::niri::State;
     use crate::utils::with_toplevel_role;
@@ -209,6 +225,30 @@ mod niri_state {
 
         fn subscribe_events(&mut self) -> Option<async_channel::Receiver<niri_ipc::Event>> {
             Some(self.niri.ipc_server.as_ref()?.subscribe_internal())
+        }
+
+        fn input_devices(&mut self) -> Result<bool, String> {
+            self.ww_input_devices()
+        }
+
+        fn inject(&mut self, ops: &[Op]) -> Result<(), InputErrorOwned> {
+            self.ww_inject(ops)
+        }
+
+        fn on_screen(&mut self, x: f64, y: f64) -> bool {
+            self.ww_on_screen(x, y)
+        }
+
+        fn window_point(&mut self, id: u64, x: f64, y: f64) -> Result<(f64, f64), InputErrorOwned> {
+            self.ww_window_point(id, x, y)
+        }
+
+        fn pointer_position(&mut self) -> PointerPosition {
+            self.ww_pointer_position()
+        }
+
+        fn key_for(&mut self, keysym: u32) -> Option<Key> {
+            self.ww_key_for(keysym)
         }
     }
 }

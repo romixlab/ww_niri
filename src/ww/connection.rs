@@ -220,6 +220,8 @@ pub async fn serve<D: WwHost>(
                 .await;
         }
     }
+    // Nothing the client held down stays down.
+    backend.input.release_all().await;
 }
 
 /// The API's events for one of niri's; most of niri's have no counterpart.

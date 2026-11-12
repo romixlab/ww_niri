@@ -4,6 +4,10 @@ Changes of ww_niri on top of upstream niri. Upstream's own changes are in its re
 
 ## [Unreleased]
 
+### Added
+
+- Control API: `input.pointer` and `input.keyboard` (P2618#12nov-1548). Move the pointer to a point in global or window-local coordinates, click (any button, double click, modifiers held), press and release, drag, scroll, read where the pointer is and the window under it; type text, press keys and combinations (`ctrl+l`), hold keys. The input goes in below niri, through a keyboard and an absolute pointer that niri makes as kernel uinput devices on first use, so libinput, xkb, niri's binds and the apps see real devices. Needs write access to `/dev/uinput` (else `Unavailable`). Buttons and keys a connection holds are released when it ends. Text outside the configured keymap answers `NotTypeable`.
+
 ## [26.6.0] - 2026-11-17
 
 ### Changed

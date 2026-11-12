@@ -96,3 +96,59 @@ fn host_show_uses_transition() {
     assert_eq!(idx, active as f64);
     assert!(!f.niri().layout.are_animations_ongoing(None));
 }
+
+#[test]
+fn host_window_points_and_pointer() {
+    use smithay::utils::Point;
+    use ww_niri_api::InputErrorOwned;
+
+    let mut f = Fixture::new();
+    f.add_output(1, (1920, 1080));
+    let id = f.add_client();
+    for _ in 0..2 {
+        let window = f.client(id).create_window();
+        let surface = window.surface.clone();
+        window.commit();
+        f.roundtrip(id);
+        let window = f.client(id).window(&surface);
+        window.attach_new_buffer();
+        window.set_size(300, 200);
+        window.ack_last_and_commit();
+        f.double_roundtrip(id);
+    }
+    let ids: Vec<u64> = f.niri_state().windows().iter().map(|w| w.id.0).collect();
+
+    // A window point is where niri finds that window, at that point of its surface.
+    let mut seen = Vec::new();
+    for &window in &ids {
+        let state = f.niri_state();
+        let (x, y) = state.window_point(window, 5., 7.).unwrap();
+        assert!(state.on_screen(x, y), "window {window} at ({x}, {y})");
+        seen.push(x);
+
+        state
+            .niri
+            .seat
+            .get_pointer()
+            .unwrap()
+            .set_location(Point::from((x, y)));
+        let position = state.pointer_position();
+        let under = position.window.expect("a window under the pointer");
+        assert_eq!(under.id.0, window);
+        assert_eq!((under.x.get(), under.y.get()), (5, 7));
+    }
+    // Side by side, not on top of each other.
+    assert_ne!(seen[0], seen[1]);
+
+    let state = f.niri_state();
+    assert_eq!(
+        state.window_point(9999, 0., 0.),
+        Err(InputErrorOwned::NoSuchWindow)
+    );
+    assert!(!state.on_screen(5000., 0.));
+    // The configured keymap (us) has the keys.
+    let a = state
+        .key_for(smithay::input::keyboard::Keysym::A.raw())
+        .unwrap();
+    assert!(a.shift);
+}

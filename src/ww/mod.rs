@@ -24,11 +24,13 @@ mod config;
 mod connection;
 mod host;
 mod hub;
+mod input;
 mod players;
 mod server;
 mod socket;
 #[cfg(test)]
 mod tests;
+mod uinput;
 
 pub use audio::Audio;
 pub use browsers::Browsers;
@@ -44,6 +46,8 @@ pub struct WwServer {
     config: WwConfig,
     listener: Option<(SocketAddr, RegistrationToken)>,
     services: Rc<Services>,
+    /// The keyboard and pointer of `input`, made on first use.
+    pub uinput: Option<uinput::Uinput>,
 }
 
 /// What every connection shares: the ww side's events, the browser slots, the players and the
@@ -53,6 +57,8 @@ pub struct Services {
     pub browsers: Rc<Browsers>,
     pub players: Rc<Players>,
     pub audio: Rc<Audio>,
+    /// Timeouts for the handlers, as injected drags take steps.
+    pub io: Rc<browsers::LoopIo>,
 }
 
 impl Services {
@@ -79,6 +85,7 @@ impl Services {
             browsers,
             players,
             audio: Audio::new(),
+            io: Rc::new(browsers::LoopIo::new(handle.clone())),
         })
     }
 }
@@ -120,6 +127,7 @@ impl WwServer {
             config,
             listener: None,
             services,
+            uinput: None,
         };
         ww.reload(event_loop);
 
