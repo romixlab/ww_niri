@@ -1739,6 +1739,12 @@ fn live_input() {
             .connect()
             .await
             .unwrap();
+        // Without an output no window is on screen: say so before anything starts.
+        let outputs = client.outputs().list().call().await.unwrap();
+        assert!(
+            !outputs.is_empty(),
+            "live_input needs a connected output (is the screen on?)"
+        );
         let long = Duration::from_secs(60);
         let launch = async |argv: Vec<String>| client.apps().launch(argv).call().await.unwrap();
         let screenshot = async |name: &str| {
