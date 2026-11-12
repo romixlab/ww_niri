@@ -4,6 +4,8 @@ Changes of ww_niri on top of upstream niri. Upstream's own changes are in its re
 
 ## [Unreleased]
 
+## [26.5.1] - 2026-11-12
+
 ### Fixed
 
 - Control API: `browsers[i].open` no longer overwrites a newer URL the browser reported while the call was answered (a redirect, a link followed at once), and observers of `browsers[i].state` now hear the URL `open` sets. Seen as `browser_slot_lifecycle` failing about every other full test run in the build container.
