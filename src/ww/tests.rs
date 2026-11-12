@@ -1339,3 +1339,115 @@ fn live_actions() {
         }
     });
 }
+
+/// A running ww_niri on a screen: `WW_NIRI_URL=ws://ADDR:7590/ww` and
+/// `WW_NIRI_LIVE_SCREEN=VIDEO_URL` show two browser slots in turn with a slow transition, play
+/// the video in slot 1 and follow its observed playback, then pause it and stop both slots.
+/// Screenshots go to `/tmp/ww-screen-*.png` on the niri host, taken by `WW_NIRI_BIN` (default
+/// `niri`) started through `apps.launch`.
+#[test]
+fn live_screen() {
+    use exact_units::Millis;
+    use ww_niri_api::{BrowserPhase, Curve, PlaybackStatus};
+
+    let (Some(url), Some(video)) = (
+        std::env::var_os("WW_NIRI_URL"),
+        std::env::var_os("WW_NIRI_LIVE_SCREEN"),
+    ) else {
+        eprintln!("live_screen: skipped, set WW_NIRI_URL and WW_NIRI_LIVE_SCREEN=VIDEO_URL to run against a running niri");
+        return;
+    };
+    let url = url.into_string().unwrap();
+    let video = video.into_string().unwrap();
+    let niri = std::env::var("WW_NIRI_BIN").unwrap_or_else(|_| "niri".to_owned());
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        let client = NiriClient::config(|c| c.websocket_url(url.clone()))
+            .connect()
+            .await
+            .unwrap();
+        let screenshot = async |name: &str| {
+            let path = format!("/tmp/ww-screen-{name}.png");
+            let argv = [&niri, "msg", "action", "screenshot-screen", "--path", &path];
+            let argv = argv.map(|s| s.to_string()).to_vec();
+            client.apps().launch(argv).call().await.unwrap();
+            eprintln!("screenshot: {path}");
+        };
+        let long = Duration::from_secs(60);
+
+        let (page, tv) = (client.browsers(0), client.browsers(1));
+        page.start(true).with_timeout(long).call().await.unwrap();
+        page.open("https://example.org/".to_owned())
+            .with_timeout(long)
+            .call()
+            .await
+            .unwrap();
+        tv.start(true).with_timeout(long).call().await.unwrap();
+        tv.open(video).with_timeout(long).call().await.unwrap();
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        for window in client.windows().list().call().await.unwrap() {
+            eprintln!("window: {window:?}");
+        }
+        tv.show(None, None).call().await.unwrap();
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        screenshot("1-video").await;
+
+        // 4 s linear: halfway is half of each window on screen.
+        let transition = ww_niri_api::Transition {
+            duration: Millis::new(4000),
+            curve: Curve::Linear,
+        };
+        page.show(Some(transition), None).call().await.unwrap();
+        tokio::time::sleep(Duration::from_millis(2000)).await;
+        screenshot("2-halfway").await;
+        tokio::time::sleep(Duration::from_millis(3000)).await;
+        screenshot("3-page").await;
+        tv.show(Some(transition), None).call().await.unwrap();
+        tokio::time::sleep(Duration::from_millis(5000)).await;
+
+        // The slot's player, observed while it plays and once paused.
+        let playback = tv.playback();
+        if playback.read_state().read().await.is_err() {
+            eprintln!("no player yet (autoplay blocked?): play()");
+        }
+        let _ = playback.play().call().await;
+        let state = tv.read_state().read().await.unwrap();
+        eprintln!("slot 1: {state:?}");
+        assert_eq!(state.phase, BrowserPhase::Running);
+        let player = state.player.expect("slot 1 has a player");
+        let mut observed = client
+            .media()
+            .players(player.0)
+            .playback()
+            .observe_state(wire_weaver_client::observe::on_change(Duration::ZERO))
+            .subscribe()
+            .await
+            .unwrap();
+        let mut until = async |status: PlaybackStatus| {
+            tokio::time::timeout(Duration::from_secs(10), async {
+                loop {
+                    let state = observed.recv().await.unwrap().value;
+                    eprintln!("players[{}].playback.state: {state:?}", player.0);
+                    if state.status == status {
+                        break;
+                    }
+                }
+            })
+            .await
+            .unwrap_or_else(|_| panic!("observers get {status:?}"));
+        };
+        until(PlaybackStatus::Playing).await;
+        screenshot("4-playing").await;
+        playback.pause().call().await.unwrap();
+        until(PlaybackStatus::Paused).await;
+        screenshot("5-paused").await;
+        tokio::time::sleep(Duration::from_secs(1)).await;
+
+        for slot in [&page, &tv] {
+            slot.stop().with_timeout(long).call().await.unwrap();
+        }
+    });
+}
