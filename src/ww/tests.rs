@@ -494,11 +494,21 @@ fn browser_slot_lifecycle() {
             .await
             .unwrap();
         let mut until = async |what: &str, ok: &dyn Fn(&ww_niri_api::BrowserStateOwned) -> bool| {
-            tokio::time::timeout(Duration::from_secs(5), async {
-                while !ok(&phases.recv().await.unwrap().value) {}
+            let mut seen = Vec::new();
+            let got = tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    let state = phases.recv().await.unwrap().value;
+                    let done = ok(&state);
+                    seen.push(state);
+                    if done {
+                        break;
+                    }
+                }
             })
-            .await
-            .unwrap_or_else(|_| panic!("observers get {what}"))
+            .await;
+            if got.is_err() {
+                panic!("observers get {what}; they got {seen:#?}");
+            }
         };
         until("Stopped", &|s| s.phase == BrowserPhase::Stopped).await;
 

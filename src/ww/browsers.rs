@@ -129,6 +129,8 @@ struct Running {
     /// The slot's tab: its top-level browsing context.
     context: Option<String>,
     url: Option<String>,
+    /// Counts the URLs the browser reported, so `open` won't overwrite a newer one.
+    url_seq: u64,
     /// Its window has mapped.
     window: bool,
     stopping: bool,
@@ -312,6 +314,7 @@ impl Browsers {
                 bidi: None,
                 context: None,
                 url: Some("about:blank".to_owned()),
+                url_seq: 0,
                 window: false,
                 stopping: false,
                 lost: false,
@@ -412,10 +415,10 @@ impl Browsers {
         if !matches!(scheme.as_deref(), Some("http" | "https")) {
             return Err(BrowserErrorOwned::UrlNotHttp);
         }
-        let (bidi, context) = self
+        let (bidi, context, seq) = self
             .with_run(slot, |run| {
                 (!run.stopping)
-                    .then(|| Some((run.bidi.clone()?, run.context.clone()?)))
+                    .then(|| Some((run.bidi.clone()?, run.context.clone()?, run.url_seq)))
                     .flatten()
             })
             .flatten()
@@ -425,7 +428,18 @@ impl Browsers {
         bidi.command("browsingContext.navigate", params)
             .await
             .map_err(bidi_error)?;
-        self.with_run(slot, |run| run.url = Some(url.to_owned()));
+        // The browser's own events may have come with the answer (navigationStarted, a redirect's
+        // load): those are newer than the URL asked for.
+        let set = self.with_run(slot, |run| {
+            let set = run.url_seq == seq;
+            if set {
+                run.url = Some(url.to_owned());
+            }
+            set
+        });
+        if set == Some(true) {
+            self.hub.browser_changed(slot);
+        }
         Ok(())
     }
 
@@ -675,7 +689,10 @@ impl Browsers {
                 if context.is_some() && context == ours =>
             {
                 let url = event.params["url"].as_str().map(str::to_owned);
-                self.with_run(slot, |run| run.url = url);
+                self.with_run(slot, |run| {
+                    run.url = url;
+                    run.url_seq += 1;
+                });
                 self.hub.browser_changed(slot);
             }
             "browsingContext.contextDestroyed" if context.is_some() && context == ours => {
