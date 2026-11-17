@@ -5,7 +5,7 @@
 //! The server lives in ww_niri (`src/ww/`) and is reached over WebSocket at `ws://HOST:7590/ww`.
 //! Clients generate theirs with `ww_codegen!(ww_niri_api::WwNiri for ..., client = "std_client")`.
 
-use wire_weaver::prelude::*;
+use ww_api::prelude::*;
 use ww_si::prefix::{Centi, Milli, One};
 use ww_si::units::{Hertz, Ratio};
 use ww_si::{Fixed, Micros, Millis, Range};
@@ -372,3 +372,14 @@ pub enum MediaError<'i> {
     NotSupported,
     Bus(&'i str),
 }
+
+ww_api::api_error!(WindowError);
+ww_api::api_error!(LaunchError<'i>);
+ww_api::api_error!(BrowserError<'i>);
+ww_api::api_error!(MediaError<'i>);
+#[cfg(feature = "std")]
+ww_api::api_error!(LaunchErrorOwned);
+#[cfg(feature = "std")]
+ww_api::api_error!(BrowserErrorOwned);
+#[cfg(feature = "std")]
+ww_api::api_error!(MediaErrorOwned);

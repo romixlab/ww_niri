@@ -5,6 +5,7 @@ use std::net::SocketAddr;
 use std::rc::Rc;
 
 use wire_weaver::prelude::*;
+use ww_client_server::ResourceIndex;
 
 use super::host::{call, Run, WwHost};
 use super::hub::{Hub, Mark};
@@ -48,32 +49,32 @@ impl Server {
         let event = match mark {
             Mark::Event(event) => event,
             Mark::Playback(player) => {
-                self.mark_changed_media_players_playback_state([UNib32(player.0)]);
+                self.mark_changed_media_players_playback_state([UNib32(player.0).into()]);
                 if let Some(PlayerSourceOwned::Browser(BrowserSlot(slot))) =
                     self.players.source_of(player.0).await
                 {
-                    self.mark_changed_browsers_playback_state([UNib32(u32::from(slot))]);
+                    self.mark_changed_browsers_playback_state([UNib32(u32::from(slot)).into()]);
                 }
                 return;
             }
             Mark::Browser(slot) => {
-                self.mark_changed_browsers_state([UNib32(u32::from(*slot))]);
+                self.mark_changed_browsers_state([UNib32(u32::from(*slot)).into()]);
                 return;
             }
         };
         match event {
             EventOwned::PlayerAppeared(info) => {
                 if let PlayerSourceOwned::Browser(BrowserSlot(slot)) = info.source {
-                    self.mark_changed_browsers_state([UNib32(u32::from(slot))]);
-                    self.mark_changed_browsers_playback_state([UNib32(u32::from(slot))]);
+                    self.mark_changed_browsers_state([UNib32(u32::from(slot)).into()]);
+                    self.mark_changed_browsers_playback_state([UNib32(u32::from(slot)).into()]);
                 }
             }
             EventOwned::PlayerGone(player) => {
-                self.element_removed_media_players([UNib32(player.0)]);
+                self.element_removed_media_players([UNib32(player.0).into()]);
                 // A slot's player may have gone: its state says so.
                 for slot in 0..self.browsers.count() {
-                    self.mark_changed_browsers_state([UNib32(u32::from(slot))]);
-                    self.mark_changed_browsers_playback_state([UNib32(u32::from(slot))]);
+                    self.mark_changed_browsers_state([UNib32(u32::from(slot)).into()]);
+                    self.mark_changed_browsers_playback_state([UNib32(u32::from(slot)).into()]);
                 }
             }
             EventOwned::BrowserStarted(BrowserSlot(slot))
@@ -81,8 +82,8 @@ impl Server {
                 slot: BrowserSlot(slot),
                 ..
             } => {
-                self.mark_changed_browsers_state([UNib32(u32::from(*slot))]);
-                self.mark_changed_browsers_playback_state([UNib32(u32::from(*slot))]);
+                self.mark_changed_browsers_state([UNib32(u32::from(*slot)).into()]);
+                self.mark_changed_browsers_playback_state([UNib32(u32::from(*slot)).into()]);
             }
             _ => (),
         }
@@ -91,21 +92,21 @@ impl Server {
     /// After missed events: every observed element property may have changed.
     pub fn mark_all(&mut self) {
         for slot in 0..self.browsers.count() {
-            self.mark_changed_browsers_state([UNib32(u32::from(slot))]);
-            self.mark_changed_browsers_playback_state([UNib32(u32::from(slot))]);
+            self.mark_changed_browsers_state([UNib32(u32::from(slot)).into()]);
+            self.mark_changed_browsers_playback_state([UNib32(u32::from(slot)).into()]);
         }
         for id in self.players.ids() {
-            self.mark_changed_media_players_playback_state([UNib32(id)]);
+            self.mark_changed_media_players_playback_state([UNib32(id).into()]);
         }
     }
 
     async fn window_op(
         &self,
         f: impl FnOnce(&mut dyn WwHost) -> bool + 'static,
-    ) -> RpcResult<Result<(), ww_niri_api::WindowError>> {
+    ) -> RpcResult<Result<(), Error<'_, ww_niri_api::WindowError>>> {
         match call(&self.run, f).await {
             Some(true) => RpcResult::Ready(Ok(())),
-            Some(false) => RpcResult::Ready(Err(ww_niri_api::WindowError::NoSuchWindow)),
+            Some(false) => RpcResult::Ready(Err(ww_niri_api::WindowError::NoSuchWindow.into())),
             None => Unimplemented.into(),
         }
     }
@@ -131,27 +132,28 @@ impl Server {
 
     async fn browser_act(
         &self,
-        index_chain: [UNib32; 1],
+        index_chain: [ResourceIndex; 1],
         action: Action,
-    ) -> RpcResult<Result<(), ww_niri_api::MediaErrorOwned>> {
-        let res = match self.browser_player(index_chain[0].0 as u8) {
+    ) -> RpcResult<Result<(), Error<'_, ww_niri_api::MediaErrorOwned>>> {
+        let res = match self.browser_player(index_chain[0].get().0 as u8) {
             // Gone in between: as if it had never played.
             Ok(id) => (self.players.act(id, action).await)
                 .unwrap_or(Err(ww_niri_api::MediaErrorOwned::NoPlayer)),
             Err(err) => Err(err),
         };
-        RpcResult::Ready(res)
+        RpcResult::Ready(res.map_err(Into::into))
     }
 
     async fn player_act(
         &self,
-        index_chain: [UNib32; 1],
+        index_chain: [ResourceIndex; 1],
         action: Action,
-    ) -> RpcResult<Result<(), ww_niri_api::MediaErrorOwned>> {
+    ) -> RpcResult<Result<(), Error<'_, ww_niri_api::MediaErrorOwned>>> {
         // A player gone since the index check: as if it never played.
         RpcResult::Ready(
-            (self.players.act(index_chain[0].0, action).await)
-                .unwrap_or(Err(ww_niri_api::MediaErrorOwned::NoPlayer)),
+            (self.players.act(index_chain[0].get().0, action).await)
+                .unwrap_or(Err(ww_niri_api::MediaErrorOwned::NoPlayer))
+                .map_err(Into::into),
         )
     }
 
@@ -227,7 +229,7 @@ impl Server {
         id: ww_niri_api::WindowId,
         transition: Option<ww_niri_api::Transition>,
         fullscreen: Option<bool>,
-    ) -> RpcResult<Result<(), ww_niri_api::WindowError>> {
+    ) -> RpcResult<Result<(), Error<'_, ww_niri_api::WindowError>>> {
         self.window_op(move |host| host.show_window(id.0, transition, fullscreen))
             .await
     }
@@ -237,7 +239,7 @@ impl Server {
         &mut self,
         _cx: &mut Context<'_, impl EventOut>,
         id: ww_niri_api::WindowId,
-    ) -> RpcResult<Result<(), ww_niri_api::WindowError>> {
+    ) -> RpcResult<Result<(), Error<'_, ww_niri_api::WindowError>>> {
         self.window_op(move |host| host.focus(id.0)).await
     }
 
@@ -246,7 +248,7 @@ impl Server {
         &mut self,
         _cx: &mut Context<'_, impl EventOut>,
         id: ww_niri_api::WindowId,
-    ) -> RpcResult<Result<(), ww_niri_api::WindowError>> {
+    ) -> RpcResult<Result<(), Error<'_, ww_niri_api::WindowError>>> {
         self.window_op(move |host| host.close_window(id.0)).await
     }
 
@@ -255,7 +257,7 @@ impl Server {
         _cx: &mut Context<'_, impl EventOut>,
         id: ww_niri_api::WindowId,
         on: bool,
-    ) -> RpcResult<Result<(), ww_niri_api::WindowError>> {
+    ) -> RpcResult<Result<(), Error<'_, ww_niri_api::WindowError>>> {
         self.window_op(move |host| host.set_fullscreen(id.0, on))
             .await
     }
@@ -280,11 +282,11 @@ impl Server {
         &mut self,
         _cx: &mut Context<'_, impl EventOut>,
         argv: Vec<String>,
-    ) -> RpcResult<Result<ww_niri_api::Launched, ww_niri_api::LaunchErrorOwned>> {
+    ) -> RpcResult<Result<ww_niri_api::Launched, Error<'_, ww_niri_api::LaunchErrorOwned>>> {
         use ww_niri_api::{LaunchErrorOwned, Launched};
 
         if argv.is_empty() {
-            return RpcResult::Ready(Err(LaunchErrorOwned::EmptyArgv));
+            return RpcResult::Ready(Err(LaunchErrorOwned::EmptyArgv.into()));
         }
         // Any command runs: every launch is on record with who asked.
         info!("ww: {} launches {argv:?}", self.peer);
@@ -306,10 +308,10 @@ impl Server {
         RpcResult::Ready(match res {
             Ok(Some(pid)) => Ok(Launched { pid }),
             // The `ww` feature enables `systemd`, whose spawn hands the pid back.
-            Ok(None) => Err(LaunchErrorOwned::Spawn("pid unknown".to_owned())),
+            Ok(None) => Err((LaunchErrorOwned::Spawn("pid unknown".to_owned())).into()),
             Err(err) => {
                 debug!("ww: launch for {} failed: {err}", self.peer);
-                Err(LaunchErrorOwned::Spawn(err.to_string()))
+                Err((LaunchErrorOwned::Spawn(err.to_string())).into())
             }
         })
     }
@@ -321,11 +323,11 @@ impl Server {
     async fn browsers_start(
         &mut self,
         _cx: &mut Context<'_, impl EventOut>,
-        index_chain: [UNib32; 1],
+        index_chain: [ResourceIndex; 1],
         fullscreen: bool,
-    ) -> RpcResult<Result<(), ww_niri_api::BrowserErrorOwned>> {
-        let slot = index_chain[0].0 as u8;
-        RpcResult::Ready(self.browsers.start(slot, fullscreen).await)
+    ) -> RpcResult<Result<(), Error<'_, ww_niri_api::BrowserErrorOwned>>> {
+        let slot = index_chain[0].get().0 as u8;
+        RpcResult::Ready(self.browsers.start(slot, fullscreen).await.map_err(Into::into))
     }
 
     /// Loads `url` (http or https) in the slot's tab and returns when the navigation is
@@ -333,38 +335,38 @@ impl Server {
     async fn browsers_open(
         &mut self,
         _cx: &mut Context<'_, impl EventOut>,
-        index_chain: [UNib32; 1],
+        index_chain: [ResourceIndex; 1],
         url: String,
-    ) -> RpcResult<Result<(), ww_niri_api::BrowserErrorOwned>> {
-        let slot = index_chain[0].0 as u8;
-        RpcResult::Ready(self.browsers.open(slot, &url).await)
+    ) -> RpcResult<Result<(), Error<'_, ww_niri_api::BrowserErrorOwned>>> {
+        let slot = index_chain[0].get().0 as u8;
+        RpcResult::Ready(self.browsers.open(slot, &url).await.map_err(Into::into))
     }
 
     /// Ends the slot's Firefox; its profile stays.
     async fn browsers_stop(
         &mut self,
         _cx: &mut Context<'_, impl EventOut>,
-        index_chain: [UNib32; 1],
-    ) -> RpcResult<Result<(), ww_niri_api::BrowserErrorOwned>> {
-        RpcResult::Ready(self.browsers.stop(index_chain[0].0 as u8).await)
+        index_chain: [ResourceIndex; 1],
+    ) -> RpcResult<Result<(), Error<'_, ww_niri_api::BrowserErrorOwned>>> {
+        RpcResult::Ready(self.browsers.stop(index_chain[0].get().0 as u8).await.map_err(Into::into))
     }
 
     /// Shows the slot's window, as [Windows::show].
     async fn browsers_show(
         &mut self,
         _cx: &mut Context<'_, impl EventOut>,
-        index_chain: [UNib32; 1],
+        index_chain: [ResourceIndex; 1],
         transition: Option<ww_niri_api::Transition>,
         fullscreen: Option<bool>,
-    ) -> RpcResult<Result<(), ww_niri_api::BrowserErrorOwned>> {
+    ) -> RpcResult<Result<(), Error<'_, ww_niri_api::BrowserErrorOwned>>> {
         use ww_niri_api::BrowserErrorOwned;
 
-        let slot = index_chain[0].0 as u8;
+        let slot = index_chain[0].get().0 as u8;
         if self.browsers.pid(slot).is_none() {
-            return RpcResult::Ready(Err(BrowserErrorOwned::NotRunning));
+            return RpcResult::Ready(Err(BrowserErrorOwned::NotRunning.into()));
         }
         let Some(window) = self.browser_window(slot).await else {
-            return RpcResult::Ready(Err(BrowserErrorOwned::NoWindow));
+            return RpcResult::Ready(Err(BrowserErrorOwned::NoWindow.into()));
         };
         let id = window.id.0;
         match call(&self.run, move |host| {
@@ -374,7 +376,7 @@ impl Server {
         {
             Some(true) => RpcResult::Ready(Ok(())),
             // Closed in between.
-            Some(false) => RpcResult::Ready(Err(BrowserErrorOwned::NoWindow)),
+            Some(false) => RpcResult::Ready(Err(BrowserErrorOwned::NoWindow.into())),
             None => Unimplemented.into(),
         }
     }
@@ -383,9 +385,9 @@ impl Server {
     async fn get_browsers_state(
         &mut self,
         _cx: &mut Context<'_, impl EventOut>,
-        index_chain: [UNib32; 1],
-    ) -> GetResult<ww_niri_api::BrowserStateOwned, ()> {
-        let slot = index_chain[0].0 as u8;
+        index_chain: [ResourceIndex; 1],
+    ) -> GetResult<ww_niri_api::BrowserStateOwned, CommonError<'_>> {
+        let slot = index_chain[0].get().0 as u8;
         let window = self.browser_window(slot).await;
         let mut state = self.browsers.state(slot, window.as_ref());
         state.player = self.browser_player(slot).ok().map(ww_niri_api::PlayerId);
@@ -398,9 +400,9 @@ impl Server {
     async fn get_browsers_playback_state(
         &mut self,
         _cx: &mut Context<'_, impl EventOut>,
-        index_chain: [UNib32; 1],
-    ) -> GetResult<ww_niri_api::PlaybackStateOwned, ()> {
-        let state = match self.browser_player(index_chain[0].0 as u8) {
+        index_chain: [ResourceIndex; 1],
+    ) -> GetResult<ww_niri_api::PlaybackStateOwned, CommonError<'_>> {
+        let state = match self.browser_player(index_chain[0].get().0 as u8) {
             Ok(id) => self.players.state(id).await.and_then(Result::ok),
             Err(_) => None,
         };
@@ -411,48 +413,48 @@ impl Server {
     async fn browsers_playback_play(
         &mut self,
         _cx: &mut Context<'_, impl EventOut>,
-        index_chain: [UNib32; 1],
-    ) -> RpcResult<Result<(), ww_niri_api::MediaErrorOwned>> {
+        index_chain: [ResourceIndex; 1],
+    ) -> RpcResult<Result<(), Error<'_, ww_niri_api::MediaErrorOwned>>> {
         self.browser_act(index_chain, Action::Play).await
     }
 
     async fn browsers_playback_pause(
         &mut self,
         _cx: &mut Context<'_, impl EventOut>,
-        index_chain: [UNib32; 1],
-    ) -> RpcResult<Result<(), ww_niri_api::MediaErrorOwned>> {
+        index_chain: [ResourceIndex; 1],
+    ) -> RpcResult<Result<(), Error<'_, ww_niri_api::MediaErrorOwned>>> {
         self.browser_act(index_chain, Action::Pause).await
     }
 
     async fn browsers_playback_play_pause(
         &mut self,
         _cx: &mut Context<'_, impl EventOut>,
-        index_chain: [UNib32; 1],
-    ) -> RpcResult<Result<(), ww_niri_api::MediaErrorOwned>> {
+        index_chain: [ResourceIndex; 1],
+    ) -> RpcResult<Result<(), Error<'_, ww_niri_api::MediaErrorOwned>>> {
         self.browser_act(index_chain, Action::PlayPause).await
     }
 
     async fn browsers_playback_stop(
         &mut self,
         _cx: &mut Context<'_, impl EventOut>,
-        index_chain: [UNib32; 1],
-    ) -> RpcResult<Result<(), ww_niri_api::MediaErrorOwned>> {
+        index_chain: [ResourceIndex; 1],
+    ) -> RpcResult<Result<(), Error<'_, ww_niri_api::MediaErrorOwned>>> {
         self.browser_act(index_chain, Action::Stop).await
     }
 
     async fn browsers_playback_next(
         &mut self,
         _cx: &mut Context<'_, impl EventOut>,
-        index_chain: [UNib32; 1],
-    ) -> RpcResult<Result<(), ww_niri_api::MediaErrorOwned>> {
+        index_chain: [ResourceIndex; 1],
+    ) -> RpcResult<Result<(), Error<'_, ww_niri_api::MediaErrorOwned>>> {
         self.browser_act(index_chain, Action::Next).await
     }
 
     async fn browsers_playback_previous(
         &mut self,
         _cx: &mut Context<'_, impl EventOut>,
-        index_chain: [UNib32; 1],
-    ) -> RpcResult<Result<(), ww_niri_api::MediaErrorOwned>> {
+        index_chain: [ResourceIndex; 1],
+    ) -> RpcResult<Result<(), Error<'_, ww_niri_api::MediaErrorOwned>>> {
         self.browser_act(index_chain, Action::Previous).await
     }
 
@@ -460,14 +462,14 @@ impl Server {
     async fn browsers_playback_seek(
         &mut self,
         _cx: &mut Context<'_, impl EventOut>,
-        index_chain: [UNib32; 1],
+        index_chain: [ResourceIndex; 1],
         by: exact_units::Fixed<
             exact_units::units::Second,
             exact_units::prefix::Micro,
             i64,
             exact_units::Unbounded,
         >,
-    ) -> RpcResult<Result<(), ww_niri_api::MediaErrorOwned>> {
+    ) -> RpcResult<Result<(), Error<'_, ww_niri_api::MediaErrorOwned>>> {
         self.browser_act(index_chain, Action::Seek(by.get())).await
     }
 
@@ -475,14 +477,14 @@ impl Server {
     async fn browsers_playback_set_position(
         &mut self,
         _cx: &mut Context<'_, impl EventOut>,
-        index_chain: [UNib32; 1],
+        index_chain: [ResourceIndex; 1],
         at: exact_units::Fixed<
             exact_units::units::Second,
             exact_units::prefix::Micro,
             u64,
             exact_units::Unbounded,
         >,
-    ) -> RpcResult<Result<(), ww_niri_api::MediaErrorOwned>> {
+    ) -> RpcResult<Result<(), Error<'_, ww_niri_api::MediaErrorOwned>>> {
         self.browser_act(index_chain, Action::SetPosition(at.get()))
             .await
     }
@@ -510,9 +512,9 @@ impl Server {
     async fn get_media_players_source(
         &mut self,
         _cx: &mut Context<'_, impl EventOut>,
-        index_chain: [UNib32; 1],
-    ) -> GetResult<ww_niri_api::PlayerSourceOwned, ()> {
-        let source = self.players.source_of(index_chain[0].0).await;
+        index_chain: [ResourceIndex; 1],
+    ) -> GetResult<ww_niri_api::PlayerSourceOwned, CommonError<'_>> {
+        let source = self.players.source_of(index_chain[0].get().0).await;
         Value(source.unwrap_or(ww_niri_api::PlayerSourceOwned::App { pid: None }))
     }
 
@@ -522,57 +524,57 @@ impl Server {
     async fn get_media_players_playback_state(
         &mut self,
         _cx: &mut Context<'_, impl EventOut>,
-        index_chain: [UNib32; 1],
-    ) -> GetResult<ww_niri_api::PlaybackStateOwned, ()> {
-        let state = self.players.state(index_chain[0].0).await;
+        index_chain: [ResourceIndex; 1],
+    ) -> GetResult<ww_niri_api::PlaybackStateOwned, CommonError<'_>> {
+        let state = self.players.state(index_chain[0].get().0).await;
         Value(state.and_then(Result::ok).unwrap_or_else(stopped))
     }
 
     async fn media_players_playback_play(
         &mut self,
         _cx: &mut Context<'_, impl EventOut>,
-        index_chain: [UNib32; 1],
-    ) -> RpcResult<Result<(), ww_niri_api::MediaErrorOwned>> {
+        index_chain: [ResourceIndex; 1],
+    ) -> RpcResult<Result<(), Error<'_, ww_niri_api::MediaErrorOwned>>> {
         self.player_act(index_chain, Action::Play).await
     }
 
     async fn media_players_playback_pause(
         &mut self,
         _cx: &mut Context<'_, impl EventOut>,
-        index_chain: [UNib32; 1],
-    ) -> RpcResult<Result<(), ww_niri_api::MediaErrorOwned>> {
+        index_chain: [ResourceIndex; 1],
+    ) -> RpcResult<Result<(), Error<'_, ww_niri_api::MediaErrorOwned>>> {
         self.player_act(index_chain, Action::Pause).await
     }
 
     async fn media_players_playback_play_pause(
         &mut self,
         _cx: &mut Context<'_, impl EventOut>,
-        index_chain: [UNib32; 1],
-    ) -> RpcResult<Result<(), ww_niri_api::MediaErrorOwned>> {
+        index_chain: [ResourceIndex; 1],
+    ) -> RpcResult<Result<(), Error<'_, ww_niri_api::MediaErrorOwned>>> {
         self.player_act(index_chain, Action::PlayPause).await
     }
 
     async fn media_players_playback_stop(
         &mut self,
         _cx: &mut Context<'_, impl EventOut>,
-        index_chain: [UNib32; 1],
-    ) -> RpcResult<Result<(), ww_niri_api::MediaErrorOwned>> {
+        index_chain: [ResourceIndex; 1],
+    ) -> RpcResult<Result<(), Error<'_, ww_niri_api::MediaErrorOwned>>> {
         self.player_act(index_chain, Action::Stop).await
     }
 
     async fn media_players_playback_next(
         &mut self,
         _cx: &mut Context<'_, impl EventOut>,
-        index_chain: [UNib32; 1],
-    ) -> RpcResult<Result<(), ww_niri_api::MediaErrorOwned>> {
+        index_chain: [ResourceIndex; 1],
+    ) -> RpcResult<Result<(), Error<'_, ww_niri_api::MediaErrorOwned>>> {
         self.player_act(index_chain, Action::Next).await
     }
 
     async fn media_players_playback_previous(
         &mut self,
         _cx: &mut Context<'_, impl EventOut>,
-        index_chain: [UNib32; 1],
-    ) -> RpcResult<Result<(), ww_niri_api::MediaErrorOwned>> {
+        index_chain: [ResourceIndex; 1],
+    ) -> RpcResult<Result<(), Error<'_, ww_niri_api::MediaErrorOwned>>> {
         self.player_act(index_chain, Action::Previous).await
     }
 
@@ -580,14 +582,14 @@ impl Server {
     async fn media_players_playback_seek(
         &mut self,
         _cx: &mut Context<'_, impl EventOut>,
-        index_chain: [UNib32; 1],
+        index_chain: [ResourceIndex; 1],
         by: exact_units::Fixed<
             exact_units::units::Second,
             exact_units::prefix::Micro,
             i64,
             exact_units::Unbounded,
         >,
-    ) -> RpcResult<Result<(), ww_niri_api::MediaErrorOwned>> {
+    ) -> RpcResult<Result<(), Error<'_, ww_niri_api::MediaErrorOwned>>> {
         self.player_act(index_chain, Action::Seek(by.get())).await
     }
 
@@ -595,14 +597,14 @@ impl Server {
     async fn media_players_playback_set_position(
         &mut self,
         _cx: &mut Context<'_, impl EventOut>,
-        index_chain: [UNib32; 1],
+        index_chain: [ResourceIndex; 1],
         at: exact_units::Fixed<
             exact_units::units::Second,
             exact_units::prefix::Micro,
             u64,
             exact_units::Unbounded,
         >,
-    ) -> RpcResult<Result<(), ww_niri_api::MediaErrorOwned>> {
+    ) -> RpcResult<Result<(), Error<'_, ww_niri_api::MediaErrorOwned>>> {
         self.player_act(index_chain, Action::SetPosition(at.get()))
             .await
     }
@@ -614,7 +616,7 @@ impl Server {
         &mut self,
         _cx: &mut Context<'_, impl EventOut>,
         value: ww_niri_api::Volume,
-    ) -> SetResult<()> {
+    ) -> SetResult<CommonError<'_>> {
         // observers get it after `SetResult::Set`: the generated code calls `mark_changed_audio_volume()`
         audio_set(self.audio.set_volume(value.get()).await)
     }
@@ -623,11 +625,11 @@ impl Server {
     async fn get_audio_volume(
         &mut self,
         _cx: &mut Context<'_, impl EventOut>,
-    ) -> GetResult<ww_niri_api::Volume, ()> {
+    ) -> GetResult<ww_niri_api::Volume, CommonError<'_>> {
         match self.audio.sink() {
             Some(sink) => ww_niri_api::Volume::try_new(sink.volume)
-                .map_or(GetResult::GetError(()), GetResult::Value),
-            None => GetResult::GetError(()),
+                .map_or(GetResult::GetError(audio_unavailable("no default sink")), GetResult::Value),
+            None => GetResult::GetError(audio_unavailable("no default sink")),
         }
     }
 
@@ -635,7 +637,7 @@ impl Server {
         &mut self,
         _cx: &mut Context<'_, impl EventOut>,
         value: bool,
-    ) -> SetResult<()> {
+    ) -> SetResult<CommonError<'_>> {
         // observers get it after `SetResult::Set`: the generated code calls `mark_changed_audio_muted()`
         audio_set(self.audio.set_muted(value).await)
     }
@@ -643,10 +645,10 @@ impl Server {
     async fn get_audio_muted(
         &mut self,
         _cx: &mut Context<'_, impl EventOut>,
-    ) -> GetResult<bool, ()> {
+    ) -> GetResult<bool, CommonError<'_>> {
         match self.audio.sink() {
             Some(sink) => GetResult::Value(sink.muted),
-            None => GetResult::GetError(()),
+            None => GetResult::GetError(audio_unavailable("no default sink")),
         }
     }
 
@@ -654,13 +656,13 @@ impl Server {
     async fn get_audio_sink(
         &mut self,
         _cx: &mut Context<'_, impl EventOut>,
-    ) -> GetResult<ww_niri_api::SinkOwned, ()> {
+    ) -> GetResult<ww_niri_api::SinkOwned, CommonError<'_>> {
         match self.audio.sink() {
             Some(sink) => GetResult::Value(ww_niri_api::SinkOwned {
                 name: sink.name,
                 description: sink.description,
             }),
-            None => GetResult::GetError(()),
+            None => GetResult::GetError(audio_unavailable("no default sink")),
         }
     }
 
@@ -697,13 +699,27 @@ pub mod api_impl {
     );
 }
 
-/// The audio errors carry no detail on the wire (the properties' error type is `()`): log it here.
-fn audio_set(res: Result<(), super::audio::AudioError>) -> SetResult<()> {
+/// The wire answer for a missing default sink or a failed audio command.
+fn audio_unavailable(reason: &'static str) -> CommonError<'static> {
+    CommonError::WrongState {
+        reason: MaxLen::new_unchecked(reason),
+    }
+}
+
+/// The audio errors carry only their class on the wire: the detail is logged here.
+fn audio_set(res: Result<(), super::audio::AudioError>) -> SetResult<CommonError<'static>> {
     match res {
         Ok(()) => SetResult::Set,
         Err(err) => {
             debug!("ww: error setting audio: {err}");
-            SetResult::SetError(())
+            SetResult::SetError(match err {
+                super::audio::AudioError::NoSink => audio_unavailable("no default sink"),
+                super::audio::AudioError::Closed => audio_unavailable("audio server gone"),
+                super::audio::AudioError::Io(_) => CommonError::Fault { code: 0 },
+                super::audio::AudioError::Server(_) => CommonError::Refused {
+                    reason: MaxLen::new_unchecked("audio server refused the command"),
+                },
+            })
         }
     }
 }
