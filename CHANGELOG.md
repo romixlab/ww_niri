@@ -4,6 +4,8 @@ Changes of ww_niri on top of upstream niri. Upstream's own changes are in its re
 
 ## [Unreleased]
 
+## [26.6.0] - 2026-11-17
+
 ### Changed
 
 - Control API: ported to the WireWeaver layers. `ww_niri_api` depends on `ww_api` and `ww_si` from ww_base; its error enums declare `api_error!`; audio property errors are `CommonError` (`WrongState`, `Fault`, `Refused`) instead of `()`. Wire unchanged.
