@@ -59,6 +59,8 @@ pub struct WwServer {
     pub pointer_sent: Option<input::Sent>,
     /// The pointer and what is under it as observers last heard.
     pub pointer_seen: Option<input::Seen>,
+    /// Layouts to switch to, one per layout marker injected and not yet read.
+    pub layout_switches: std::collections::VecDeque<u32>,
 }
 
 /// What every connection shares: the ww side's events, the browser slots, the players and the
@@ -140,6 +142,7 @@ impl WwServer {
             services,
             uinput: None,
             pointer_sent: None,
+            layout_switches: std::collections::VecDeque::new(),
             pointer_seen: None,
         };
         ww.reload(event_loop);

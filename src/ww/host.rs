@@ -8,7 +8,7 @@ use async_channel::Receiver;
 use calloop::LoopHandle;
 use ww_niri_api::{InputErrorOwned, OutputOwned, PointerPosition, Transition, WindowOwned};
 
-use super::input::{Key, Op};
+use super::input::{Key, Op, TextKeys};
 
 pub trait WwHost: 'static {
     fn windows(&mut self) -> Vec<WindowOwned>;
@@ -45,6 +45,9 @@ pub trait WwHost: 'static {
     fn pointer_moved_by(&mut self, dx: f64, dy: f64) -> Result<(f64, f64), InputErrorOwned>;
     /// The key of the configured keymap that makes the keysym.
     fn key_for(&mut self, keysym: u32) -> Option<Key>;
+    /// The keys of the keymap's layouts that type the keysyms; `Err` holds the index of one no
+    /// layout has.
+    fn text_keys(&mut self, keysyms: Vec<u32>) -> Result<TextKeys, usize>;
 }
 
 /// Runs a closure on the loop with the host.
@@ -97,7 +100,7 @@ mod niri_state {
         WorkspaceId,
     };
 
-    use super::{Key, Op, WwHost};
+    use super::{Key, Op, TextKeys, WwHost};
     use crate::layout::LayoutElement as _;
     use crate::niri::State;
     use crate::utils::with_toplevel_role;
@@ -255,6 +258,10 @@ mod niri_state {
 
         fn key_for(&mut self, keysym: u32) -> Option<Key> {
             self.ww_key_for(keysym)
+        }
+
+        fn text_keys(&mut self, keysyms: Vec<u32>) -> Result<TextKeys, usize> {
+            self.ww_text_keys(&keysyms)
         }
     }
 }

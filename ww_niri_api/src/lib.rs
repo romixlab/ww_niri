@@ -270,7 +270,8 @@ pub trait Pointer {
 #[ww_trait]
 pub trait Keyboard {
     /// Types the text with key presses of the configured keymap; nothing is typed when a
-    /// character is on no key.
+    /// character is on no key. A character the active layout lacks is typed on another layout
+    /// of the keymap (`us,ru` types Cyrillic): niri switches to it for those keys and back after.
     fn type_text(text: &'i str) -> Result<(), InputError<'i>>;
 
     /// A key or a combination, pressed in order and released in reverse: `Return`, `ctrl+l`,
@@ -481,7 +482,7 @@ pub enum InputError<'i> {
     OffScreen,
     /// Not a keysym name, or no key of the keymap makes it.
     UnknownKey(&'i str),
-    /// A character on no key of the configured keymap, as a Unicode scalar value.
+    /// A character on no key of any layout of the configured keymap, as a Unicode scalar value.
     NotTypeable(u32),
     /// `button`, `count` or `hold` out of range.
     BadArgument,

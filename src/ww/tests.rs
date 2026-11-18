@@ -19,7 +19,7 @@ use super::audio::Target;
 use super::browsers::{LoopIo, Settings};
 use super::connection::serve;
 use super::host::WwHost;
-use super::input::{Key, Op};
+use super::input::{Key, Op, TextKeys};
 use super::Services;
 
 struct NiriClient {
@@ -153,7 +153,7 @@ impl WwHost for FakeHost {
 
     // A 1920x1080 output at (0, 0); window 7 at (100, 50), 800x600; the pointer where the last
     // motion put it, at first (110, 70); keys: a keycode per keysym, Shift with upper case
-    // letters.
+    // letters; a second layout with the Russian letters at 1000 on.
     fn input_devices(&mut self) -> Result<bool, String> {
         Ok(true)
     }
@@ -235,6 +235,23 @@ impl WwHost for FakeHost {
         Some(Key {
             code: u32::from(ch.to_ascii_lowercase()),
             shift: ch.is_ascii_uppercase(),
+        })
+    }
+
+    fn text_keys(&mut self, keysyms: Vec<u32>) -> Result<TextKeys, usize> {
+        use smithay::input::keyboard::Keysym;
+
+        let syms: Vec<Keysym> = keysyms.into_iter().map(Keysym::new).collect();
+        super::input::text_keys(&syms, 2, 0, |sym, layout| match layout {
+            0 => self.key_for(sym.raw()),
+            _ => {
+                let ch = sym.key_char()?;
+                let lower = ch.to_lowercase().next()?;
+                ('а'..='я').contains(&lower).then(|| Key {
+                    code: 1000 + u32::from(lower) - u32::from('а'),
+                    shift: lower != ch,
+                })
+            }
         })
     }
 }
@@ -486,10 +503,32 @@ fn input_pointer_and_keyboard() {
                     "Key { code: 50, pressed: false }",
                 ]
             );
+            // Russian on the second layout, the space on the one it was typed on, back at the
+            // end.
+            keyboard.type_text("aЖ б".to_owned()).call().await.unwrap();
+            assert_eq!(
+                taken(),
+                [
+                    "Key { code: 97, pressed: true }",
+                    "Key { code: 97, pressed: false }",
+                    "Layout(1)",
+                    "Key { code: 50, pressed: true }",
+                    "Key { code: 1006, pressed: true }",
+                    "Key { code: 1006, pressed: false }",
+                    "Key { code: 50, pressed: false }",
+                    "Layout(0)",
+                    "Key { code: 32, pressed: true }",
+                    "Key { code: 32, pressed: false }",
+                    "Layout(1)",
+                    "Key { code: 1001, pressed: true }",
+                    "Key { code: 1001, pressed: false }",
+                    "Layout(0)",
+                ]
+            );
             // Nothing typed when one character has no key.
             assert_eq!(
-                device_err(keyboard.type_text("aж".to_owned()).call().await),
-                InputErrorOwned::NotTypeable(u32::from('ж'))
+                device_err(keyboard.type_text("aж€".to_owned()).call().await),
+                InputErrorOwned::NotTypeable(u32::from('€'))
             );
             assert_eq!(taken(), Vec::<String>::new());
 
@@ -1906,9 +1945,9 @@ i.addEventListener("input", () => t(`text ${i.value}`));
 /// serve [INPUT_PAGE] on the niri host (python3 there, started through `apps.launch`: the host
 /// may not reach the test's PC), open it in browser slot 0, then click, double click, right
 /// click, scroll, drag, move by deltas, scroll by quarter notches, zoom with ctrl and scroll,
-/// press media keys, hold a button past its hold limit and type into it, and read each back
-/// from the page's title. Screenshots to `/tmp/ww-input-*.png` there, as `live_screen` takes
-/// them.
+/// press media keys, hold a button past its hold limit and type into it (Russian too: the
+/// keymap needs `us,ru`), and read each back from the page's title. Screenshots to
+/// `/tmp/ww-input-*.png` there, as `live_screen` takes them.
 #[test]
 fn live_input() {
     use exact_units::Millis;
@@ -2131,12 +2170,16 @@ fn live_input() {
             .await
             .unwrap();
         keyboard.press_keys("ctrl+a".to_owned()).call().await.unwrap();
+        // Russian through the keymap's second layout (`us,ru`); a key pressed after it makes
+        // `x` only once the layout is back on us.
         keyboard
-            .type_text("Hello, ww_niri! 42".to_owned())
+            .type_text("Hello, ww_niri! 42 Привет, мир ".to_owned())
             .call()
             .await
             .unwrap();
-        title("text Hello, ww_niri! 42").await;
+        title("text Hello, ww_niri! 42 Привет, мир ").await;
+        keyboard.press_keys("x".to_owned()).call().await.unwrap();
+        title("text Hello, ww_niri! 42 Привет, мир x").await;
         screenshot("2-typed").await;
         keyboard.press_keys("Return".to_owned()).call().await.unwrap();
         let sent = tokio::time::timeout(Duration::from_secs(10), async {
@@ -2150,7 +2193,12 @@ fn live_input() {
         })
         .await
         .expect("Return sends the form");
-        assert!(sent.ends_with("q=Hello%2C+ww_niri%21+42"), "{sent}");
+        assert!(
+            sent.ends_with(
+                "q=Hello%2C+ww_niri%21+42+%D0%9F%D1%80%D0%B8%D0%B2%D0%B5%D1%82%2C+%D0%BC%D0%B8%D1%80+x"
+            ),
+            "{sent}"
+        );
 
         slot.stop().with_timeout(long).call().await.unwrap();
         launch(vec!["kill".into(), server.pid.to_string()]).await;

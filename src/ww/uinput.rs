@@ -30,6 +30,9 @@ const REL_WHEEL_HI_RES: u16 = 0x0b;
 const REL_HWHEEL_HI_RES: u16 = 0x0c;
 /// KEY_ESC to KEY_MICMUTE: the keys of a full keyboard.
 pub const KEYS: std::ops::RangeInclusive<u16> = 1..=248;
+/// KEY_UNKNOWN, on no keysym in xkb's keymaps: a press of it on the keyboard device tells niri
+/// to switch to the next queued layout ([super::input::Op::Layout]) and goes no further.
+pub const LAYOUT_MARKER: u16 = 240;
 /// BTN_LEFT to BTN_TASK.
 const BUTTONS: std::ops::RangeInclusive<u16> = 0x110..=0x117;
 const BUS_VIRTUAL: u16 = 0x06;

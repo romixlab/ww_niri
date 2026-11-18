@@ -439,6 +439,11 @@ impl State {
     ) where
         I::Device: 'static,
     {
+        #[cfg(feature = "ww")]
+        if self.ww_layout_marker::<_, I>(&event) {
+            return;
+        }
+
         let device = event.device();
         let virtual_keyboard = (&device as &dyn Any).downcast_ref::<VirtualKeyboardDevice>();
 

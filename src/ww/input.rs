@@ -44,6 +44,8 @@ pub enum Op {
         code: u32,
         pressed: bool,
     },
+    /// Makes this layout of the keymap the active one, in order with the keys around it.
+    Layout(u32),
 }
 
 /// A key of the keymap that makes a keysym: its xkb keycode, and whether Shift goes with it.
@@ -51,6 +53,20 @@ pub enum Op {
 pub struct Key {
     pub code: u32,
     pub shift: bool,
+}
+
+/// A key that types a character, and the layout it is on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Typed {
+    pub key: Key,
+    pub layout: u32,
+}
+
+/// The keys that type a text, and the layout active before them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TextKeys {
+    pub active: u32,
+    pub keys: Vec<Typed>,
 }
 
 /// Drags move in steps this far apart, about a frame.
@@ -66,6 +82,9 @@ const DEVICE_WAIT: Duration = Duration::from_secs(3);
 /// A held button or key comes up when this passes without a renewing press, unless the call
 /// names its own limit.
 const HOLD_DEFAULT: Duration = Duration::from_secs(10);
+
+/// Layout switches injected and not yet read by niri, across connections.
+const LAYOUT_SWITCHES_MAX: usize = 1024;
 
 type Res = Result<(), InputErrorOwned>;
 
@@ -129,6 +148,57 @@ pub fn find_key(keymap: &xkb::Keymap, layout: u32, sym: Keysym) -> Option<Key> {
         }
     }
     None
+}
+
+/// The keys that type `syms` with a keymap of `layouts` layouts, `active` the active one. A
+/// keysym stays on the layout the one before it was typed on when that layout has it, so a text
+/// switches layouts only where it must; else the active layout, then the others in order.
+/// `Err` holds the index of the first keysym no layout has.
+pub fn text_keys(
+    syms: &[Keysym],
+    layouts: u32,
+    active: u32,
+    mut find: impl FnMut(Keysym, u32) -> Option<Key>,
+) -> Result<TextKeys, usize> {
+    let mut keys = Vec::with_capacity(syms.len());
+    let mut on = active;
+    for (i, &sym) in syms.iter().enumerate() {
+        if sym.raw() == 0 {
+            return Err(i);
+        }
+        let others = (0..layouts).filter(|&l| l != on && l != active);
+        let typed = [on, active]
+            .into_iter()
+            .chain(others)
+            .find_map(|layout| {
+                Some(Typed {
+                    key: find(sym, layout)?,
+                    layout,
+                })
+            })
+            .ok_or(i)?;
+        on = typed.layout;
+        keys.push(typed);
+    }
+    Ok(TextKeys { active, keys })
+}
+
+/// The steps that type `text`: each key tapped (with the key `shift` where it needs Shift),
+/// the layout switched before a key on another one, and back to the active one at the end.
+fn text_ops(text: &TextKeys, shift: u32) -> Vec<Op> {
+    let mut ops = Vec::new();
+    let mut on = text.active;
+    for typed in &text.keys {
+        if typed.layout != on {
+            ops.push(Op::Layout(typed.layout));
+            on = typed.layout;
+        }
+        tap(&mut ops, typed.key, shift);
+    }
+    if on != text.active {
+        ops.push(Op::Layout(text.active));
+    }
+    ops
 }
 
 fn button_code(button: Button) -> Option<u32> {
@@ -218,7 +288,7 @@ impl Holds {
             Op::Button { code, pressed } => (Held::Button(code), pressed),
             Op::Key { code, pressed } => (Held::Key(code), pressed),
             Op::Modifier { code, pressed } => (Held::Modifier(code), pressed),
-            Op::Motion { .. } | Op::Wheel { .. } => return,
+            Op::Motion { .. } | Op::Wheel { .. } | Op::Layout(_) => return,
         };
         let was = self.held.iter().position(|(h, _)| *h == held);
         match (was, pressed) {
@@ -499,22 +569,30 @@ impl Input {
         self.inject(ops).await
     }
 
+    /// Types `text` with the keys of the keymap's layouts, switching to another layout where
+    /// the active one lacks a character and back at the end.
     pub async fn type_text(&mut self, text: &str) -> Res {
-        let shift = self.shift().await?;
-        let mut ops = Vec::new();
-        for ch in text.chars() {
-            let sym = match ch {
+        let chars: Vec<char> = text.chars().collect();
+        let syms: Vec<u32> = chars
+            .iter()
+            .map(|&ch| match ch {
                 '\n' => Keysym::Return,
                 '\t' => Keysym::Tab,
                 _ => xkb::utf32_to_keysym(u32::from(ch)),
-            };
-            let key = match self.key(sym).await {
-                Ok(key) if sym.raw() != 0 => key,
-                _ => return Err(InputErrorOwned::NotTypeable(u32::from(ch))),
-            };
-            tap(&mut ops, key, shift);
-        }
-        self.inject(ops).await
+            })
+            .map(Keysym::raw)
+            .collect();
+        let keys = call(&self.run, move |host| host.text_keys(syms))
+            .await
+            .ok_or_else(|| InputErrorOwned::Unavailable("niri went away".to_owned()))?
+            .map_err(|i| {
+                let ch = chars
+                    .get(i)
+                    .expect("text_keys answers an index of the text");
+                InputErrorOwned::NotTypeable(u32::from(*ch))
+            })?;
+        let shift = self.shift().await?;
+        self.inject(text_ops(&keys, shift)).await
     }
 
     pub async fn press_keys(&mut self, combo: &str) -> Res {
@@ -670,11 +748,14 @@ pub struct Seen {
 
 /// niri's side of the host: injection, window points, the pointer and the keymap.
 mod niri_state {
-    use smithay::input::keyboard::Keysym;
+    use smithay::backend::input::{Device as _, InputBackend, KeyState, KeyboardKeyEvent};
+    use smithay::input::keyboard::{Keysym, Layout};
     use smithay::utils::{Logical, Point as SPoint, Rectangle};
     use ww_niri_api::{InputErrorOwned, PointerPosition, WindowId, WindowPoint};
 
-    use super::{find_key, moved_by, Key, Op, Seen, Sent};
+    use super::{
+        find_key, moved_by, text_keys, Key, Op, Seen, Sent, TextKeys, LAYOUT_SWITCHES_MAX,
+    };
     use crate::layout::HitType;
     use crate::niri::State;
     use crate::window::mapped::MappedId;
@@ -768,6 +849,12 @@ mod niri_state {
                     }
                 }
             }
+            let switches = ops.iter().filter(|op| matches!(op, Op::Layout(_))).count();
+            if self.niri.ww.layout_switches.len() + switches > LAYOUT_SWITCHES_MAX {
+                return Err(InputErrorOwned::Unavailable(
+                    "too many layout switches niri has not read yet".to_owned(),
+                ));
+            }
             let bounds = self.ww_bounds().ok_or(InputErrorOwned::OffScreen)?;
             let Some(uinput) = &self.niri.ww.uinput else {
                 return Err(InputErrorOwned::Unavailable("no uinput devices".to_owned()));
@@ -794,6 +881,14 @@ mod niri_state {
                     }
                     Op::Modifier { code, pressed } => {
                         uinput.write_pointer(&uinput::key((code - 8) as u16, pressed))
+                    }
+                    // niri switches when it reads the marker, after the keys before it.
+                    Op::Layout(layout) => {
+                        self.niri.ww.layout_switches.push_back(layout);
+                        let marker = uinput::LAYOUT_MARKER;
+                        uinput
+                            .write_keyboard(&uinput::key(marker, true))
+                            .and_then(|()| uinput.write_keyboard(&uinput::key(marker, false)))
                     }
                 };
                 res.map_err(|err| InputErrorOwned::Unavailable(format!("uinput: {err}")))?;
@@ -854,6 +949,61 @@ mod niri_state {
                 y: px(pos.y),
                 window,
             }
+        }
+
+        /// Takes a layout switch marker of the API's keyboard: on its press, makes the next queued
+        /// layout the active one. Answers whether the event was one.
+        pub fn ww_layout_marker<E: KeyboardKeyEvent<I>, I: InputBackend>(
+            &mut self,
+            event: &E,
+        ) -> bool {
+            if event.key_code().raw() != u32::from(uinput::LAYOUT_MARKER) + 8
+                || event.device().name() != uinput::KEYBOARD_NAME
+            {
+                return false;
+            }
+            if event.state() != KeyState::Pressed {
+                return true;
+            }
+            let Some(layout) = self.niri.ww.layout_switches.pop_front() else {
+                warn!("ww: a layout switch marker without a queued layout");
+                return true;
+            };
+            let keyboard = self
+                .niri
+                .seat
+                .get_keyboard()
+                .expect("niri's seat has a keyboard");
+            keyboard.with_xkb_state(self, |mut context| {
+                let count = {
+                    let xkb = context.xkb().lock().expect("the xkb lock is not poisoned");
+                    xkb.layouts().count()
+                };
+                // The keymap may have changed since the text was planned.
+                if (layout as usize) < count {
+                    context.set_layout(Layout(layout));
+                }
+            });
+            true
+        }
+
+        pub fn ww_text_keys(&mut self, syms: &[u32]) -> Result<TextKeys, usize> {
+            let syms: Vec<Keysym> = syms.iter().map(|&s| Keysym::new(s)).collect();
+            let keyboard = self
+                .niri
+                .seat
+                .get_keyboard()
+                .expect("niri's seat has a keyboard");
+            keyboard.with_xkb_state(self, |context| {
+                let xkb = context.xkb().lock().expect("the xkb lock is not poisoned");
+                let active = xkb.active_layout().0;
+                let layouts = xkb.layouts().count() as u32;
+                // SAFETY: the keymap is used only while the lock is held.
+                let keymap = unsafe { xkb.keymap() };
+                text_keys(&syms, layouts, active, |sym, layout| {
+                    find_key(keymap, layout, sym)
+                })
+            })
         }
 
         pub fn ww_key_for(&mut self, sym: u32) -> Option<Key> {
@@ -1029,6 +1179,98 @@ mod tests {
             Err(InputErrorOwned::UnknownKey("NoSuchKey".to_owned()))
         );
         assert_eq!(names(""), Err(InputErrorOwned::UnknownKey("".to_owned())));
+    }
+
+    #[test]
+    fn text_on_a_second_layout() {
+        let context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
+        let keymap =
+            xkb::Keymap::new_from_names(&context, "", "", "us,ru", "", None, xkb::COMPILE_NO_FLAGS)
+                .unwrap();
+        let syms = |text: &str| -> Vec<Keysym> {
+            text.chars()
+                .map(|ch| xkb::utf32_to_keysym(u32::from(ch)))
+                .collect()
+        };
+        let plan = |text: &str, active| {
+            text_keys(&syms(text), 2, active, |sym, layout| {
+                find_key(&keymap, layout, sym)
+            })
+        };
+        let layouts = |text: &str, active| -> Vec<u32> {
+            plan(text, active)
+                .unwrap()
+                .keys
+                .iter()
+                .map(|t| t.layout)
+                .collect()
+        };
+        // evdev KEY_SEMICOLON 39 makes ж, KEY_Q 16 makes й; + 8.
+        let keys = plan("aЖ", 0).unwrap();
+        assert_eq!(keys.active, 0);
+        assert_eq!(
+            keys.keys[1],
+            Typed {
+                key: Key {
+                    code: 47,
+                    shift: true
+                },
+                layout: 1
+            }
+        );
+        // The space and digits stay on the layout before them.
+        assert_eq!(
+            layouts("ok привет 42 ok", 0),
+            [0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0]
+        );
+        // From ru active, Latin letters go to us.
+        assert_eq!(layouts("й q", 1), [1, 1, 0]);
+        assert_eq!(plan("ok 你", 0), Err(3));
+        assert_eq!(plan("a\u{0}", 0), Err(1));
+
+        let ops = text_ops(&plan("aй", 0).unwrap(), 50);
+        assert_eq!(
+            ops,
+            [
+                Op::Key {
+                    code: 38,
+                    pressed: true
+                },
+                Op::Key {
+                    code: 38,
+                    pressed: false
+                },
+                Op::Layout(1),
+                Op::Key {
+                    code: 24,
+                    pressed: true
+                },
+                Op::Key {
+                    code: 24,
+                    pressed: false
+                },
+                Op::Layout(0),
+            ]
+        );
+        // Only us: no switch.
+        assert!(!text_ops(&plan("ok", 0).unwrap(), 50)
+            .iter()
+            .any(|op| matches!(op, Op::Layout(_))));
+    }
+
+    #[test]
+    fn layout_marker_makes_no_keysym() {
+        let context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
+        let keymap =
+            xkb::Keymap::new_from_names(&context, "", "", "us,ru", "", None, xkb::COMPILE_NO_FLAGS)
+                .unwrap();
+        let kc = xkb::Keycode::new(u32::from(uinput::LAYOUT_MARKER) + 8);
+        for layout in 0..2 {
+            for level in 0..keymap.num_levels_for_key(kc, layout) {
+                assert!(keymap.key_get_syms_by_level(kc, layout, level).is_empty());
+            }
+        }
+        assert!(uinput::KEYS.contains(&uinput::LAYOUT_MARKER));
     }
 
     #[test]
