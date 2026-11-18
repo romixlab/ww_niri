@@ -1,0 +1,32 @@
+[package]
+name = "ww_niri_fake"
+version = "0.1.0"
+description = "An in-memory TV serving ww_niri's control API in-process, for client and app tests and demos"
+authors = ["Roman Isaikin <roman@vhrd.tech>"]
+license.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository = "https://github.com/romixlab/ww_niri"
+publish = false
+
+[dependencies]
+exact_units = { workspace = true, features = [
+  "std",
+  "shrink_wrap",
+  "time",
+  "dimensionless",
+] }
+tokio = { workspace = true, features = ["rt", "sync", "time", "macros"] }
+wire_weaver = { workspace = true, features = ["std"] }
+wire_weaver_client = { workspace = true, features = ["in_process"] }
+ww_client_server = { workspace = true, features = ["std"] }
+ww_device.workspace = true
+ww_niri_api.workspace = true
+ww_stream = { workspace = true, features = ["std"] }
+
+[dev-dependencies]
+anyhow.workspace = true
+
+# The generated server names ww_stream; the sources never do.
+[package.metadata.cargo-machete]
+ignored = ["ww_stream"]

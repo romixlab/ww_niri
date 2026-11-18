@@ -5755,6 +5755,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "ww_niri_fake"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "exact_units",
+ "tokio",
+ "wire_weaver",
+ "wire_weaver_client",
+ "ww_client_server",
+ "ww_device",
+ "ww_niri_api",
+ "ww_stream",
+]
+
+[[package]]
 name = "ww_numeric"
 version = "0.3.0"
 source = "git+https://github.com/vhrdtech/ww_base#d0641addf68e617fe05911a61dd63e8c93b38fc5"
