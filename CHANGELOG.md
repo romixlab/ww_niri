@@ -4,6 +4,14 @@ Changes of ww_niri on top of upstream niri. Upstream's own changes are in its re
 
 ## [Unreleased]
 
+### Added
+
+- Control API: `pointer.move_by` relative moves, observed pointer `position`, media and remote keys (P2618#18nov-1316).
+
+### Changed
+
+- Control API: `scroll` takes v120 units and modifiers; `press` and `key_down` take a hold limit, default 10 s (breaks clients).
+
 ## [26.8.0] - 2026-11-18
 
 ### Added

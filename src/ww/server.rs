@@ -687,6 +687,7 @@ impl Server {
     // ---- ww_niri_api::Input at input ----
 
     /// Where the pointer is, and the window under it with the point in its own coordinates.
+    /// Observers hear when either changes, whatever moved the pointer or the window.
     async fn get_input_pointer_position(
         &mut self,
         _cx: &mut Context<'_, impl EventOut>,
@@ -705,6 +706,15 @@ impl Server {
         to: ww_niri_api::Point,
     ) -> RpcResult<InputRes<'_>> {
         RpcResult::Ready(self.input.move_to(to).await.map_err(Into::into))
+    }
+
+    async fn input_pointer_move_by(
+        &mut self,
+        _cx: &mut Context<'_, impl EventOut>,
+        dx: ww_niri_api::Px,
+        dy: ww_niri_api::Px,
+    ) -> RpcResult<InputRes<'_>> {
+        RpcResult::Ready(self.input.move_by(dx, dy).await.map_err(Into::into))
     }
 
     async fn input_pointer_click(
@@ -727,8 +737,9 @@ impl Server {
         &mut self,
         _cx: &mut Context<'_, impl EventOut>,
         button: ww_niri_api::Button,
+        hold: Option<exact_units::Millis<u16>>,
     ) -> RpcResult<InputRes<'_>> {
-        RpcResult::Ready(self.input.button(button, true).await.map_err(Into::into))
+        RpcResult::Ready(self.input.press(button, hold).await.map_err(Into::into))
     }
 
     async fn input_pointer_release(
@@ -736,7 +747,7 @@ impl Server {
         _cx: &mut Context<'_, impl EventOut>,
         button: ww_niri_api::Button,
     ) -> RpcResult<InputRes<'_>> {
-        RpcResult::Ready(self.input.button(button, false).await.map_err(Into::into))
+        RpcResult::Ready(self.input.release(button).await.map_err(Into::into))
     }
 
     async fn input_pointer_drag(
@@ -762,8 +773,14 @@ impl Server {
         at: Option<ww_niri_api::Point>,
         dx: i16,
         dy: i16,
+        modifiers: ww_niri_api::Modifiers,
     ) -> RpcResult<InputRes<'_>> {
-        RpcResult::Ready(self.input.scroll(at, dx, dy).await.map_err(Into::into))
+        RpcResult::Ready(
+            self.input
+                .scroll(at, dx, dy, modifiers)
+                .await
+                .map_err(Into::into),
+        )
     }
 
     async fn input_keyboard_type_text(
@@ -793,8 +810,9 @@ impl Server {
         &mut self,
         _cx: &mut Context<'_, impl EventOut>,
         key: String,
+        hold: Option<exact_units::Millis<u16>>,
     ) -> RpcResult<InputRes<'_>> {
-        RpcResult::Ready(self.input.key_updown(&key, true).await.map_err(Into::into))
+        RpcResult::Ready(self.input.key_down(&key, hold).await.map_err(Into::into))
     }
 
     async fn input_keyboard_key_up(
@@ -802,10 +820,11 @@ impl Server {
         _cx: &mut Context<'_, impl EventOut>,
         key: String,
     ) -> RpcResult<InputRes<'_>> {
-        RpcResult::Ready(self.input.key_updown(&key, false).await.map_err(Into::into))
+        RpcResult::Ready(self.input.key_up(&key).await.map_err(Into::into))
     }
 
-    /// Settings and send state of observed properties, for `Observe` requests and `poll_properties`.
+    /// Settings and send state of observed properties, for `Observe` requests and
+    /// `poll_properties`.
     fn observe_state(&mut self) -> &mut api_impl::ObserveState {
         &mut self.observe
     }

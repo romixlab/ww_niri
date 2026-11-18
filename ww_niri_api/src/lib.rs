@@ -223,10 +223,15 @@ pub trait Input {
 #[ww_trait]
 pub trait Pointer {
     /// Where the pointer is, and the window under it with the point in its own coordinates.
-    property!(ro position: PointerPosition);
+    /// Observers hear when either changes, whatever moved the pointer or the window.
+    property!(ro+observe position: PointerPosition);
 
     /// Moves the pointer there.
     fn move_to(to: Point) -> Result<(), InputError<'i>>;
+
+    /// Moves the pointer by a distance from where it is, as a mouse does: past the edge of the
+    /// outputs it stops at the edge of the one it was on.
+    fn move_by(dx: Px, dy: Px) -> Result<(), InputError<'i>>;
 
     /// Presses and releases `button` `count` times (2 is a double click, at most 3), at `at` when
     /// given, else where the pointer is, with `modifiers` held around the clicks.
@@ -237,8 +242,9 @@ pub trait Pointer {
         modifiers: Modifiers,
     ) -> Result<(), InputError<'i>>;
 
-    /// Holds a button down; it stays down until [Pointer::release] or the connection ends.
-    fn press(button: Button) -> Result<(), InputError<'i>>;
+    /// Holds a button down until [Pointer::release], the connection ends, or `hold` passes
+    /// without another `press` of it (`None`: 10 s; 0 is a `BadArgument`).
+    fn press(button: Button, hold: Option<Millis<u16>>) -> Result<(), InputError<'i>>;
     fn release(button: Button) -> Result<(), InputError<'i>>;
 
     /// Presses at `from`, moves to `to` in steps over `duration`, releases there.
@@ -249,8 +255,15 @@ pub trait Pointer {
         duration: Millis<u16>,
     ) -> Result<(), InputError<'i>>;
 
-    /// Wheel notches, positive down and right, at `at` when given.
-    fn scroll(at: Option<Point>, dx: i16, dy: i16) -> Result<(), InputError<'i>>;
+    /// Turns the wheel by `dx` and `dy` in v120 units, positive down and right: 120 is one
+    /// notch, less scrolls smoothly. At `at` when given, with `modifiers` held around it, so
+    /// ctrl and scroll zoom as a pinch does.
+    fn scroll(
+        at: Option<Point>,
+        dx: i16,
+        dy: i16,
+        modifiers: Modifiers,
+    ) -> Result<(), InputError<'i>>;
 }
 
 #[ww_trait]
@@ -264,9 +277,10 @@ pub trait Keyboard {
     /// shift, alt and super in any case.
     fn press_keys(combo: &'i str) -> Result<(), InputError<'i>>;
 
-    /// Holds a key (a keysym name or a modifier) down; it stays down until [Keyboard::key_up] or
-    /// the connection ends.
-    fn key_down(key: &'i str) -> Result<(), InputError<'i>>;
+    /// Holds a key (a keysym name or a modifier) down until [Keyboard::key_up], the connection
+    /// ends, or `hold` passes without another `key_down` of it (`None`: 10 s; 0 is a
+    /// `BadArgument`). Media and remote keys are keysyms too: `XF86AudioPlay`, `XF86Back`.
+    fn key_down(key: &'i str, hold: Option<Millis<u16>>) -> Result<(), InputError<'i>>;
     fn key_up(key: &'i str) -> Result<(), InputError<'i>>;
 }
 
@@ -444,7 +458,7 @@ pub enum Button {
     Forward,
 }
 
-/// Modifiers held around a click.
+/// Modifiers held around a click or a scroll.
 #[derive_shrink_wrap(
     borrowed,
     owned(feature = "std"),
@@ -468,7 +482,7 @@ pub enum InputError<'i> {
     UnknownKey(&'i str),
     /// A character on no key of the configured keymap, as a Unicode scalar value.
     NotTypeable(u32),
-    /// `button` or `count` out of range.
+    /// `button`, `count` or `hold` out of range.
     BadArgument,
     /// The input devices can't be made or written (no access to /dev/uinput).
     Unavailable(&'i str),

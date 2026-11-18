@@ -27,7 +27,7 @@ mod config;
 mod connection;
 mod host;
 mod hub;
-mod input;
+pub(crate) mod input;
 mod interfaces;
 mod players;
 mod server;
@@ -54,6 +54,11 @@ pub struct WwServer {
     services: Rc<Services>,
     /// The keyboard and pointer of `input`, made on first use.
     pub uinput: Option<uinput::Uinput>,
+    /// The last pointer motion injected, and where niri had the pointer then: until niri has
+    /// read it, relative moves start from there.
+    pub pointer_sent: Option<input::Sent>,
+    /// The pointer and what is under it as observers last heard.
+    pub pointer_seen: Option<input::Seen>,
 }
 
 /// What every connection shares: the ww side's events, the browser slots, the players and the
@@ -134,6 +139,8 @@ impl WwServer {
             listeners: Listeners::default(),
             services,
             uinput: None,
+            pointer_sent: None,
+            pointer_seen: None,
         };
         ww.reload(event_loop);
 

@@ -1,10 +1,10 @@
 //! The ww side's own events (browser slots, players) for every connection that has the events
 //! stream open, and the changes behind observed properties under `browsers[]` and `players[]`
-//! for every connection.
+//! and of the pointer's position for every connection.
 
 use std::cell::RefCell;
 
-use async_channel::{Receiver, Sender};
+use async_channel::{Receiver, Sender, TrySendError};
 use ww_niri_api::EventOwned;
 
 /// Events wait here for a connection that reads slowly; past it, it gets `Resync`.
@@ -24,6 +24,7 @@ pub enum Mark {
 pub struct Hub {
     subscribers: RefCell<Vec<Sender<EventOwned>>>,
     marks: RefCell<Vec<Sender<Mark>>>,
+    pointer: RefCell<Vec<Sender<()>>>,
 }
 
 impl Hub {
@@ -39,6 +40,21 @@ impl Hub {
         let (tx, rx) = async_channel::bounded(EVENT_QUEUE);
         self.marks.borrow_mut().push(tx);
         rx
+    }
+
+    /// Moves of the pointer from now on, for one connection: a move it has not read yet stands
+    /// for every move since.
+    pub fn subscribe_pointer(&self) -> Receiver<()> {
+        let (tx, rx) = async_channel::bounded(1);
+        self.pointer.borrow_mut().push(tx);
+        rx
+    }
+
+    /// The pointer moved, or the window under it.
+    pub fn pointer_moved(&self) {
+        self.pointer
+            .borrow_mut()
+            .retain(|tx| !matches!(tx.try_send(()), Err(TrySendError::Closed(()))));
     }
 
     fn mark(&self, mark: Mark) {

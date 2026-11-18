@@ -152,3 +152,62 @@ fn host_window_points_and_pointer() {
         .unwrap();
     assert!(a.shift);
 }
+
+#[test]
+fn host_relative_moves_and_pointer_notices() {
+    use smithay::input::keyboard::Keysym;
+    use smithay::utils::Point;
+
+    let mut f = Fixture::new();
+    f.add_output(1, (1920, 1080));
+    let state = f.niri_state();
+    let set = |state: &mut crate::niri::State, x: f64, y: f64| {
+        let pointer = state.niri.seat.get_pointer().unwrap();
+        pointer.set_location(Point::from((x, y)));
+    };
+
+    set(state, 100., 100.);
+    assert_eq!(state.pointer_moved_by(5., -3.), Ok((105., 97.)));
+    // Past the output: stops at its edge.
+    assert_eq!(state.pointer_moved_by(5000., -500.), Ok((1919., 0.)));
+
+    // A motion niri has not read yet: moves go on from where it goes, until niri moved the
+    // pointer.
+    let at = Point::from((100., 100.));
+    state.niri.ww.pointer_sent = Some(crate::ww::input::Sent::new((500., 300.), at));
+    state.ww_refresh_pointer();
+    assert_eq!(state.pointer_moved_by(1., 1.), Ok((501., 301.)));
+    set(state, 500.2, 300.2);
+    state.ww_refresh_pointer();
+    assert!(state.niri.ww.pointer_sent.is_none());
+    // Back where it was: from there, not from the old motion.
+    set(state, 100., 100.);
+    assert_eq!(state.pointer_moved_by(1., 1.), Ok((101., 101.)));
+
+    // Observers hear of a move once, at the next refresh after it.
+    let moved = state.services().hub.subscribe_pointer();
+    state.ww_refresh_pointer();
+    moved.try_recv().ok();
+    state.ww_refresh_pointer();
+    assert!(moved.try_recv().is_err(), "nothing moved");
+    set(state, 300., 200.);
+    state.ww_refresh_pointer();
+    assert!(moved.try_recv().is_ok(), "the pointer moved");
+
+    // The configured keymap (us) has the media and remote keys, on their evdev codes plus 8.
+    for (sym, code) in [
+        (Keysym::XF86_AudioPlay, 172),
+        (Keysym::XF86_AudioMute, 121),
+        (Keysym::XF86_AudioRaiseVolume, 123),
+        (Keysym::XF86_Back, 166),
+        (Keysym::XF86_HomePage, 180),
+        (Keysym::XF86_Search, 225),
+    ] {
+        let key = state.key_for(sym.raw());
+        assert_eq!(
+            key.map(|k| (k.code, k.shift)),
+            Some((code, false)),
+            "{sym:?}"
+        );
+    }
+}

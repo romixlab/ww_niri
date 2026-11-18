@@ -890,6 +890,8 @@ impl State {
         self.niri.global_space.refresh();
         self.niri.refresh_idle_inhibit();
         self.refresh_pointer_contents();
+        #[cfg(feature = "ww")]
+        self.ww_refresh_pointer();
         foreign_toplevel::refresh(self);
         ext_workspace::refresh(self);
         self.refresh_image_copy_capture();

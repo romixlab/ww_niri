@@ -105,6 +105,10 @@ impl LoopIo {
     pub async fn sleep(&self, time: Duration) {
         self.timeout(time).await;
     }
+
+    pub async fn sleep_until(&self, at: Instant) {
+        (self.deadline)(at).await;
+    }
 }
 
 /// Awaits `fut` for at most `after`; `None` when time ran out.

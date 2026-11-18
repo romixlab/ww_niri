@@ -41,6 +41,8 @@ pub trait WwHost: 'static {
     /// A point of the window's surface in global space.
     fn window_point(&mut self, id: u64, x: f64, y: f64) -> Result<(f64, f64), InputErrorOwned>;
     fn pointer_position(&mut self) -> PointerPosition;
+    /// Where a relative move of the pointer ends, counting moves injected and not yet seen.
+    fn pointer_moved_by(&mut self, dx: f64, dy: f64) -> Result<(f64, f64), InputErrorOwned>;
     /// The key of the configured keymap that makes the keysym.
     fn key_for(&mut self, keysym: u32) -> Option<Key>;
 }
@@ -245,6 +247,10 @@ mod niri_state {
 
         fn pointer_position(&mut self) -> PointerPosition {
             self.ww_pointer_position()
+        }
+
+        fn pointer_moved_by(&mut self, dx: f64, dy: f64) -> Result<(f64, f64), InputErrorOwned> {
+            self.ww_pointer_moved_by(dx, dy)
         }
 
         fn key_for(&mut self, keysym: u32) -> Option<Key> {

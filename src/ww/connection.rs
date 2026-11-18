@@ -1,8 +1,10 @@
 //! One client connection: WebSocket over the accepted TCP stream, a `ww_device::Server` and the
 //! API handlers, as one task on the compositor's executor.
 
+use std::future::Future;
 use std::net::{SocketAddr, TcpStream};
 use std::pin::pin;
+use std::time::Instant;
 
 use async_channel::Receiver;
 use calloop::io::Async;
@@ -62,6 +64,15 @@ enum Next {
     Audio,
     /// One of the ww side's events, for observed properties under `browsers[]` and `players[]`.
     Mark(Mark),
+    /// The pointer moved, or the window under it.
+    Pointer,
+    /// A hold limit of a button or key the client holds passed.
+    HoldLimit,
+}
+
+/// The first of two to come.
+async fn race(a: impl Future<Output = Next>, b: impl Future<Output = Next>) -> Next {
+    select(pin!(a), pin!(b)).await.factor_first().0
 }
 
 pub async fn serve<D: WwHost>(
@@ -97,55 +108,18 @@ pub async fn serve<D: WwHost>(
         return;
     };
     let mut backend = Server::new(run.clone(), peer, services);
-    let mut events = Events::Off;
-    let audio_changed = backend.audio.watch();
-    // Observed element properties follow the ww side's events whether or not the events stream
-    // is open.
-    let mut marks = backend.hub.subscribe_marks();
+    let mut sources = Sources {
+        events: Events::Off,
+        audio: backend.audio.watch(),
+        marks: backend.hub.subscribe_marks(),
+        pointer: backend.hub.subscribe_pointer(),
+    };
     let mut observe_buf = vec![0u8; MAX_MESSAGE_LEN];
 
     loop {
-        // Follow niri's events while the client has the stream open.
-        match (&events, backend.events_open) {
-            (Events::Off, true) => {
-                events = Events::On {
-                    niri: call(&run, |host| host.subscribe_events()).await.flatten(),
-                    ww: backend.hub.subscribe(),
-                };
-            }
-            (Events::On { .. }, false) => events = Events::Off,
-            _ => (),
-        }
-
+        sources.follow_events(&backend, &run).await;
         let step = {
-            let next_event = pin!(async {
-                let Events::On { niri, ww } = &events else {
-                    return std::future::pending().await;
-                };
-                let niri = pin!(async {
-                    match niri {
-                        Some(rx) => rx.recv().await.map_or(Next::Behind, Next::Niri),
-                        None => std::future::pending().await,
-                    }
-                });
-                let ww = pin!(async { ww.recv().await.map_or(Next::Behind, Next::Ww) });
-                select(niri, ww).await.factor_first().0
-            });
-            let audio = pin!(async {
-                match audio_changed.recv().await {
-                    Ok(()) => Next::Audio,
-                    Err(_) => std::future::pending().await,
-                }
-            });
-            let mark = pin!(async {
-                match marks.recv().await {
-                    Ok(event) => Next::Mark(event),
-                    // Fell behind: resubscribed below.
-                    Err(_) => Next::Behind,
-                }
-            });
-            let changed = select(audio, mark);
-            let next = select(next_event, changed);
+            let next = pin!(sources.next(&backend.input));
             // Observed properties: wake when one is due (a period, a held-back change).
             let wake = backend
                 .observe
@@ -153,10 +127,7 @@ pub async fn serve<D: WwHost>(
                 .map(ww_device::Instant::from_micros);
             match select(pin!(server.wait_until(wake)), next).await {
                 Either::Left((ready, _)) => Either::Left(ready),
-                Either::Right((next, _)) => match next {
-                    Either::Left((next, _)) => Either::Right(next),
-                    Either::Right((changed, _)) => Either::Right(changed.factor_first().0),
-                },
+                Either::Right((next, _)) => Either::Right(next),
             }
         };
         match step {
@@ -169,41 +140,8 @@ pub async fn serve<D: WwHost>(
                 }
                 None => {}
             },
-            Either::Right(event) => {
-                let out = match event {
-                    Next::Niri(event) => {
-                        let mut out = map_event(&run, event).await;
-                        for event in &mut out {
-                            if let EventOwned::WindowOpenedOrChanged(window) = event {
-                                backend.mark_browser(window);
-                            }
-                        }
-                        out
-                    }
-                    Next::Ww(event) => vec![event],
-                    Next::Mark(event) => {
-                        backend.mark(&event).await;
-                        Vec::new()
-                    }
-                    Next::Behind if marks.is_closed() => {
-                        marks = backend.hub.subscribe_marks();
-                        backend.mark_all();
-                        Vec::new()
-                    }
-                    Next::Audio => {
-                        backend.mark_changed_audio_volume();
-                        backend.mark_changed_audio_muted();
-                        backend.mark_changed_audio_sink();
-                        Vec::new()
-                    }
-                    Next::Behind => {
-                        // A subscription was dropped, as niri does for any client too slow to
-                        // read: subscribe again and have the client list again.
-                        debug!("ww: {peer} fell behind on events");
-                        events = Events::Off;
-                        vec![EventOwned::Resync]
-                    }
-                };
+            Either::Right(next) => {
+                let out = sources.handle(next, &mut backend, &run).await;
                 if server.is_up() && backend.events_open {
                     for event in out {
                         let _ = api_impl::stream_data_ser()
@@ -221,7 +159,128 @@ pub async fn serve<D: WwHost>(
         }
     }
     // Nothing the client held down stays down.
-    backend.input.release_all().await;
+    if let Err(err) = backend.input.release_all().await {
+        warn!("ww: error releasing what {peer} held: {err:?}");
+    }
+}
+
+/// What a connection waits on besides the client.
+struct Sources {
+    events: Events,
+    /// The default sink changed.
+    audio: Receiver<()>,
+    /// Observed element properties follow the ww side's events whether or not the events
+    /// stream is open.
+    marks: Receiver<Mark>,
+    pointer: Receiver<()>,
+}
+
+impl Sources {
+    /// Follows niri's events while the client has the stream open.
+    async fn follow_events(&mut self, backend: &Server, run: &Run) {
+        match (&self.events, backend.events_open) {
+            (Events::Off, true) => {
+                self.events = Events::On {
+                    niri: call(run, |host| host.subscribe_events()).await.flatten(),
+                    ww: backend.hub.subscribe(),
+                };
+            }
+            (Events::On { .. }, false) => self.events = Events::Off,
+            _ => (),
+        }
+    }
+
+    /// The next thing to happen; `input` for its hold limits.
+    async fn next(&self, input: &super::input::Input) -> Next {
+        let event = async {
+            let Events::On { niri, ww } = &self.events else {
+                return std::future::pending().await;
+            };
+            let niri = async {
+                match niri {
+                    Some(rx) => rx.recv().await.map_or(Next::Behind, Next::Niri),
+                    None => std::future::pending().await,
+                }
+            };
+            let ww = async { ww.recv().await.map_or(Next::Behind, Next::Ww) };
+            race(niri, ww).await
+        };
+        let audio = async {
+            match self.audio.recv().await {
+                Ok(()) => Next::Audio,
+                Err(_) => std::future::pending().await,
+            }
+        };
+        let mark = async {
+            match self.marks.recv().await {
+                Ok(event) => Next::Mark(event),
+                // Fell behind: resubscribed in `handle`.
+                Err(_) => Next::Behind,
+            }
+        };
+        let pointer = async {
+            match self.pointer.recv().await {
+                Ok(()) => Next::Pointer,
+                Err(_) => std::future::pending().await,
+            }
+        };
+        let hold_limit = async {
+            input.hold_limit_passes().await;
+            Next::HoldLimit
+        };
+        let changed = race(race(audio, mark), race(pointer, hold_limit));
+        race(event, changed).await
+    }
+
+    /// Acts on what happened; answers the events for the client's stream.
+    async fn handle(&mut self, next: Next, backend: &mut Server, run: &Run) -> Vec<EventOwned> {
+        let peer = backend.peer;
+        match next {
+            Next::Niri(event) => {
+                let mut out = map_event(run, event).await;
+                for event in &mut out {
+                    if let EventOwned::WindowOpenedOrChanged(window) = event {
+                        backend.mark_browser(window);
+                    }
+                }
+                out
+            }
+            Next::Ww(event) => vec![event],
+            Next::Mark(event) => {
+                backend.mark(&event).await;
+                Vec::new()
+            }
+            Next::Behind if self.marks.is_closed() => {
+                self.marks = backend.hub.subscribe_marks();
+                backend.mark_all();
+                Vec::new()
+            }
+            Next::Audio => {
+                backend.mark_changed_audio_volume();
+                backend.mark_changed_audio_muted();
+                backend.mark_changed_audio_sink();
+                Vec::new()
+            }
+            Next::Pointer => {
+                backend.mark_changed_input_pointer_position();
+                Vec::new()
+            }
+            Next::HoldLimit => {
+                match backend.input.release_expired(Instant::now()).await {
+                    Ok(count) => info!("ww: {count} held by {peer} came up: hold limit"),
+                    Err(err) => warn!("ww: error releasing what {peer} held: {err:?}"),
+                }
+                Vec::new()
+            }
+            Next::Behind => {
+                // A subscription was dropped, as niri does for any client too slow to read:
+                // subscribe again and have the client list again.
+                debug!("ww: {peer} fell behind on events");
+                self.events = Events::Off;
+                vec![EventOwned::Resync]
+            }
+        }
+    }
 }
 
 /// The API's events for one of niri's; most of niri's have no counterpart.

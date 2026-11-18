@@ -46,6 +46,8 @@ struct Fake {
     calls: Arc<Mutex<Vec<String>>>,
     events: Sender<niri_ipc::Event>,
     windows: Arc<Mutex<Vec<WindowOwned>>>,
+    /// Where the pointer is: the injected motions move it.
+    pointer: Arc<Mutex<(f64, f64)>>,
 }
 
 /// niri's events as the fake host has them: every subscriber gets all of them, from the first
@@ -149,8 +151,9 @@ impl WwHost for FakeHost {
         Some(rx)
     }
 
-    // A 1920x1080 output at (0, 0); window 7 at (100, 50); the pointer at (10, 20); keys: a
-    // keycode per keysym, Shift with upper case letters.
+    // A 1920x1080 output at (0, 0); window 7 at (100, 50), 800x600; the pointer where the last
+    // motion put it, at first (110, 70); keys: a keycode per keysym, Shift with upper case
+    // letters.
     fn input_devices(&mut self) -> Result<bool, String> {
         Ok(true)
     }
@@ -161,6 +164,12 @@ impl WwHost for FakeHost {
                 if !self.on_screen(x, y) {
                     return Err(InputErrorOwned::OffScreen);
                 }
+            }
+        }
+        for op in ops {
+            if let Op::Motion { x, y } = *op {
+                *self.fake.pointer.lock().unwrap() = (x, y);
+                self.services().hub.pointer_moved();
             }
         }
         let mut calls = self.fake.calls.lock().unwrap();
@@ -181,26 +190,46 @@ impl WwHost for FakeHost {
     }
 
     fn pointer_position(&mut self) -> ww_niri_api::PointerPosition {
-        ww_niri_api::PointerPosition {
-            x: 110.into(),
-            y: 70.into(),
-            window: Some(ww_niri_api::WindowPoint {
+        let (x, y) = *self.fake.pointer.lock().unwrap();
+        let (wx, wy) = (x - 100., y - 50.);
+        let window = ((0. ..800.).contains(&wx) && (0. ..600.).contains(&wy)).then(|| {
+            ww_niri_api::WindowPoint {
                 id: WindowId(7),
-                x: 10.into(),
-                y: 20.into(),
-            }),
+                x: (wx as i32).into(),
+                y: (wy as i32).into(),
+            }
+        });
+        ww_niri_api::PointerPosition {
+            x: (x as i32).into(),
+            y: (y as i32).into(),
+            window,
         }
+    }
+
+    fn pointer_moved_by(&mut self, dx: f64, dy: f64) -> Result<(f64, f64), InputErrorOwned> {
+        let output = smithay::utils::Rectangle::new((0, 0).into(), (1920, 1080).into());
+        let from = *self.fake.pointer.lock().unwrap();
+        super::input::moved_by(&[output], from, dx, dy).ok_or(InputErrorOwned::OffScreen)
     }
 
     fn key_for(&mut self, keysym: u32) -> Option<Key> {
         use smithay::input::keyboard::Keysym;
 
         let sym = Keysym::new(keysym);
-        if sym == Keysym::Shift_L {
-            return Some(Key {
-                code: 50,
-                shift: false,
-            });
+        match sym {
+            Keysym::Shift_L => {
+                return Some(Key {
+                    code: 50,
+                    shift: false,
+                })
+            }
+            Keysym::Control_L => {
+                return Some(Key {
+                    code: 37,
+                    shift: false,
+                })
+            }
+            _ => (),
         }
         let ch = sym.key_char().filter(|c| c.is_ascii())?;
         Some(Key {
@@ -237,6 +266,7 @@ fn bench_with(
         calls: Arc::default(),
         events: events_tx,
         windows: Arc::new(Mutex::new(windows)),
+        pointer: Arc::new(Mutex::new((110., 70.))),
     };
     let (stop_tx, stop_rx) = calloop::channel::channel::<()>();
 
@@ -358,17 +388,16 @@ fn input_pointer_and_keyboard() {
             let position = pointer.read_position().read().await.unwrap();
             assert_eq!(position.window.unwrap().x.get(), 10);
 
-            // A double click with ctrl held around it.
-            let ctrl = Modifiers {
-                ctrl: true,
+            // The fake keymap has no Super_L: nothing goes in.
+            let super_key = Modifiers {
+                super_key: true,
                 ..Modifiers::default()
             };
             pointer
-                .click(None, Button::Left, 2, ctrl)
+                .click(None, Button::Left, 2, super_key)
                 .call()
                 .await
                 .unwrap_err();
-            // The fake keymap has no Control_L: nothing went in.
             assert_eq!(taken(), Vec::<String>::new());
             pointer
                 .click(Some(window(0, 0)), Button::Right, 2, Modifiers::default())
@@ -419,7 +448,11 @@ fn input_pointer_and_keyboard() {
                 Err(CallError::Device(InputErrorOwned::BadArgument))
             ));
 
-            pointer.scroll(None, 0, -2).call().await.unwrap();
+            pointer
+                .scroll(None, 0, -240, Modifiers::default())
+                .call()
+                .await
+                .unwrap();
             assert_eq!(taken(), ["Wheel { dx: 0.0, dy: -240.0 }"]);
 
             // A drag moves in steps over its time and ends where it was asked to.
@@ -480,8 +513,12 @@ fn input_pointer_and_keyboard() {
             );
 
             // What a connection holds goes up when it ends.
-            keyboard.key_down("x".to_owned()).call().await.unwrap();
-            pointer.press(Button::Middle).call().await.unwrap();
+            keyboard
+                .key_down("x".to_owned(), None)
+                .call()
+                .await
+                .unwrap();
+            pointer.press(Button::Middle, None).call().await.unwrap();
             taken();
         }
         drop(client);
@@ -503,6 +540,133 @@ fn input_pointer_and_keyboard() {
                 "Key { code: 120, pressed: false }",
             ]
         );
+    });
+}
+
+/// The calls of `fake` from now on, once `until` holds for them.
+async fn calls_until(fake: &Fake, until: impl Fn(&[String]) -> bool) -> Vec<String> {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let calls = fake.calls.lock().unwrap().clone();
+            if until(&calls) {
+                break calls;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("calls: {:?}", fake.calls.lock().unwrap()))
+}
+
+#[test]
+fn input_for_a_touchpad_and_a_remote() {
+    use exact_units::Millis;
+    use wire_weaver_client::observe::on_change;
+    use ww_niri_api::{Button, Modifiers, PointerPosition, WindowPoint};
+
+    bench(Vec::new()).run(async |client, fake| {
+        let taken = || std::mem::take(&mut *fake.calls.lock().unwrap());
+        let input = client.input();
+        let (pointer, keyboard) = (input.pointer(), input.keyboard());
+
+        // Observers hear where the pointer is, and every move.
+        let mut observed = pointer
+            .observe_position(on_change(Duration::ZERO))
+            .subscribe()
+            .await
+            .unwrap();
+        let mut until = async |x: i32, y: i32| {
+            tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    let position: PointerPosition = observed.recv().await.unwrap().value;
+                    if (position.x.get(), position.y.get()) == (x, y) {
+                        break position;
+                    }
+                }
+            })
+            .await
+            .unwrap_or_else(|_| panic!("observers get ({x}, {y})"))
+        };
+        let at = until(110, 70).await;
+        assert_eq!(
+            at.window,
+            Some(WindowPoint {
+                id: WindowId(7),
+                x: 10.into(),
+                y: 20.into()
+            })
+        );
+
+        // Relative moves, stopped at the edge of the output.
+        pointer.move_by(5.into(), (-3).into()).call().await.unwrap();
+        assert_eq!(taken(), ["Motion { x: 115.0, y: 67.0 }"]);
+        assert_eq!(until(115, 67).await.window.unwrap().x.get(), 15);
+        pointer.move_by(5000.into(), 0.into()).call().await.unwrap();
+        assert_eq!(taken(), ["Motion { x: 1919.0, y: 67.0 }"]);
+        assert_eq!(until(1919, 67).await.window, None);
+
+        // A quarter notch, with ctrl around it: a pinch.
+        let ctrl = Modifiers {
+            ctrl: true,
+            ..Modifiers::default()
+        };
+        pointer.scroll(None, 0, -30, ctrl).call().await.unwrap();
+        assert_eq!(
+            taken(),
+            [
+                "Key { code: 37, pressed: true }",
+                "Wheel { dx: 0.0, dy: -30.0 }",
+                "Key { code: 37, pressed: false }",
+            ]
+        );
+
+        // A hold renewed in time stays down, once; past its limit it comes up by itself.
+        let (down, up) = (
+            "Button { code: 272, pressed: true }",
+            "Button { code: 272, pressed: false }",
+        );
+        pointer
+            .press(Button::Left, Some(Millis::new(60_000)))
+            .call()
+            .await
+            .unwrap();
+        pointer
+            .press(Button::Left, Some(Millis::new(50)))
+            .call()
+            .await
+            .unwrap();
+        assert_eq!(calls_until(fake, |c| c.len() == 2).await, [down, up]);
+        taken();
+
+        keyboard
+            .key_down("x".to_owned(), Some(Millis::new(60_000)))
+            .call()
+            .await
+            .unwrap();
+        keyboard
+            .key_down("x".to_owned(), None)
+            .call()
+            .await
+            .unwrap();
+        keyboard.key_up("x".to_owned()).call().await.unwrap();
+        assert_eq!(
+            taken(),
+            [
+                "Key { code: 120, pressed: true }",
+                "Key { code: 120, pressed: false }",
+            ]
+        );
+
+        assert_eq!(
+            device_err(
+                pointer
+                    .press(Button::Right, Some(Millis::new(0)))
+                    .call()
+                    .await
+            ),
+            InputErrorOwned::BadArgument
+        );
+        assert_eq!(taken(), Vec::<String>::new());
     });
 }
 
@@ -1713,15 +1877,16 @@ fn live_screen() {
     });
 }
 
-/// The page of `live_input`: one text field over the whole window, and the last pointer or text
-/// event in the title, which the slot's state reports.
+/// The page of `live_input`: one text field over the whole window, and the last pointer, key,
+/// zoom or text event in the title, which the slot's state reports.
 const INPUT_PAGE: &str = r#"<!doctype html><title>ready</title>
 <style>html,body{margin:0;height:100%}input{position:fixed;inset:0;width:100%;height:100%;border:0;font-size:40px}</style>
 <form action="/done"><input name="q" autocomplete="off"></form>
 <script>
 const i = document.querySelector("input"), t = s => document.title = s;
-let down = null;
-addEventListener("mousedown", e => { down = [e.clientX, e.clientY]; });
+let down = null, wheels = 0, zooms = 0;
+addEventListener("mousemove", e => t(`move ${e.clientX} ${e.clientY}`));
+addEventListener("mousedown", e => { down = [e.clientX, e.clientY]; t(`down ${e.button}`); });
 addEventListener("mouseup", e => {
   if (down && Math.hypot(e.clientX - down[0], e.clientY - down[1]) > 5)
     { t(`drag ${down[0]} ${down[1]} ${e.clientX} ${e.clientY}`); down = "dragged"; }
@@ -1729,15 +1894,21 @@ addEventListener("mouseup", e => {
 addEventListener("click", e => { if (down !== "dragged") t(`click ${e.button} ${e.clientX} ${e.clientY}`); down = null; });
 addEventListener("dblclick", e => t(`dblclick ${e.clientX} ${e.clientY}`));
 addEventListener("contextmenu", e => { e.preventDefault(); t(`context ${e.clientX} ${e.clientY}`); });
-addEventListener("wheel", e => t(`wheel ${Math.sign(e.deltaY)}`));
+addEventListener("wheel", e => t(`wheel ${Math.sign(e.deltaY)} ${++wheels} ${Math.abs(e.deltaY)} ${e.ctrlKey}`));
+addEventListener("resize", () => t(`zoom ${++zooms} ${devicePixelRatio}`));
+addEventListener("keydown", e => {
+  if (/^(Media|Browser)/.test(e.key)) { e.preventDefault(); t(`key ${e.key}`); }
+});
 i.addEventListener("input", () => t(`text ${i.value}`));
 </script>"#;
 
 /// A running ww_niri with a screen: `WW_NIRI_URL=ws://ADDR:7590/ww` and `WW_NIRI_LIVE_INPUT=1`
 /// serve [INPUT_PAGE] on the niri host (python3 there, started through `apps.launch`: the host
 /// may not reach the test's PC), open it in browser slot 0, then click, double click, right
-/// click, scroll, drag and type into it and read each back from the page's title. Screenshots
-/// to `/tmp/ww-input-*.png` there, as `live_screen` takes them.
+/// click, scroll, drag, move by deltas, scroll by quarter notches, zoom with ctrl and scroll,
+/// press media keys, hold a button past its hold limit and type into it, and read each back
+/// from the page's title. Screenshots to `/tmp/ww-input-*.png` there, as `live_screen` takes
+/// them.
 #[test]
 fn live_input() {
     use exact_units::Millis;
@@ -1847,7 +2018,7 @@ fn live_input() {
             .await
             .unwrap();
         title("context 400 300").await;
-        pointer.scroll(None, 0, 1).call().await.unwrap();
+        pointer.scroll(None, 0, 120, none).call().await.unwrap();
         title("wheel 1").await;
         pointer
             .drag(at(100, 100), at(600, 400), Button::Left, Millis::new(300))
@@ -1855,6 +2026,96 @@ fn live_input() {
             .await
             .unwrap();
         title("drag 100 100 600 400").await;
+
+        // Relative moves, observed; small ones in a row add up.
+        let mut observed = pointer
+            .observe_position(wire_weaver_client::observe::on_change(Duration::ZERO))
+            .subscribe()
+            .await
+            .unwrap();
+        pointer.move_to(at(300, 200)).call().await.unwrap();
+        title("move 300 200").await;
+        let start = pointer.read_position().read().await.unwrap();
+        pointer.move_by(40.into(), 30.into()).call().await.unwrap();
+        title("move 340 230").await;
+        for _ in 0..10 {
+            pointer.move_by(1.into(), 1.into()).call().await.unwrap();
+        }
+        title("move 350 240").await;
+        let (x, y) = (start.x.get() + 50, start.y.get() + 40);
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let seen = observed.recv().await.unwrap().value;
+                if (seen.x.get(), seen.y.get()) == (x, y) {
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("observers hear the moves");
+
+        // Quarter notches scroll smoothly: they come as wheel events of their own, each smaller
+        // than a notch's.
+        let wheels = async |at_least: u32| {
+            let parse = |title: &str| -> Option<(u32, f64)> {
+                let parts: Vec<&str> = title.split(' ').collect();
+                match parts[..] {
+                    ["wheel", _, count, delta, _] => Some((count.parse().ok()?, delta.parse().ok()?)),
+                    _ => None,
+                }
+            };
+            let got = tokio::time::timeout(Duration::from_secs(10), async {
+                loop {
+                    let title = slot.read_state().read().await.unwrap().title;
+                    match parse(&title.unwrap_or_default()) {
+                        Some((count, delta)) if count >= at_least => break (count, delta),
+                        _ => tokio::time::sleep(Duration::from_millis(50)).await,
+                    }
+                }
+            })
+            .await;
+            got.unwrap_or_else(|_| panic!("{at_least} wheel events"))
+        };
+        pointer.scroll(None, 0, 120, none).call().await.unwrap();
+        let (notches, notch) = wheels(0).await;
+        for _ in 0..4 {
+            pointer.scroll(None, 0, 30, none).call().await.unwrap();
+        }
+        // libinput holds back a wheel's first half notch; the rest come one by one.
+        let (count, delta) = wheels(notches + 3).await;
+        eprintln!("a notch scrolled {notch}, {} quarter notches {delta} each", count - notches);
+        assert!(delta < notch, "a quarter notch scrolled {delta}, a notch {notch}");
+
+        // ctrl and scroll up zoom in; ctrl+0 back.
+        let ctrl = Modifiers {
+            ctrl: true,
+            ..Modifiers::default()
+        };
+        pointer.scroll(None, 0, -120, ctrl).call().await.unwrap();
+        title("zoom 1").await;
+        screenshot("3-zoomed").await;
+        keyboard.press_keys("ctrl+0".to_owned()).call().await.unwrap();
+        title("zoom 2").await;
+
+        for (combo, key) in [
+            ("XF86AudioPlay", "MediaPlay"),
+            ("XF86Search", "BrowserSearch"),
+        ] {
+            keyboard.press_keys(combo.to_owned()).call().await.unwrap();
+            title(&format!("key {key}")).await;
+        }
+
+        // A held button comes up by itself after its hold limit: a click.
+        pointer.move_to(at(200, 150)).call().await.unwrap();
+        pointer
+            .press(Button::Left, Some(Millis::new(500)))
+            .call()
+            .await
+            .unwrap();
+        let pressed = std::time::Instant::now();
+        title("down 0").await;
+        title("click 0 200 150").await;
+        eprintln!("held for {:?}", pressed.elapsed());
 
         // The drag selected nothing worth keeping: select all, then type over it.
         pointer

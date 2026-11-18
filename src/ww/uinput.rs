@@ -27,7 +27,7 @@ const REL_WHEEL: u16 = 0x08;
 const REL_WHEEL_HI_RES: u16 = 0x0b;
 const REL_HWHEEL_HI_RES: u16 = 0x0c;
 /// KEY_ESC to KEY_MICMUTE: the keys of a full keyboard.
-const KEYS: std::ops::RangeInclusive<u16> = 1..=248;
+pub const KEYS: std::ops::RangeInclusive<u16> = 1..=248;
 /// BTN_LEFT to BTN_TASK.
 const BUTTONS: std::ops::RangeInclusive<u16> = 0x110..=0x117;
 const BUS_VIRTUAL: u16 = 0x06;

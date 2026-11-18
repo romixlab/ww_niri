@@ -1,13 +1,15 @@
 //! Pointer and keyboard from the API, injected below niri through kernel uinput devices
 //! ([super::uinput]): libinput, xkb, niri's binds and the apps see them as real devices. Window
 //! points and keysyms are resolved in niri. Each connection keeps what it holds down ([Input])
-//! and lets it go when it ends.
+//! and lets it go when it ends or when a hold limit passes without a renewing press.
 
 use std::rc::Rc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
+use exact_units::Millis;
 use smithay::input::keyboard::{xkb, Keysym};
-use ww_niri_api::{Button, InputErrorOwned, Modifiers, Point};
+use smithay::utils::{Logical, Rectangle};
+use ww_niri_api::{Button, InputErrorOwned, Modifiers, Point, Px};
 
 use super::browsers::LoopIo;
 use super::host::{call, Run};
@@ -47,15 +49,16 @@ pub struct Key {
 /// Drags move in steps this far apart, about a frame.
 const STEP: Duration = Duration::from_millis(16);
 
-/// A wheel notch in v120 units.
-const NOTCH: f64 = 120.;
-
 /// Steps written at once, and the pause between such chunks.
 const CHUNK: usize = 16;
 const CHUNK_GAP: Duration = Duration::from_millis(2);
 
 /// How long new devices may take to reach niri.
 const DEVICE_WAIT: Duration = Duration::from_secs(3);
+
+/// A held button or key comes up when this passes without a renewing press, unless the call
+/// names its own limit.
+const HOLD_DEFAULT: Duration = Duration::from_secs(10);
 
 type Res = Result<(), InputErrorOwned>;
 
@@ -133,16 +136,142 @@ fn button_code(button: Button) -> Option<u32> {
     }
 }
 
-fn px(v: ww_niri_api::Px) -> f64 {
+fn px(v: Px) -> f64 {
     f64::from(v.get())
+}
+
+/// A press's hold limit: the default for `None`, a zero limit refused.
+fn hold_limit(hold: Option<Millis<u16>>) -> Result<Duration, InputErrorOwned> {
+    match hold.map(|ms| ms.get()) {
+        None => Ok(HOLD_DEFAULT),
+        Some(0) => Err(InputErrorOwned::BadArgument),
+        Some(ms) => Ok(Duration::from_millis(u64::from(ms))),
+    }
+}
+
+/// Where a relative move of the pointer from `from` ends, as niri moves a mouse's pointer: past
+/// the outputs it stops at the edge of the output it was on; from off every output it goes to
+/// the middle of the first one. `None` without outputs.
+pub fn moved_by(
+    outputs: &[Rectangle<i32, Logical>],
+    from: (f64, f64),
+    dx: f64,
+    dy: f64,
+) -> Option<(f64, f64)> {
+    let on = |(x, y): (f64, f64), r: &Rectangle<i32, Logical>| r.to_f64().contains((x, y));
+    let to = (from.0 + dx, from.1 + dy);
+    if outputs.iter().any(|r| on(to, r)) {
+        return Some(to);
+    }
+    match outputs.iter().find(|r| on(from, r)) {
+        Some(r) => Some((
+            to.0.clamp(f64::from(r.loc.x), f64::from(r.loc.x + r.size.w - 1)),
+            to.1.clamp(f64::from(r.loc.y), f64::from(r.loc.y + r.size.h - 1)),
+        )),
+        None => {
+            let r = outputs.first()?;
+            Some((
+                f64::from(r.loc.x) + f64::from(r.size.w) / 2.,
+                f64::from(r.loc.y) + f64::from(r.size.h) / 2.,
+            ))
+        }
+    }
+}
+
+/// A button or key held down.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Held {
+    Button(u32),
+    Key(u32),
+}
+
+impl Held {
+    fn release(self) -> Op {
+        match self {
+            Self::Button(code) => Op::Button {
+                code,
+                pressed: false,
+            },
+            Self::Key(code) => Op::Key {
+                code,
+                pressed: false,
+            },
+        }
+    }
+}
+
+/// What a connection holds down, in the order it went down, each with the time it comes up by
+/// itself: `None` while a call holds it (the modifiers around a click).
+#[derive(Debug, Default)]
+struct Holds {
+    held: Vec<(Held, Option<Instant>)>,
+}
+
+impl Holds {
+    /// Follows an injected step: a press holds, a release lets go.
+    fn follow(&mut self, op: Op) {
+        let (held, pressed) = match op {
+            Op::Button { code, pressed } => (Held::Button(code), pressed),
+            Op::Key { code, pressed } => (Held::Key(code), pressed),
+            Op::Motion { .. } | Op::Wheel { .. } => return,
+        };
+        let was = self.held.iter().position(|(h, _)| *h == held);
+        match (was, pressed) {
+            (None, true) => self.held.push((held, None)),
+            (Some(i), false) => {
+                self.held.remove(i);
+            }
+            _ => (),
+        }
+    }
+
+    fn holds(&self, held: Held) -> bool {
+        self.held.iter().any(|(h, _)| *h == held)
+    }
+
+    /// The held button or key comes up at `until` unless pressed again before.
+    fn limit(&mut self, held: Held, until: Instant) {
+        for (h, at) in &mut self.held {
+            if *h == held {
+                *at = Some(until);
+            }
+        }
+    }
+
+    /// When the next hold limit passes.
+    fn next_release(&self) -> Option<Instant> {
+        self.held.iter().filter_map(|(_, at)| *at).min()
+    }
+
+    /// The releases of what is held past its limit at `now`.
+    fn expired(&self, now: Instant) -> Vec<Op> {
+        self.held
+            .iter()
+            .filter(|(_, at)| at.is_some_and(|at| at <= now))
+            .map(|(h, _)| h.release())
+            .collect()
+    }
+
+    /// The releases of everything held: buttons first, then keys in reverse.
+    fn all(&self) -> Vec<Op> {
+        let buttons = self
+            .held
+            .iter()
+            .filter(|(h, _)| matches!(h, Held::Button(_)));
+        let keys = self
+            .held
+            .iter()
+            .rev()
+            .filter(|(h, _)| matches!(h, Held::Key(_)));
+        buttons.chain(keys).map(|(h, _)| h.release()).collect()
+    }
 }
 
 /// A connection's input: the steps it injects and what it holds down.
 pub struct Input {
     run: Run,
     io: Rc<LoopIo>,
-    buttons: Vec<u32>,
-    keys: Vec<u32>,
+    holds: Holds,
     /// niri has the devices.
     ready: bool,
 }
@@ -152,8 +281,7 @@ impl Input {
         Self {
             run,
             io,
-            buttons: Vec::new(),
-            keys: Vec::new(),
+            holds: Holds::default(),
             ready: false,
         }
     }
@@ -172,11 +300,7 @@ impl Input {
                 .await
                 .unwrap_or(Ok(()))?;
             for op in held {
-                match op {
-                    Op::Button { code, pressed } => hold(&mut self.buttons, code, pressed),
-                    Op::Key { code, pressed } => hold(&mut self.keys, code, pressed),
-                    _ => (),
-                }
+                self.holds.follow(op);
             }
         }
         Ok(())
@@ -248,6 +372,29 @@ impl Input {
         self.inject(ops).await
     }
 
+    pub async fn move_by(&mut self, dx: Px, dy: Px) -> Res {
+        let (x, y) = call(&self.run, move |host| host.pointer_moved_by(px(dx), px(dy)))
+            .await
+            .unwrap_or(Err(InputErrorOwned::OffScreen))?;
+        self.inject(vec![Op::Motion { x, y }]).await
+    }
+
+    /// The keys of the modifiers, in the order they go down.
+    async fn modifier_keys(&self, modifiers: Modifiers) -> Result<Vec<u32>, InputErrorOwned> {
+        let mut codes = Vec::new();
+        for (on, sym) in [
+            (modifiers.ctrl, Keysym::Control_L),
+            (modifiers.shift, Keysym::Shift_L),
+            (modifiers.alt, Keysym::Alt_L),
+            (modifiers.super_key, Keysym::Super_L),
+        ] {
+            if on {
+                codes.push(self.key(sym).await?.code);
+            }
+        }
+        Ok(codes)
+    }
+
     pub async fn click(
         &mut self,
         at: Option<Point>,
@@ -259,42 +406,41 @@ impl Input {
         if !(1..=3).contains(&count) {
             return Err(InputErrorOwned::BadArgument);
         }
-        let mut names = Vec::new();
-        for (on, sym) in [
-            (modifiers.ctrl, Keysym::Control_L),
-            (modifiers.shift, Keysym::Shift_L),
-            (modifiers.alt, Keysym::Alt_L),
-            (modifiers.super_key, Keysym::Super_L),
-        ] {
-            if on {
-                names.push(self.key(sym).await?.code);
-            }
-        }
+        let mods = self.modifier_keys(modifiers).await?;
         let mut ops = self.motion(at).await?;
-        ops.extend(names.iter().map(|&code| Op::Key {
-            code,
-            pressed: true,
-        }));
-        for _ in 0..count {
-            ops.push(Op::Button {
-                code,
-                pressed: true,
-            });
-            ops.push(Op::Button {
-                code,
-                pressed: false,
-            });
-        }
-        ops.extend(names.iter().rev().map(|&code| Op::Key {
-            code,
-            pressed: false,
-        }));
+        let steps =
+            (0..count).flat_map(|_| [true, false].map(|pressed| Op::Button { code, pressed }));
+        ops.extend(with_modifiers(&mods, steps));
         self.inject(ops).await
     }
 
-    pub async fn button(&mut self, button: Button, pressed: bool) -> Res {
+    /// Presses a button, or renews the hold limit of one this connection holds.
+    pub async fn press(&mut self, button: Button, hold: Option<Millis<u16>>) -> Res {
         let code = button_code(button).ok_or(InputErrorOwned::BadArgument)?;
-        self.inject(vec![Op::Button { code, pressed }]).await
+        let limit = hold_limit(hold)?;
+        let op = Op::Button {
+            code,
+            pressed: true,
+        };
+        self.hold(Held::Button(code), op, limit).await
+    }
+
+    pub async fn release(&mut self, button: Button) -> Res {
+        let code = button_code(button).ok_or(InputErrorOwned::BadArgument)?;
+        self.inject(vec![Op::Button {
+            code,
+            pressed: false,
+        }])
+        .await
+    }
+
+    async fn hold(&mut self, held: Held, press: Op, limit: Duration) -> Res {
+        // A renewing press: the device has it down already.
+        if !self.holds.holds(held) {
+            self.inject(vec![press]).await?;
+        }
+        self.holds.limit(held, Instant::now() + limit);
+        Ok(())
     }
 
     pub async fn drag(&mut self, from: Point, to: Point, button: Button, time: Duration) -> Res {
@@ -330,12 +476,21 @@ impl Input {
         .await
     }
 
-    pub async fn scroll(&mut self, at: Option<Point>, dx: i16, dy: i16) -> Res {
+    /// `dx` and `dy` in v120 units.
+    pub async fn scroll(
+        &mut self,
+        at: Option<Point>,
+        dx: i16,
+        dy: i16,
+        modifiers: Modifiers,
+    ) -> Res {
+        let mods = self.modifier_keys(modifiers).await?;
         let mut ops = self.motion(at).await?;
-        ops.push(Op::Wheel {
-            dx: f64::from(dx) * NOTCH,
-            dy: f64::from(dy) * NOTCH,
-        });
+        let wheel = Op::Wheel {
+            dx: f64::from(dx),
+            dy: f64::from(dy),
+        };
+        ops.extend(with_modifiers(&mods, [wheel]));
         self.inject(ops).await
     }
 
@@ -382,38 +537,70 @@ impl Input {
         self.inject(ops).await
     }
 
-    pub async fn key_updown(&mut self, name: &str, pressed: bool) -> Res {
+    async fn named_key(&self, name: &str) -> Result<u32, InputErrorOwned> {
         let sym = keysym(name).ok_or_else(|| InputErrorOwned::UnknownKey(name.to_owned()))?;
-        let key = self.key(sym).await?;
+        Ok(self.key(sym).await?.code)
+    }
+
+    /// Presses a key, or renews the hold limit of one this connection holds.
+    pub async fn key_down(&mut self, name: &str, hold: Option<Millis<u16>>) -> Res {
+        let limit = hold_limit(hold)?;
+        let code = self.named_key(name).await?;
+        let op = Op::Key {
+            code,
+            pressed: true,
+        };
+        self.hold(Held::Key(code), op, limit).await
+    }
+
+    pub async fn key_up(&mut self, name: &str) -> Res {
+        let code = self.named_key(name).await?;
         self.inject(vec![Op::Key {
-            code: key.code,
-            pressed,
+            code,
+            pressed: false,
         }])
         .await
     }
 
-    /// Lets go of every button and key this connection still holds.
-    pub async fn release_all(&mut self) {
-        let buttons = self.buttons.iter().map(|&code| Op::Button {
-            code,
-            pressed: false,
-        });
-        let keys = self.keys.iter().rev().map(|&code| Op::Key {
-            code,
-            pressed: false,
-        });
-        let ops: Vec<Op> = buttons.chain(keys).collect();
-        if !ops.is_empty() {
-            let _ = self.inject(ops).await;
+    /// Comes when the next hold limit passes; never while nothing held has one.
+    pub async fn hold_limit_passes(&self) {
+        match self.holds.next_release() {
+            Some(at) => self.io.sleep_until(at).await,
+            None => std::future::pending().await,
         }
+    }
+
+    /// Lets go of what is held past its limit at `now`; answers how many went up.
+    pub async fn release_expired(&mut self, now: Instant) -> Result<usize, InputErrorOwned> {
+        let ops = self.holds.expired(now);
+        let count = ops.len();
+        if count > 0 {
+            self.inject(ops).await?;
+        }
+        Ok(count)
+    }
+
+    /// Lets go of every button and key this connection still holds.
+    pub async fn release_all(&mut self) -> Res {
+        let ops = self.holds.all();
+        if ops.is_empty() {
+            return Ok(());
+        }
+        self.inject(ops).await
     }
 }
 
-fn hold(held: &mut Vec<u32>, code: u32, pressed: bool) {
-    held.retain(|&c| c != code);
-    if pressed {
-        held.push(code);
-    }
+/// `steps` with the keys of `mods` held around them.
+fn with_modifiers(mods: &[u32], steps: impl IntoIterator<Item = Op>) -> Vec<Op> {
+    let down = mods.iter().map(|&code| Op::Key {
+        code,
+        pressed: true,
+    });
+    let up = mods.iter().rev().map(|&code| Op::Key {
+        code,
+        pressed: false,
+    });
+    down.chain(steps).chain(up).collect()
 }
 
 fn tap(ops: &mut Vec<Op>, key: Key, shift: u32) {
@@ -447,13 +634,42 @@ fn abs_units(v: f64, origin: i32, size: i32) -> i32 {
     (units / f64::from(size)).ceil() as i32
 }
 
+/// A motion niri may not have read yet: where it goes, and where niri had the pointer when it
+/// was written.
+pub struct Sent {
+    to: (f64, f64),
+    from: smithay::utils::Point<f64, Logical>,
+}
+
+impl Sent {
+    pub fn new(to: (f64, f64), from: smithay::utils::Point<f64, Logical>) -> Self {
+        Self { to, from }
+    }
+
+    /// Where a relative move starts with the pointer at `at`: where the last motion goes while
+    /// niri has not read it (the pointer is still where it was then), else at `at`.
+    fn start(sent: Option<&Self>, at: smithay::utils::Point<f64, Logical>) -> (f64, f64) {
+        match sent {
+            Some(sent) if sent.from == at => sent.to,
+            _ => (at.x, at.y),
+        }
+    }
+}
+
+/// The pointer's place and the window under it with that window's place, as observers last
+/// heard them.
+pub struct Seen {
+    at: smithay::utils::Point<f64, Logical>,
+    window: Option<(smithay::desktop::Window, crate::layout::HitType)>,
+}
+
 /// niri's side of the host: injection, window points, the pointer and the keymap.
 mod niri_state {
     use smithay::input::keyboard::Keysym;
     use smithay::utils::{Logical, Point as SPoint, Rectangle};
     use ww_niri_api::{InputErrorOwned, PointerPosition, WindowId, WindowPoint};
 
-    use super::{find_key, Key, Op};
+    use super::{find_key, moved_by, Key, Op, Seen, Sent};
     use crate::layout::HitType;
     use crate::niri::State;
     use crate::window::mapped::MappedId;
@@ -464,6 +680,56 @@ mod niri_state {
     }
 
     impl State {
+        fn ww_pointer_location(&self) -> SPoint<f64, Logical> {
+            let pointer = self
+                .niri
+                .seat
+                .get_pointer()
+                .expect("niri's seat has a pointer");
+            pointer.current_location()
+        }
+
+        /// Tells observers of the pointer's position when it or the window under it moved, and
+        /// forgets an injected motion niri has read; once per loop iteration, after niri found
+        /// what is under the pointer.
+        pub fn ww_refresh_pointer(&mut self) {
+            let at = self.ww_pointer_location();
+            let ww = &mut self.niri.ww;
+            if ww.pointer_sent.as_ref().is_some_and(|sent| sent.from != at) {
+                ww.pointer_sent = None;
+            }
+            let window = &self.niri.pointer_contents.window;
+            if ww
+                .pointer_seen
+                .as_ref()
+                .is_some_and(|seen| seen.at == at && &seen.window == window)
+            {
+                return;
+            }
+            ww.pointer_seen = Some(Seen {
+                at,
+                window: window.clone(),
+            });
+            ww.services().hub.pointer_moved();
+        }
+
+        pub fn ww_pointer_moved_by(
+            &mut self,
+            dx: f64,
+            dy: f64,
+        ) -> Result<(f64, f64), InputErrorOwned> {
+            let from = Sent::start(
+                self.niri.ww.pointer_sent.as_ref(),
+                self.ww_pointer_location(),
+            );
+            let space = &self.niri.global_space;
+            let outputs: Vec<_> = space
+                .outputs()
+                .filter_map(|o| space.output_geometry(o))
+                .collect();
+            moved_by(&outputs, from, dx, dy).ok_or(InputErrorOwned::OffScreen)
+        }
+
         pub fn ww_on_screen(&self, x: f64, y: f64) -> bool {
             self.niri.output_under(SPoint::from((x, y))).is_some()
         }
@@ -501,7 +767,11 @@ mod niri_state {
             let Some(uinput) = &self.niri.ww.uinput else {
                 return Err(InputErrorOwned::Unavailable("no uinput devices".to_owned()));
             };
+            let at = self.ww_pointer_location();
             for &op in ops {
+                if let Op::Motion { x, y } = op {
+                    self.niri.ww.pointer_sent = Some(Sent::new((x, y), at));
+                }
                 let res = match op {
                     Op::Motion { x, y } => uinput.write_pointer(&uinput::abs(
                         super::abs_units(x, bounds.loc.x, bounds.size.w),
@@ -553,7 +823,7 @@ mod niri_state {
         }
 
         pub fn ww_pointer_position(&self) -> PointerPosition {
-            let pos = self.niri.seat.get_pointer().unwrap().current_location();
+            let pos = self.ww_pointer_location();
             let under = self.niri.contents_under(pos);
             let window = under.window.and_then(|(window, hit)| {
                 let HitType::Input { win_pos } = hit else {
@@ -594,6 +864,118 @@ mod niri_state {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn rect(x: i32, y: i32, w: i32, h: i32) -> Rectangle<i32, Logical> {
+        Rectangle::new((x, y).into(), (w, h).into())
+    }
+
+    #[test]
+    fn relative_moves_stop_at_the_edge_of_their_output() {
+        // Two outputs side by side, the right one shorter.
+        let outputs = [rect(0, 0, 1920, 1080), rect(1920, 0, 1280, 720)];
+        assert_eq!(moved_by(&outputs, (100., 100.), 5., -3.), Some((105., 97.)));
+        // Across to the other output.
+        assert_eq!(
+            moved_by(&outputs, (1900., 100.), 50., 0.),
+            Some((1950., 100.))
+        );
+        // Off every output: stops at the edge of the one it was on.
+        assert_eq!(
+            moved_by(&outputs, (100., 100.), -500., 5000.),
+            Some((0., 1079.))
+        );
+        assert_eq!(
+            moved_by(&outputs, (2000., 700.), 0., 100.),
+            Some((2000., 719.))
+        );
+        // From off every output: the middle of the first one.
+        assert_eq!(
+            moved_by(&outputs, (5000., 5000.), 1., 1.),
+            Some((960., 540.))
+        );
+        assert_eq!(moved_by(&[], (0., 0.), 1., 1.), None);
+    }
+
+    #[test]
+    fn relative_moves_start_where_the_last_motion_goes_until_niri_has_it() {
+        let at = smithay::utils::Point::from((10., 20.));
+        let sent = Sent {
+            to: (500., 300.),
+            from: at,
+        };
+        assert_eq!(Sent::start(None, at), (10., 20.));
+        // Not read yet: the pointer is still where it was.
+        assert_eq!(Sent::start(Some(&sent), at), (500., 300.));
+        // Read, or something else moved the pointer since.
+        let moved = smithay::utils::Point::from((500.1, 300.1));
+        assert_eq!(Sent::start(Some(&sent), moved), (500.1, 300.1));
+    }
+
+    #[test]
+    fn hold_limits() {
+        let t0 = Instant::now();
+        let ms = |n| t0 + Duration::from_millis(n);
+        let press = |code| Op::Button {
+            code,
+            pressed: true,
+        };
+        let key = |code, pressed| Op::Key { code, pressed };
+        let mut holds = Holds::default();
+
+        // Held by a call: no limit.
+        holds.follow(key(37, true));
+        assert_eq!(holds.next_release(), None);
+        assert!(holds.expired(ms(1_000_000)).is_empty());
+
+        holds.follow(press(0x110));
+        holds.limit(Held::Button(0x110), ms(100));
+        holds.follow(key(50, true));
+        holds.limit(Held::Key(50), ms(300));
+        assert_eq!(holds.next_release(), Some(ms(100)));
+        assert!(holds.expired(ms(99)).is_empty());
+        assert_eq!(
+            holds.expired(ms(100)),
+            [Op::Button {
+                code: 0x110,
+                pressed: false
+            }]
+        );
+
+        // A renewing press moves the limit on and holds once.
+        holds.follow(press(0x110));
+        holds.limit(Held::Button(0x110), ms(400));
+        assert_eq!(holds.next_release(), Some(ms(300)));
+        assert_eq!(holds.expired(ms(399)), [key(50, false)]);
+        holds.follow(key(50, false));
+        assert_eq!(holds.next_release(), Some(ms(400)));
+
+        // Everything at the end: buttons, then keys in reverse.
+        assert_eq!(
+            holds.all(),
+            [
+                Op::Button {
+                    code: 0x110,
+                    pressed: false
+                },
+                key(37, false)
+            ]
+        );
+        holds.follow(Op::Button {
+            code: 0x110,
+            pressed: false,
+        });
+        assert_eq!(holds.next_release(), None);
+
+        assert_eq!(hold_limit(None), Ok(HOLD_DEFAULT));
+        assert_eq!(
+            hold_limit(Some(Millis::new(250))),
+            Ok(Duration::from_millis(250))
+        );
+        assert_eq!(
+            hold_limit(Some(Millis::new(0))),
+            Err(InputErrorOwned::BadArgument)
+        );
+    }
 
     #[test]
     fn abs_units_map_back_to_the_pixel() {
@@ -674,6 +1056,30 @@ mod tests {
             })
         );
         assert_eq!(key('ж'), None);
+        // Media and remote keys: evdev KEY_PLAYPAUSE 164, KEY_MUTE 113, KEY_VOLUMEUP 115,
+        // KEY_BACK 158, KEY_HOMEPAGE 172, KEY_SEARCH 217.
+        for (name, evdev) in [
+            ("XF86AudioPlay", 164),
+            ("XF86AudioMute", 113),
+            ("XF86AudioRaiseVolume", 115),
+            ("XF86Back", 158),
+            ("XF86HomePage", 172),
+            ("XF86Search", 217),
+        ] {
+            let sym = keysym(name).unwrap_or_else(|| panic!("{name} is a keysym"));
+            assert_eq!(
+                find_key(&keymap, 0, sym),
+                Some(Key {
+                    code: evdev + 8,
+                    shift: false
+                }),
+                "{name}"
+            );
+            assert!(
+                uinput::KEYS.contains(&(evdev as u16)),
+                "{name} on the keyboard device"
+            );
+        }
         assert_eq!(
             find_key(&keymap, 0, Keysym::Return),
             Some(Key {
