@@ -4,6 +4,8 @@ Changes of ww_niri on top of upstream niri. Upstream's own changes are in its re
 
 ## [Unreleased]
 
+## [26.12.0] - 2026-11-18
+
 ### Added
 
 - Control API: `type_text` types characters of the keymap's other layouts, such as Cyrillic with `us,ru`, and switches back after (P2618#18nov-1349).
