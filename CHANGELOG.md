@@ -4,6 +4,8 @@ Changes of ww_niri on top of upstream niri. Upstream's own changes are in its re
 
 ## [Unreleased]
 
+## [26.9.0] - 2026-11-18
+
 ### Added
 
 - Control API: `pointer.move_by` relative moves, observed pointer `position`, media and remote keys (P2618#18nov-1316).
