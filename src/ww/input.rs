@@ -95,7 +95,7 @@ fn parse_combo(combo: &str) -> Result<Vec<Keysym>, InputErrorOwned> {
     if parts.iter().any(|p| p.is_empty()) {
         return Err(InputErrorOwned::UnknownKey(combo.to_owned()));
     }
-    let (last, mods) = parts.split_last().unwrap();
+    let (last, mods) = parts.split_last().expect("a split has at least one part");
     let mut syms = Vec::new();
     for name in mods {
         syms.push(modifier(name).ok_or_else(|| InputErrorOwned::UnknownKey((*name).to_owned()))?);
@@ -849,9 +849,13 @@ mod niri_state {
         }
 
         pub fn ww_key_for(&mut self, sym: u32) -> Option<Key> {
-            let keyboard = self.niri.seat.get_keyboard().unwrap();
+            let keyboard = self
+                .niri
+                .seat
+                .get_keyboard()
+                .expect("niri's seat has a keyboard");
             keyboard.with_xkb_state(self, |context| {
-                let xkb = context.xkb().lock().unwrap();
+                let xkb = context.xkb().lock().expect("the xkb lock is not poisoned");
                 let layout = xkb.active_layout();
                 // SAFETY: the keymap is used only while the lock is held.
                 let keymap = unsafe { xkb.keymap() };

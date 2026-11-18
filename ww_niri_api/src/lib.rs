@@ -1,9 +1,10 @@
-#![cfg_attr(not(feature = "std"), no_std)]
 //! WireWeaver control API of ww_niri, a niri fork for a TV box: windows and outputs, launching
-//! apps, browser slots, media players (MPRIS) and audio, with changes pushed to the client.
+//! apps, browser slots, media players (MPRIS), audio, and pointer and keyboard input, with changes
+//! pushed to the client.
 //!
 //! The server lives in ww_niri (`src/ww/`) and is reached over WebSocket at `ws://HOST:7590/ww`.
 //! Clients generate theirs with `ww_codegen!(ww_niri_api::WwNiri for ..., client = "std_client")`.
+#![cfg_attr(not(feature = "std"), no_std)]
 
 use ww_api::prelude::*;
 use ww_si::prefix::{Centi, Milli, One};

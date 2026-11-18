@@ -150,7 +150,7 @@ impl WwServer {
                 state.niri.ww.check_config(&event_loop);
                 TimeoutAction::ToDuration(CONFIG_POLL_INTERVAL)
             })
-            .unwrap();
+            .expect("the loop takes a timer");
 
         ww
     }
