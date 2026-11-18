@@ -3,7 +3,7 @@ name = "ww_niri_api"
 version = "0.1.0"
 description = "WireWeaver control API of ww_niri: windows, outputs, apps, browsers, media players and audio"
 authors = ["Roman Isaikin <roman@vhrd.tech>"]
-license = "GPL-3.0-or-later"
+license = "MIT OR Apache-2.0"
 edition = "2024"
 repository = "https://github.com/romixlab/ww_niri"
 
