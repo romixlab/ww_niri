@@ -13,7 +13,7 @@ use super::input::Input;
 use super::players::Action;
 use super::{Audio, Browsers, Players, Services};
 
-type InputRes = Result<(), ww_niri_api::InputErrorOwned>;
+type InputRes<'a> = Result<(), Error<'a, ww_niri_api::InputErrorOwned>>;
 
 pub struct Server {
     /// Observed properties: what the client observes and when it is due.
@@ -333,7 +333,12 @@ impl Server {
         fullscreen: bool,
     ) -> RpcResult<Result<(), Error<'_, ww_niri_api::BrowserErrorOwned>>> {
         let slot = index_chain[0].get().0 as u8;
-        RpcResult::Ready(self.browsers.start(slot, fullscreen).await.map_err(Into::into))
+        RpcResult::Ready(
+            self.browsers
+                .start(slot, fullscreen)
+                .await
+                .map_err(Into::into),
+        )
     }
 
     /// Loads `url` (http or https) in the slot's tab and returns when the navigation is
@@ -354,7 +359,12 @@ impl Server {
         _cx: &mut Context<'_, impl EventOut>,
         index_chain: [ResourceIndex; 1],
     ) -> RpcResult<Result<(), Error<'_, ww_niri_api::BrowserErrorOwned>>> {
-        RpcResult::Ready(self.browsers.stop(index_chain[0].get().0 as u8).await.map_err(Into::into))
+        RpcResult::Ready(
+            self.browsers
+                .stop(index_chain[0].get().0 as u8)
+                .await
+                .map_err(Into::into),
+        )
     }
 
     /// Shows the slot's window, as [Windows::show].
@@ -633,8 +643,10 @@ impl Server {
         _cx: &mut Context<'_, impl EventOut>,
     ) -> GetResult<ww_niri_api::Volume, CommonError<'_>> {
         match self.audio.sink() {
-            Some(sink) => ww_niri_api::Volume::try_new(sink.volume)
-                .map_or(GetResult::GetError(audio_unavailable("no default sink")), GetResult::Value),
+            Some(sink) => ww_niri_api::Volume::try_new(sink.volume).map_or(
+                GetResult::GetError(audio_unavailable("no default sink")),
+                GetResult::Value,
+            ),
             None => GetResult::GetError(audio_unavailable("no default sink")),
         }
     }
@@ -678,10 +690,12 @@ impl Server {
     async fn get_input_pointer_position(
         &mut self,
         _cx: &mut Context<'_, impl EventOut>,
-    ) -> GetResult<ww_niri_api::PointerPosition, ()> {
+    ) -> GetResult<ww_niri_api::PointerPosition, CommonError<'_>> {
         match self.input.position().await {
             Some(position) => GetResult::Value(position),
-            None => GetResult::GetError(()),
+            None => GetResult::GetError(CommonError::WrongState {
+                reason: MaxLen::new_unchecked("compositor gone"),
+            }),
         }
     }
 
@@ -689,8 +703,8 @@ impl Server {
         &mut self,
         _cx: &mut Context<'_, impl EventOut>,
         to: ww_niri_api::Point,
-    ) -> RpcResult<InputRes> {
-        RpcResult::Ready(self.input.move_to(to).await)
+    ) -> RpcResult<InputRes<'_>> {
+        RpcResult::Ready(self.input.move_to(to).await.map_err(Into::into))
     }
 
     async fn input_pointer_click(
@@ -700,24 +714,29 @@ impl Server {
         button: ww_niri_api::Button,
         count: u8,
         modifiers: ww_niri_api::Modifiers,
-    ) -> RpcResult<InputRes> {
-        RpcResult::Ready(self.input.click(at, button, count, modifiers).await)
+    ) -> RpcResult<InputRes<'_>> {
+        RpcResult::Ready(
+            self.input
+                .click(at, button, count, modifiers)
+                .await
+                .map_err(Into::into),
+        )
     }
 
     async fn input_pointer_press(
         &mut self,
         _cx: &mut Context<'_, impl EventOut>,
         button: ww_niri_api::Button,
-    ) -> RpcResult<InputRes> {
-        RpcResult::Ready(self.input.button(button, true).await)
+    ) -> RpcResult<InputRes<'_>> {
+        RpcResult::Ready(self.input.button(button, true).await.map_err(Into::into))
     }
 
     async fn input_pointer_release(
         &mut self,
         _cx: &mut Context<'_, impl EventOut>,
         button: ww_niri_api::Button,
-    ) -> RpcResult<InputRes> {
-        RpcResult::Ready(self.input.button(button, false).await)
+    ) -> RpcResult<InputRes<'_>> {
+        RpcResult::Ready(self.input.button(button, false).await.map_err(Into::into))
     }
 
     async fn input_pointer_drag(
@@ -727,9 +746,14 @@ impl Server {
         to: ww_niri_api::Point,
         button: ww_niri_api::Button,
         duration: exact_units::Millis<u16>,
-    ) -> RpcResult<InputRes> {
+    ) -> RpcResult<InputRes<'_>> {
         let time = std::time::Duration::from_millis(u64::from(duration.get()));
-        RpcResult::Ready(self.input.drag(from, to, button, time).await)
+        RpcResult::Ready(
+            self.input
+                .drag(from, to, button, time)
+                .await
+                .map_err(Into::into),
+        )
     }
 
     async fn input_pointer_scroll(
@@ -738,47 +762,47 @@ impl Server {
         at: Option<ww_niri_api::Point>,
         dx: i16,
         dy: i16,
-    ) -> RpcResult<InputRes> {
-        RpcResult::Ready(self.input.scroll(at, dx, dy).await)
+    ) -> RpcResult<InputRes<'_>> {
+        RpcResult::Ready(self.input.scroll(at, dx, dy).await.map_err(Into::into))
     }
 
     async fn input_keyboard_type_text(
         &mut self,
         _cx: &mut Context<'_, impl EventOut>,
         text: String,
-    ) -> RpcResult<InputRes> {
+    ) -> RpcResult<InputRes<'_>> {
         // The text may be a password: its length only.
         info!(
             "ww: {} types {} characters",
             self.peer,
             text.chars().count()
         );
-        RpcResult::Ready(self.input.type_text(&text).await)
+        RpcResult::Ready(self.input.type_text(&text).await.map_err(Into::into))
     }
 
     async fn input_keyboard_press_keys(
         &mut self,
         _cx: &mut Context<'_, impl EventOut>,
         combo: String,
-    ) -> RpcResult<InputRes> {
+    ) -> RpcResult<InputRes<'_>> {
         info!("ww: {} presses {combo}", self.peer);
-        RpcResult::Ready(self.input.press_keys(&combo).await)
+        RpcResult::Ready(self.input.press_keys(&combo).await.map_err(Into::into))
     }
 
     async fn input_keyboard_key_down(
         &mut self,
         _cx: &mut Context<'_, impl EventOut>,
         key: String,
-    ) -> RpcResult<InputRes> {
-        RpcResult::Ready(self.input.key_updown(&key, true).await)
+    ) -> RpcResult<InputRes<'_>> {
+        RpcResult::Ready(self.input.key_updown(&key, true).await.map_err(Into::into))
     }
 
     async fn input_keyboard_key_up(
         &mut self,
         _cx: &mut Context<'_, impl EventOut>,
         key: String,
-    ) -> RpcResult<InputRes> {
-        RpcResult::Ready(self.input.key_updown(&key, false).await)
+    ) -> RpcResult<InputRes<'_>> {
+        RpcResult::Ready(self.input.key_updown(&key, false).await.map_err(Into::into))
     }
 
     /// Settings and send state of observed properties, for `Observe` requests and `poll_properties`.

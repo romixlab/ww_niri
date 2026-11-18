@@ -509,9 +509,12 @@ ww_api::api_error!(WindowError);
 ww_api::api_error!(LaunchError<'i>);
 ww_api::api_error!(BrowserError<'i>);
 ww_api::api_error!(MediaError<'i>);
+ww_api::api_error!(InputError<'i>);
 #[cfg(feature = "std")]
 ww_api::api_error!(LaunchErrorOwned);
 #[cfg(feature = "std")]
 ww_api::api_error!(BrowserErrorOwned);
 #[cfg(feature = "std")]
 ww_api::api_error!(MediaErrorOwned);
+#[cfg(feature = "std")]
+ww_api::api_error!(InputErrorOwned);
