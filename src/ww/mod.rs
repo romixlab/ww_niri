@@ -3,6 +3,7 @@
 //! Everything runs on the compositor's calloop loop, like niri's IPC: the listener is a loop
 //! source, each connection a task on the loop's executor. `ww.kdl` says where to listen; without
 //! it nothing listens. The file is checked for changes every second and applied when it parses.
+//! Each `listen` address that can't be bound yet is tried again at each check.
 
 use std::net::{SocketAddr, TcpListener};
 use std::path::PathBuf;
@@ -44,7 +45,7 @@ pub struct WwServer {
     path: Option<PathBuf>,
     props: Option<config::Props>,
     config: WwConfig,
-    listener: Option<(SocketAddr, RegistrationToken)>,
+    listeners: Listeners<RegistrationToken>,
     services: Rc<Services>,
     /// The keyboard and pointer of `input`, made on first use.
     pub uinput: Option<uinput::Uinput>,
@@ -125,7 +126,7 @@ impl WwServer {
             path,
             props: None,
             config,
-            listener: None,
+            listeners: Listeners::default(),
             services,
             uinput: None,
         };
@@ -154,15 +155,23 @@ impl WwServer {
         let Some(path) = &self.path else { return };
         if config::Props::of(path) != self.props {
             self.reload(event_loop);
-        } else if self.listener.is_none() {
-            // At boot the tailnet address may not exist yet: keep trying, quietly.
-            if let Some(addr) = self.config.listen {
-                if let Ok(token) = listen(event_loop, addr) {
-                    info!("ww: listening on ws://{addr}/ww");
-                    self.listener = Some((addr, token));
-                }
-            }
+        } else if !self.listeners.complete(&self.config.listen) {
+            // At boot the tailnet or LAN address may not exist yet: keep trying, quietly.
+            self.sync_listeners(event_loop);
         }
+    }
+
+    /// Binds what `ww.kdl` asks for and drops the rest; answers the addresses that failed.
+    fn sync_listeners(
+        &mut self,
+        event_loop: &LoopHandle<'static, State>,
+    ) -> Vec<(SocketAddr, anyhow::Error)> {
+        self.listeners.sync(
+            &self.config.listen,
+            |addr| listen(event_loop, addr),
+            // Open connections stay until they end; only the listener goes.
+            |_, token| event_loop.remove(token),
+        )
     }
 
     fn reload(&mut self, event_loop: &LoopHandle<'static, State>) {
@@ -179,30 +188,68 @@ impl WwServer {
                 return;
             }
         };
-        if config == self.config && (config.listen.is_none() || self.listener.is_some()) {
+        if config == self.config && self.listeners.complete(&config.listen) {
             return;
         }
         info!("ww: settings from {path:?}: {config:?}");
 
-        if self.listener.map(|(addr, _)| addr) != config.listen {
-            if let Some((addr, token)) = self.listener.take() {
-                // Open connections stay until they end; only the listener goes.
-                event_loop.remove(token);
-                info!("ww: stopped listening on {addr}");
-            }
-            if let Some(addr) = config.listen {
-                match listen(event_loop, addr) {
-                    Ok(token) => {
-                        info!("ww: listening on ws://{addr}/ww");
-                        self.listener = Some((addr, token));
-                    }
-                    Err(err) => warn!("ww: error listening on {addr}, trying again: {err:?}"),
-                }
-            }
-        }
-
         self.services.browsers.set_count(config.browsers);
         self.config = config;
+        for (addr, err) in self.sync_listeners(event_loop) {
+            warn!("ww: error listening on {addr}, trying again: {err:?}");
+        }
+    }
+}
+
+/// The listeners, one per address of `ww.kdl`; `T` is what a bound one keeps.
+struct Listeners<T> {
+    bound: Vec<(SocketAddr, T)>,
+}
+
+impl<T> Default for Listeners<T> {
+    fn default() -> Self {
+        Self { bound: Vec::new() }
+    }
+}
+
+impl<T> Listeners<T> {
+    /// Whether every address of `wanted` is bound.
+    fn complete(&self, wanted: &[SocketAddr]) -> bool {
+        wanted
+            .iter()
+            .all(|addr| self.bound.iter().any(|(a, _)| a == addr))
+    }
+
+    /// Unbinds the addresses not in `wanted` and binds the missing ones; answers those that
+    /// failed, to try again later.
+    fn sync<E>(
+        &mut self,
+        wanted: &[SocketAddr],
+        mut bind: impl FnMut(SocketAddr) -> Result<T, E>,
+        mut unbind: impl FnMut(SocketAddr, T),
+    ) -> Vec<(SocketAddr, E)> {
+        let (keep, drop): (Vec<_>, Vec<_>) = std::mem::take(&mut self.bound)
+            .into_iter()
+            .partition(|(addr, _)| wanted.contains(addr));
+        self.bound = keep;
+        for (addr, bound) in drop {
+            unbind(addr, bound);
+            info!("ww: stopped listening on {addr}");
+        }
+        let mut failed = Vec::new();
+        for &addr in wanted {
+            if self.bound.iter().any(|(a, _)| *a == addr) {
+                continue;
+            }
+            match bind(addr) {
+                Ok(bound) => {
+                    info!("ww: listening on ws://{addr}/ww");
+                    self.bound.push((addr, bound));
+                }
+                Err(err) => failed.push((addr, err)),
+            }
+        }
+        failed
     }
 }
 
@@ -225,4 +272,66 @@ fn listen(
         })
         .map_err(|err| anyhow::anyhow!("{err}"))?;
     Ok(token)
+}
+
+#[cfg(test)]
+mod listener_tests {
+    use std::cell::RefCell;
+    use std::collections::BTreeSet;
+    use std::io;
+
+    use super::*;
+
+    fn addr(text: &str) -> SocketAddr {
+        text.parse().unwrap()
+    }
+
+    #[test]
+    fn binds_each_address_and_retries_the_missing_one() {
+        let tailnet = addr("100.98.201.15:7590");
+        let lan = addr("192.168.1.95:7590");
+        let wanted = [tailnet, lan];
+        // The addresses the host has; the LAN one comes up later.
+        let up = RefCell::new(BTreeSet::from([tailnet]));
+        let unbound = RefCell::new(Vec::new());
+        let bind = |a: SocketAddr| {
+            if up.borrow().contains(&a) {
+                Ok(a.to_string())
+            } else {
+                Err(io::Error::from(io::ErrorKind::AddrNotAvailable))
+            }
+        };
+        let unbind = |a, _| unbound.borrow_mut().push(a);
+
+        let mut listeners = Listeners::default();
+        let failed = listeners.sync(&wanted, bind, unbind);
+        assert_eq!(failed.iter().map(|(a, _)| *a).collect::<Vec<_>>(), [lan]);
+        assert!(!listeners.complete(&wanted));
+
+        // Still down: tried again, nothing bound twice.
+        assert_eq!(listeners.sync(&wanted, bind, unbind).len(), 1);
+        assert_eq!(listeners.bound.len(), 1);
+
+        up.borrow_mut().insert(lan);
+        assert!(listeners.sync(&wanted, bind, unbind).is_empty());
+        assert!(listeners.complete(&wanted));
+
+        // The tailnet line goes from ww.kdl: only its listener goes.
+        assert!(listeners.sync(&[lan], bind, unbind).is_empty());
+        assert_eq!(*unbound.borrow(), [tailnet]);
+        assert_eq!(listeners.bound, [(lan, lan.to_string())]);
+    }
+
+    #[test]
+    fn real_sockets_bind_what_exists() {
+        // 192.0.2.1 (TEST-NET-1) is on no interface, like a LAN address before the link is up.
+        let wanted = [addr("127.0.0.1:0"), addr("192.0.2.1:7590")];
+        let mut listeners = Listeners::default();
+        let failed = listeners.sync(&wanted, std::net::TcpListener::bind, |_, _| ());
+        assert_eq!(failed.len(), 1);
+        assert_eq!(failed[0].0, wanted[1]);
+        assert_eq!(failed[0].1.kind(), io::ErrorKind::AddrNotAvailable);
+        assert_eq!(listeners.bound.len(), 1);
+        assert_eq!(listeners.bound[0].0, wanted[0]);
+    }
 }

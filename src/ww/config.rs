@@ -1,4 +1,10 @@
 //! `ww.kdl`: where the control API listens and how many browser slots there are.
+//!
+//! ```kdl
+//! listen "100.98.201.15:7590"
+//! listen "192.168.1.95:7590"
+//! browsers 2
+//! ```
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -12,23 +18,24 @@ pub const DEFAULT_BROWSERS: u8 = 2;
 
 #[derive(knuffel::Decode, Debug, Default, Clone, PartialEq, Eq)]
 struct RawConfig {
-    #[knuffel(child, unwrap(argument))]
-    listen: Option<String>,
+    #[knuffel(children(name = "listen"), unwrap(argument))]
+    listen: Vec<String>,
     #[knuffel(child, unwrap(argument))]
     browsers: Option<u8>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WwConfig {
-    /// `None`: the server doesn't listen.
-    pub listen: Option<SocketAddr>,
+    /// Each address the server listens on, in the file's order without repeats; none: it
+    /// doesn't listen.
+    pub listen: Vec<SocketAddr>,
     pub browsers: u8,
 }
 
 impl Default for WwConfig {
     fn default() -> Self {
         Self {
-            listen: None,
+            listen: Vec::new(),
             browsers: DEFAULT_BROWSERS,
         }
     }
@@ -39,21 +46,19 @@ impl WwConfig {
         let raw: RawConfig =
             knuffel::parse(filename, text).map_err(|err| anyhow::anyhow!("{err}"))?;
 
-        let listen = match raw.listen {
-            Some(listen) => {
-                let addr: SocketAddr = listen
-                    .parse()
-                    .with_context(|| format!("listen {listen:?} is not an address with a port"))?;
-                // The API runs commands as this user: it listens on one address, never all of them.
-                if addr.ip().is_unspecified() {
-                    bail!(
-                        "listen {listen:?} would listen on every address: give the tailnet address"
-                    );
-                }
-                Some(addr)
+        let mut listen = Vec::new();
+        for text in raw.listen {
+            let addr: SocketAddr = text
+                .parse()
+                .with_context(|| format!("listen {text:?} is not an address with a port"))?;
+            // The API runs commands as this user: it listens on the addresses named, never all.
+            if addr.ip().is_unspecified() {
+                bail!("listen {text:?} would listen on every address: name each address");
             }
-            None => None,
-        };
+            if !listen.contains(&addr) {
+                listen.push(addr);
+            }
+        }
 
         Ok(Self {
             listen,
@@ -102,8 +107,20 @@ mod tests {
     fn listen_and_browsers() {
         let config =
             WwConfig::parse("ww.kdl", "listen \"100.64.0.12:7590\"\nbrowsers 3\n").unwrap();
-        assert_eq!(config.listen, Some("100.64.0.12:7590".parse().unwrap()));
+        assert_eq!(config.listen, ["100.64.0.12:7590".parse().unwrap()]);
         assert_eq!(config.browsers, 3);
+    }
+
+    #[test]
+    fn several_listen_lines() {
+        let text = "listen \"100.64.0.12:7590\"\nlisten \"192.168.1.95:7590\"\n\
+                    listen \"100.64.0.12:7590\"\nlisten \"[fd7a::1]:7590\"\n";
+        let config = WwConfig::parse("ww.kdl", text).unwrap();
+        let want: Vec<SocketAddr> = ["100.64.0.12:7590", "192.168.1.95:7590", "[fd7a::1]:7590"]
+            .iter()
+            .map(|a| a.parse().unwrap())
+            .collect();
+        assert_eq!(config.listen, want);
     }
 
     #[test]
@@ -117,6 +134,8 @@ mod tests {
     fn refuses_every_address() {
         assert!(WwConfig::parse("ww.kdl", "listen \"0.0.0.0:7590\"").is_err());
         assert!(WwConfig::parse("ww.kdl", "listen \"[::]:7590\"").is_err());
+        let text = "listen \"100.64.0.12:7590\"\nlisten \"0.0.0.0:7590\"\n";
+        assert!(WwConfig::parse("ww.kdl", text).is_err());
     }
 
     #[test]
