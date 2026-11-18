@@ -1,0 +1,437 @@
+# spirit_level configuration: https://github.com/romixlab/spirit_level (book: configuration)
+extends = ["medium", "ai"]
+
+# Override a lint: a level and/or parameters, always with a reason, optionally an expiry.
+# [lints.crate-lines]
+# level = "deny"
+# reason = "why"
+# expires = "2027-06-30"
+
+
+# Upstream niri code is out of scope for now: spl covers the ww module, ww_niri_api and any ww_* crate.
+
+[[exceptions]]
+lint = "abbreviation-first-use"
+paths = ["src/*.rs", "src/animation/**", "src/backend/**", "src/dbus/**", "src/handlers/**", "src/input/**", "src/ipc/**", "src/layer/**", "src/layout/**", "src/protocols/**", "src/render_helpers/**", "src/screencasting/**", "src/tests/**", "src/ui/**", "src/utils/**", "src/window/**", "niri-config/**", "niri-ipc/**", "niri-visual-tests/**", "build.rs", "docs/**", "resources/**", "*.md", "Cargo.toml", "clippy.toml", "rustfmt.toml", "typos.toml", "flake.nix", "niri.spec.rpkg"]
+level = "allow"
+reason = "upstream niri code; widened later"
+
+[[exceptions]]
+lint = "allow-without-reason"
+paths = ["src/*.rs", "src/animation/**", "src/backend/**", "src/dbus/**", "src/handlers/**", "src/input/**", "src/ipc/**", "src/layer/**", "src/layout/**", "src/protocols/**", "src/render_helpers/**", "src/screencasting/**", "src/tests/**", "src/ui/**", "src/utils/**", "src/window/**", "niri-config/**", "niri-ipc/**", "niri-visual-tests/**", "build.rs", "docs/**", "resources/**", "*.md", "Cargo.toml", "clippy.toml", "rustfmt.toml", "typos.toml", "flake.nix", "niri.spec.rpkg"]
+level = "allow"
+reason = "upstream niri code; widened later"
+
+[[exceptions]]
+lint = "build-info-env"
+paths = ["src/*.rs", "src/animation/**", "src/backend/**", "src/dbus/**", "src/handlers/**", "src/input/**", "src/ipc/**", "src/layer/**", "src/layout/**", "src/protocols/**", "src/render_helpers/**", "src/screencasting/**", "src/tests/**", "src/ui/**", "src/utils/**", "src/window/**", "niri-config/**", "niri-ipc/**", "niri-visual-tests/**", "build.rs", "docs/**", "resources/**", "*.md", "Cargo.toml", "clippy.toml", "rustfmt.toml", "typos.toml", "flake.nix", "niri.spec.rpkg"]
+level = "allow"
+reason = "upstream niri code; widened later"
+
+[[exceptions]]
+lint = "cargo-doc"
+paths = ["src/*.rs", "src/animation/**", "src/backend/**", "src/dbus/**", "src/handlers/**", "src/input/**", "src/ipc/**", "src/layer/**", "src/layout/**", "src/protocols/**", "src/render_helpers/**", "src/screencasting/**", "src/tests/**", "src/ui/**", "src/utils/**", "src/window/**", "niri-config/**", "niri-ipc/**", "niri-visual-tests/**", "build.rs", "docs/**", "resources/**", "*.md", "Cargo.toml", "clippy.toml", "rustfmt.toml", "typos.toml", "flake.nix", "niri.spec.rpkg"]
+level = "allow"
+reason = "upstream niri code; widened later"
+
+[[exceptions]]
+lint = "cli-color-flag"
+paths = ["src/*.rs", "src/animation/**", "src/backend/**", "src/dbus/**", "src/handlers/**", "src/input/**", "src/ipc/**", "src/layer/**", "src/layout/**", "src/protocols/**", "src/render_helpers/**", "src/screencasting/**", "src/tests/**", "src/ui/**", "src/utils/**", "src/window/**", "niri-config/**", "niri-ipc/**", "niri-visual-tests/**", "build.rs", "docs/**", "resources/**", "*.md", "Cargo.toml", "clippy.toml", "rustfmt.toml", "typos.toml", "flake.nix", "niri.spec.rpkg"]
+level = "allow"
+reason = "upstream niri code; widened later"
+
+[[exceptions]]
+lint = "cli-completion"
+paths = ["src/*.rs", "src/animation/**", "src/backend/**", "src/dbus/**", "src/handlers/**", "src/input/**", "src/ipc/**", "src/layer/**", "src/layout/**", "src/protocols/**", "src/render_helpers/**", "src/screencasting/**", "src/tests/**", "src/ui/**", "src/utils/**", "src/window/**", "niri-config/**", "niri-ipc/**", "niri-visual-tests/**", "build.rs", "docs/**", "resources/**", "*.md", "Cargo.toml", "clippy.toml", "rustfmt.toml", "typos.toml", "flake.nix", "niri.spec.rpkg"]
+level = "allow"
+reason = "upstream niri code; widened later"
+
+[[exceptions]]
+lint = "cli-help-examples"
+paths = ["src/*.rs", "src/animation/**", "src/backend/**", "src/dbus/**", "src/handlers/**", "src/input/**", "src/ipc/**", "src/layer/**", "src/layout/**", "src/protocols/**", "src/render_helpers/**", "src/screencasting/**", "src/tests/**", "src/ui/**", "src/utils/**", "src/window/**", "niri-config/**", "niri-ipc/**", "niri-visual-tests/**", "build.rs", "docs/**", "resources/**", "*.md", "Cargo.toml", "clippy.toml", "rustfmt.toml", "typos.toml", "flake.nix", "niri.spec.rpkg"]
+level = "allow"
+reason = "upstream niri code; widened later"
+
+[[exceptions]]
+lint = "cli-version-line"
+paths = ["src/*.rs", "src/animation/**", "src/backend/**", "src/dbus/**", "src/handlers/**", "src/input/**", "src/ipc/**", "src/layer/**", "src/layout/**", "src/protocols/**", "src/render_helpers/**", "src/screencasting/**", "src/tests/**", "src/ui/**", "src/utils/**", "src/window/**", "niri-config/**", "niri-ipc/**", "niri-visual-tests/**", "build.rs", "docs/**", "resources/**", "*.md", "Cargo.toml", "clippy.toml", "rustfmt.toml", "typos.toml", "flake.nix", "niri.spec.rpkg"]
+level = "allow"
+reason = "upstream niri code; widened later"
+
+[[exceptions]]
+lint = "code-block-language"
+paths = ["src/*.rs", "src/animation/**", "src/backend/**", "src/dbus/**", "src/handlers/**", "src/input/**", "src/ipc/**", "src/layer/**", "src/layout/**", "src/protocols/**", "src/render_helpers/**", "src/screencasting/**", "src/tests/**", "src/ui/**", "src/utils/**", "src/window/**", "niri-config/**", "niri-ipc/**", "niri-visual-tests/**", "build.rs", "docs/**", "resources/**", "*.md", "Cargo.toml", "clippy.toml", "rustfmt.toml", "typos.toml", "flake.nix", "niri.spec.rpkg"]
+level = "allow"
+reason = "upstream niri code; widened later"
+
+[[exceptions]]
+lint = "code-wall"
+paths = ["src/*.rs", "src/animation/**", "src/backend/**", "src/dbus/**", "src/handlers/**", "src/input/**", "src/ipc/**", "src/layer/**", "src/layout/**", "src/protocols/**", "src/render_helpers/**", "src/screencasting/**", "src/tests/**", "src/ui/**", "src/utils/**", "src/window/**", "niri-config/**", "niri-ipc/**", "niri-visual-tests/**", "build.rs", "docs/**", "resources/**", "*.md", "Cargo.toml", "clippy.toml", "rustfmt.toml", "typos.toml", "flake.nix", "niri.spec.rpkg"]
+level = "allow"
+reason = "upstream niri code; widened later"
+
+[[exceptions]]
+lint = "commented-out-code"
+paths = ["src/*.rs", "src/animation/**", "src/backend/**", "src/dbus/**", "src/handlers/**", "src/input/**", "src/ipc/**", "src/layer/**", "src/layout/**", "src/protocols/**", "src/render_helpers/**", "src/screencasting/**", "src/tests/**", "src/ui/**", "src/utils/**", "src/window/**", "niri-config/**", "niri-ipc/**", "niri-visual-tests/**", "build.rs", "docs/**", "resources/**", "*.md", "Cargo.toml", "clippy.toml", "rustfmt.toml", "typos.toml", "flake.nix", "niri.spec.rpkg"]
+level = "allow"
+reason = "upstream niri code; widened later"
+
+[[exceptions]]
+lint = "crate-docs"
+paths = ["src/*.rs", "src/animation/**", "src/backend/**", "src/dbus/**", "src/handlers/**", "src/input/**", "src/ipc/**", "src/layer/**", "src/layout/**", "src/protocols/**", "src/render_helpers/**", "src/screencasting/**", "src/tests/**", "src/ui/**", "src/utils/**", "src/window/**", "niri-config/**", "niri-ipc/**", "niri-visual-tests/**", "build.rs", "docs/**", "resources/**", "*.md", "Cargo.toml", "clippy.toml", "rustfmt.toml", "typos.toml", "flake.nix", "niri.spec.rpkg"]
+level = "allow"
+reason = "upstream niri code; widened later"
+
+[[exceptions]]
+lint = "crate-lines"
+paths = ["src/*.rs", "src/animation/**", "src/backend/**", "src/dbus/**", "src/handlers/**", "src/input/**", "src/ipc/**", "src/layer/**", "src/layout/**", "src/protocols/**", "src/render_helpers/**", "src/screencasting/**", "src/tests/**", "src/ui/**", "src/utils/**", "src/window/**", "niri-config/**", "niri-ipc/**", "niri-visual-tests/**", "build.rs", "docs/**", "resources/**", "*.md", "Cargo.toml", "clippy.toml", "rustfmt.toml", "typos.toml", "flake.nix", "niri.spec.rpkg"]
+level = "allow"
+reason = "upstream niri code; widened later"
+
+[[exceptions]]
+lint = "default-features-off"
+paths = ["src/*.rs", "src/animation/**", "src/backend/**", "src/dbus/**", "src/handlers/**", "src/input/**", "src/ipc/**", "src/layer/**", "src/layout/**", "src/protocols/**", "src/render_helpers/**", "src/screencasting/**", "src/tests/**", "src/ui/**", "src/utils/**", "src/window/**", "niri-config/**", "niri-ipc/**", "niri-visual-tests/**", "build.rs", "docs/**", "resources/**", "*.md", "Cargo.toml", "clippy.toml", "rustfmt.toml", "typos.toml", "flake.nix", "niri.spec.rpkg"]
+level = "allow"
+reason = "upstream niri code; widened later"
+
+[[exceptions]]
+lint = "deny-advisories"
+paths = ["src/*.rs", "src/animation/**", "src/backend/**", "src/dbus/**", "src/handlers/**", "src/input/**", "src/ipc/**", "src/layer/**", "src/layout/**", "src/protocols/**", "src/render_helpers/**", "src/screencasting/**", "src/tests/**", "src/ui/**", "src/utils/**", "src/window/**", "niri-config/**", "niri-ipc/**", "niri-visual-tests/**", "build.rs", "docs/**", "resources/**", "*.md", "Cargo.toml", "clippy.toml", "rustfmt.toml", "typos.toml", "flake.nix", "niri.spec.rpkg"]
+level = "allow"
+reason = "upstream niri code; widened later"
+
+[[exceptions]]
+lint = "deny-licenses"
+paths = ["src/*.rs", "src/animation/**", "src/backend/**", "src/dbus/**", "src/handlers/**", "src/input/**", "src/ipc/**", "src/layer/**", "src/layout/**", "src/protocols/**", "src/render_helpers/**", "src/screencasting/**", "src/tests/**", "src/ui/**", "src/utils/**", "src/window/**", "niri-config/**", "niri-ipc/**", "niri-visual-tests/**", "build.rs", "docs/**", "resources/**", "*.md", "Cargo.toml", "clippy.toml", "rustfmt.toml", "typos.toml", "flake.nix", "niri.spec.rpkg"]
+level = "allow"
+reason = "upstream niri code; widened later"
+
+[[exceptions]]
+lint = "duplicate-versions"
+paths = ["src/*.rs", "src/animation/**", "src/backend/**", "src/dbus/**", "src/handlers/**", "src/input/**", "src/ipc/**", "src/layer/**", "src/layout/**", "src/protocols/**", "src/render_helpers/**", "src/screencasting/**", "src/tests/**", "src/ui/**", "src/utils/**", "src/window/**", "niri-config/**", "niri-ipc/**", "niri-visual-tests/**", "build.rs", "docs/**", "resources/**", "*.md", "Cargo.toml", "clippy.toml", "rustfmt.toml", "typos.toml", "flake.nix", "niri.spec.rpkg"]
+level = "allow"
+reason = "upstream niri code; widened later"
+
+[[exceptions]]
+lint = "edition-latest"
+paths = ["src/*.rs", "src/animation/**", "src/backend/**", "src/dbus/**", "src/handlers/**", "src/input/**", "src/ipc/**", "src/layer/**", "src/layout/**", "src/protocols/**", "src/render_helpers/**", "src/screencasting/**", "src/tests/**", "src/ui/**", "src/utils/**", "src/window/**", "niri-config/**", "niri-ipc/**", "niri-visual-tests/**", "build.rs", "docs/**", "resources/**", "*.md", "Cargo.toml", "clippy.toml", "rustfmt.toml", "typos.toml", "flake.nix", "niri.spec.rpkg"]
+level = "allow"
+reason = "upstream niri code; widened later"
+
+[[exceptions]]
+lint = "exact-units-quantity"
+paths = ["src/*.rs", "src/animation/**", "src/backend/**", "src/dbus/**", "src/handlers/**", "src/input/**", "src/ipc/**", "src/layer/**", "src/layout/**", "src/protocols/**", "src/render_helpers/**", "src/screencasting/**", "src/tests/**", "src/ui/**", "src/utils/**", "src/window/**", "niri-config/**", "niri-ipc/**", "niri-visual-tests/**", "build.rs", "docs/**", "resources/**", "*.md", "Cargo.toml", "clippy.toml", "rustfmt.toml", "typos.toml", "flake.nix", "niri.spec.rpkg"]
+level = "allow"
+reason = "upstream niri code; widened later"
+
+[[exceptions]]
+lint = "filler-phrases"
+paths = ["src/*.rs", "src/animation/**", "src/backend/**", "src/dbus/**", "src/handlers/**", "src/input/**", "src/ipc/**", "src/layer/**", "src/layout/**", "src/protocols/**", "src/render_helpers/**", "src/screencasting/**", "src/tests/**", "src/ui/**", "src/utils/**", "src/window/**", "niri-config/**", "niri-ipc/**", "niri-visual-tests/**", "build.rs", "docs/**", "resources/**", "*.md", "Cargo.toml", "clippy.toml", "rustfmt.toml", "typos.toml", "flake.nix", "niri.spec.rpkg"]
+level = "allow"
+reason = "upstream niri code; widened later"
+
+[[exceptions]]
+lint = "fixme-before-land"
+paths = ["src/*.rs", "src/animation/**", "src/backend/**", "src/dbus/**", "src/handlers/**", "src/input/**", "src/ipc/**", "src/layer/**", "src/layout/**", "src/protocols/**", "src/render_helpers/**", "src/screencasting/**", "src/tests/**", "src/ui/**", "src/utils/**", "src/window/**", "niri-config/**", "niri-ipc/**", "niri-visual-tests/**", "build.rs", "docs/**", "resources/**", "*.md", "Cargo.toml", "clippy.toml", "rustfmt.toml", "typos.toml", "flake.nix", "niri.spec.rpkg"]
+level = "allow"
+reason = "upstream niri code; widened later"
+
+[[exceptions]]
+lint = "float-partial-cmp-unwrap"
+paths = ["src/*.rs", "src/animation/**", "src/backend/**", "src/dbus/**", "src/handlers/**", "src/input/**", "src/ipc/**", "src/layer/**", "src/layout/**", "src/protocols/**", "src/render_helpers/**", "src/screencasting/**", "src/tests/**", "src/ui/**", "src/utils/**", "src/window/**", "niri-config/**", "niri-ipc/**", "niri-visual-tests/**", "build.rs", "docs/**", "resources/**", "*.md", "Cargo.toml", "clippy.toml", "rustfmt.toml", "typos.toml", "flake.nix", "niri.spec.rpkg"]
+level = "allow"
+reason = "upstream niri code; widened later"
+
+[[exceptions]]
+lint = "function-complexity"
+paths = ["src/*.rs", "src/animation/**", "src/backend/**", "src/dbus/**", "src/handlers/**", "src/input/**", "src/ipc/**", "src/layer/**", "src/layout/**", "src/protocols/**", "src/render_helpers/**", "src/screencasting/**", "src/tests/**", "src/ui/**", "src/utils/**", "src/window/**", "niri-config/**", "niri-ipc/**", "niri-visual-tests/**", "build.rs", "docs/**", "resources/**", "*.md", "Cargo.toml", "clippy.toml", "rustfmt.toml", "typos.toml", "flake.nix", "niri.spec.rpkg"]
+level = "allow"
+reason = "upstream niri code; widened later"
+
+[[exceptions]]
+lint = "function-lines"
+paths = ["src/*.rs", "src/animation/**", "src/backend/**", "src/dbus/**", "src/handlers/**", "src/input/**", "src/ipc/**", "src/layer/**", "src/layout/**", "src/protocols/**", "src/render_helpers/**", "src/screencasting/**", "src/tests/**", "src/ui/**", "src/utils/**", "src/window/**", "niri-config/**", "niri-ipc/**", "niri-visual-tests/**", "build.rs", "docs/**", "resources/**", "*.md", "Cargo.toml", "clippy.toml", "rustfmt.toml", "typos.toml", "flake.nix", "niri.spec.rpkg"]
+level = "allow"
+reason = "upstream niri code; widened later"
+
+[[exceptions]]
+lint = "git-dependency-pins"
+paths = ["src/*.rs", "src/animation/**", "src/backend/**", "src/dbus/**", "src/handlers/**", "src/input/**", "src/ipc/**", "src/layer/**", "src/layout/**", "src/protocols/**", "src/render_helpers/**", "src/screencasting/**", "src/tests/**", "src/ui/**", "src/utils/**", "src/window/**", "niri-config/**", "niri-ipc/**", "niri-visual-tests/**", "build.rs", "docs/**", "resources/**", "*.md", "Cargo.toml", "clippy.toml", "rustfmt.toml", "typos.toml", "flake.nix", "niri.spec.rpkg"]
+level = "allow"
+reason = "upstream niri code; widened later"
+
+[[exceptions]]
+lint = "heading-words"
+paths = ["src/*.rs", "src/animation/**", "src/backend/**", "src/dbus/**", "src/handlers/**", "src/input/**", "src/ipc/**", "src/layer/**", "src/layout/**", "src/protocols/**", "src/render_helpers/**", "src/screencasting/**", "src/tests/**", "src/ui/**", "src/utils/**", "src/window/**", "niri-config/**", "niri-ipc/**", "niri-visual-tests/**", "build.rs", "docs/**", "resources/**", "*.md", "Cargo.toml", "clippy.toml", "rustfmt.toml", "typos.toml", "flake.nix", "niri.spec.rpkg"]
+level = "allow"
+reason = "upstream niri code; widened later"
+
+[[exceptions]]
+lint = "image-alt"
+paths = ["src/*.rs", "src/animation/**", "src/backend/**", "src/dbus/**", "src/handlers/**", "src/input/**", "src/ipc/**", "src/layer/**", "src/layout/**", "src/protocols/**", "src/render_helpers/**", "src/screencasting/**", "src/tests/**", "src/ui/**", "src/utils/**", "src/window/**", "niri-config/**", "niri-ipc/**", "niri-visual-tests/**", "build.rs", "docs/**", "resources/**", "*.md", "Cargo.toml", "clippy.toml", "rustfmt.toml", "typos.toml", "flake.nix", "niri.spec.rpkg"]
+level = "allow"
+reason = "upstream niri code; widened later"
+
+[[exceptions]]
+lint = "justfile-recipes"
+paths = ["src/*.rs", "src/animation/**", "src/backend/**", "src/dbus/**", "src/handlers/**", "src/input/**", "src/ipc/**", "src/layer/**", "src/layout/**", "src/protocols/**", "src/render_helpers/**", "src/screencasting/**", "src/tests/**", "src/ui/**", "src/utils/**", "src/window/**", "niri-config/**", "niri-ipc/**", "niri-visual-tests/**", "build.rs", "docs/**", "resources/**", "*.md", "Cargo.toml", "clippy.toml", "rustfmt.toml", "typos.toml", "flake.nix", "niri.spec.rpkg"]
+level = "allow"
+reason = "upstream niri code; widened later"
+
+[[exceptions]]
+lint = "large-blobs"
+paths = ["src/*.rs", "src/animation/**", "src/backend/**", "src/dbus/**", "src/handlers/**", "src/input/**", "src/ipc/**", "src/layer/**", "src/layout/**", "src/protocols/**", "src/render_helpers/**", "src/screencasting/**", "src/tests/**", "src/ui/**", "src/utils/**", "src/window/**", "niri-config/**", "niri-ipc/**", "niri-visual-tests/**", "build.rs", "docs/**", "resources/**", "*.md", "Cargo.toml", "clippy.toml", "rustfmt.toml", "typos.toml", "flake.nix", "niri.spec.rpkg"]
+level = "allow"
+reason = "upstream niri code; widened later"
+
+[[exceptions]]
+lint = "lint-table-allow-reason"
+paths = ["src/*.rs", "src/animation/**", "src/backend/**", "src/dbus/**", "src/handlers/**", "src/input/**", "src/ipc/**", "src/layer/**", "src/layout/**", "src/protocols/**", "src/render_helpers/**", "src/screencasting/**", "src/tests/**", "src/ui/**", "src/utils/**", "src/window/**", "niri-config/**", "niri-ipc/**", "niri-visual-tests/**", "build.rs", "docs/**", "resources/**", "*.md", "Cargo.toml", "clippy.toml", "rustfmt.toml", "typos.toml", "flake.nix", "niri.spec.rpkg"]
+level = "allow"
+reason = "upstream niri code; widened later"
+
+[[exceptions]]
+lint = "lock-held-across"
+paths = ["src/*.rs", "src/animation/**", "src/backend/**", "src/dbus/**", "src/handlers/**", "src/input/**", "src/ipc/**", "src/layer/**", "src/layout/**", "src/protocols/**", "src/render_helpers/**", "src/screencasting/**", "src/tests/**", "src/ui/**", "src/utils/**", "src/window/**", "niri-config/**", "niri-ipc/**", "niri-visual-tests/**", "build.rs", "docs/**", "resources/**", "*.md", "Cargo.toml", "clippy.toml", "rustfmt.toml", "typos.toml", "flake.nix", "niri.spec.rpkg"]
+level = "allow"
+reason = "upstream niri code; widened later"
+
+[[exceptions]]
+lint = "lock-unwrap"
+paths = ["src/*.rs", "src/animation/**", "src/backend/**", "src/dbus/**", "src/handlers/**", "src/input/**", "src/ipc/**", "src/layer/**", "src/layout/**", "src/protocols/**", "src/render_helpers/**", "src/screencasting/**", "src/tests/**", "src/ui/**", "src/utils/**", "src/window/**", "niri-config/**", "niri-ipc/**", "niri-visual-tests/**", "build.rs", "docs/**", "resources/**", "*.md", "Cargo.toml", "clippy.toml", "rustfmt.toml", "typos.toml", "flake.nix", "niri.spec.rpkg"]
+level = "allow"
+reason = "upstream niri code; widened later"
+
+[[exceptions]]
+lint = "machete-unused-deps"
+paths = ["src/*.rs", "src/animation/**", "src/backend/**", "src/dbus/**", "src/handlers/**", "src/input/**", "src/ipc/**", "src/layer/**", "src/layout/**", "src/protocols/**", "src/render_helpers/**", "src/screencasting/**", "src/tests/**", "src/ui/**", "src/utils/**", "src/window/**", "niri-config/**", "niri-ipc/**", "niri-visual-tests/**", "build.rs", "docs/**", "resources/**", "*.md", "Cargo.toml", "clippy.toml", "rustfmt.toml", "typos.toml", "flake.nix", "niri.spec.rpkg"]
+level = "allow"
+reason = "upstream niri code; widened later"
+
+[[exceptions]]
+lint = "module-graph-scc"
+paths = ["src/*.rs", "src/animation/**", "src/backend/**", "src/dbus/**", "src/handlers/**", "src/input/**", "src/ipc/**", "src/layer/**", "src/layout/**", "src/protocols/**", "src/render_helpers/**", "src/screencasting/**", "src/tests/**", "src/ui/**", "src/utils/**", "src/window/**", "niri-config/**", "niri-ipc/**", "niri-visual-tests/**", "build.rs", "docs/**", "resources/**", "*.md", "Cargo.toml", "clippy.toml", "rustfmt.toml", "typos.toml", "flake.nix", "niri.spec.rpkg"]
+level = "allow"
+reason = "upstream niri code; widened later"
+
+[[exceptions]]
+lint = "module-lines"
+paths = ["src/*.rs", "src/animation/**", "src/backend/**", "src/dbus/**", "src/handlers/**", "src/input/**", "src/ipc/**", "src/layer/**", "src/layout/**", "src/protocols/**", "src/render_helpers/**", "src/screencasting/**", "src/tests/**", "src/ui/**", "src/utils/**", "src/window/**", "niri-config/**", "niri-ipc/**", "niri-visual-tests/**", "build.rs", "docs/**", "resources/**", "*.md", "Cargo.toml", "clippy.toml", "rustfmt.toml", "typos.toml", "flake.nix", "niri.spec.rpkg"]
+level = "allow"
+reason = "upstream niri code; widened later"
+
+[[exceptions]]
+lint = "narration"
+paths = ["src/*.rs", "src/animation/**", "src/backend/**", "src/dbus/**", "src/handlers/**", "src/input/**", "src/ipc/**", "src/layer/**", "src/layout/**", "src/protocols/**", "src/render_helpers/**", "src/screencasting/**", "src/tests/**", "src/ui/**", "src/utils/**", "src/window/**", "niri-config/**", "niri-ipc/**", "niri-visual-tests/**", "build.rs", "docs/**", "resources/**", "*.md", "Cargo.toml", "clippy.toml", "rustfmt.toml", "typos.toml", "flake.nix", "niri.spec.rpkg"]
+level = "allow"
+reason = "upstream niri code; widened later"
+
+[[exceptions]]
+lint = "near-duplicate-fns"
+paths = ["src/*.rs", "src/animation/**", "src/backend/**", "src/dbus/**", "src/handlers/**", "src/input/**", "src/ipc/**", "src/layer/**", "src/layout/**", "src/protocols/**", "src/render_helpers/**", "src/screencasting/**", "src/tests/**", "src/ui/**", "src/utils/**", "src/window/**", "niri-config/**", "niri-ipc/**", "niri-visual-tests/**", "build.rs", "docs/**", "resources/**", "*.md", "Cargo.toml", "clippy.toml", "rustfmt.toml", "typos.toml", "flake.nix", "niri.spec.rpkg"]
+level = "allow"
+reason = "upstream niri code; widened later"
+
+[[exceptions]]
+lint = "nested-locks"
+paths = ["src/*.rs", "src/animation/**", "src/backend/**", "src/dbus/**", "src/handlers/**", "src/input/**", "src/ipc/**", "src/layer/**", "src/layout/**", "src/protocols/**", "src/render_helpers/**", "src/screencasting/**", "src/tests/**", "src/ui/**", "src/utils/**", "src/window/**", "niri-config/**", "niri-ipc/**", "niri-visual-tests/**", "build.rs", "docs/**", "resources/**", "*.md", "Cargo.toml", "clippy.toml", "rustfmt.toml", "typos.toml", "flake.nix", "niri.spec.rpkg"]
+level = "allow"
+reason = "upstream niri code; widened later"
+
+[[exceptions]]
+lint = "no-sys-crates"
+paths = ["src/*.rs", "src/animation/**", "src/backend/**", "src/dbus/**", "src/handlers/**", "src/input/**", "src/ipc/**", "src/layer/**", "src/layout/**", "src/protocols/**", "src/render_helpers/**", "src/screencasting/**", "src/tests/**", "src/ui/**", "src/utils/**", "src/window/**", "niri-config/**", "niri-ipc/**", "niri-visual-tests/**", "build.rs", "docs/**", "resources/**", "*.md", "Cargo.toml", "clippy.toml", "rustfmt.toml", "typos.toml", "flake.nix", "niri.spec.rpkg"]
+level = "allow"
+reason = "upstream niri code; widened later"
+
+[[exceptions]]
+lint = "page-headings"
+paths = ["src/*.rs", "src/animation/**", "src/backend/**", "src/dbus/**", "src/handlers/**", "src/input/**", "src/ipc/**", "src/layer/**", "src/layout/**", "src/protocols/**", "src/render_helpers/**", "src/screencasting/**", "src/tests/**", "src/ui/**", "src/utils/**", "src/window/**", "niri-config/**", "niri-ipc/**", "niri-visual-tests/**", "build.rs", "docs/**", "resources/**", "*.md", "Cargo.toml", "clippy.toml", "rustfmt.toml", "typos.toml", "flake.nix", "niri.spec.rpkg"]
+level = "allow"
+reason = "upstream niri code; widened later"
+
+[[exceptions]]
+lint = "page-links"
+paths = ["src/*.rs", "src/animation/**", "src/backend/**", "src/dbus/**", "src/handlers/**", "src/input/**", "src/ipc/**", "src/layer/**", "src/layout/**", "src/protocols/**", "src/render_helpers/**", "src/screencasting/**", "src/tests/**", "src/ui/**", "src/utils/**", "src/window/**", "niri-config/**", "niri-ipc/**", "niri-visual-tests/**", "build.rs", "docs/**", "resources/**", "*.md", "Cargo.toml", "clippy.toml", "rustfmt.toml", "typos.toml", "flake.nix", "niri.spec.rpkg"]
+level = "allow"
+reason = "upstream niri code; widened later"
+
+[[exceptions]]
+lint = "page-reading-time"
+paths = ["src/*.rs", "src/animation/**", "src/backend/**", "src/dbus/**", "src/handlers/**", "src/input/**", "src/ipc/**", "src/layer/**", "src/layout/**", "src/protocols/**", "src/render_helpers/**", "src/screencasting/**", "src/tests/**", "src/ui/**", "src/utils/**", "src/window/**", "niri-config/**", "niri-ipc/**", "niri-visual-tests/**", "build.rs", "docs/**", "resources/**", "*.md", "Cargo.toml", "clippy.toml", "rustfmt.toml", "typos.toml", "flake.nix", "niri.spec.rpkg"]
+level = "allow"
+reason = "upstream niri code; widened later"
+
+[[exceptions]]
+lint = "panic-in-library"
+paths = ["src/*.rs", "src/animation/**", "src/backend/**", "src/dbus/**", "src/handlers/**", "src/input/**", "src/ipc/**", "src/layer/**", "src/layout/**", "src/protocols/**", "src/render_helpers/**", "src/screencasting/**", "src/tests/**", "src/ui/**", "src/utils/**", "src/window/**", "niri-config/**", "niri-ipc/**", "niri-visual-tests/**", "build.rs", "docs/**", "resources/**", "*.md", "Cargo.toml", "clippy.toml", "rustfmt.toml", "typos.toml", "flake.nix", "niri.spec.rpkg"]
+level = "allow"
+reason = "upstream niri code; widened later"
+
+[[exceptions]]
+lint = "paragraph-sentences"
+paths = ["src/*.rs", "src/animation/**", "src/backend/**", "src/dbus/**", "src/handlers/**", "src/input/**", "src/ipc/**", "src/layer/**", "src/layout/**", "src/protocols/**", "src/render_helpers/**", "src/screencasting/**", "src/tests/**", "src/ui/**", "src/utils/**", "src/window/**", "niri-config/**", "niri-ipc/**", "niri-visual-tests/**", "build.rs", "docs/**", "resources/**", "*.md", "Cargo.toml", "clippy.toml", "rustfmt.toml", "typos.toml", "flake.nix", "niri.spec.rpkg"]
+level = "allow"
+reason = "upstream niri code; widened later"
+
+[[exceptions]]
+lint = "passive-voice"
+paths = ["src/*.rs", "src/animation/**", "src/backend/**", "src/dbus/**", "src/handlers/**", "src/input/**", "src/ipc/**", "src/layer/**", "src/layout/**", "src/protocols/**", "src/render_helpers/**", "src/screencasting/**", "src/tests/**", "src/ui/**", "src/utils/**", "src/window/**", "niri-config/**", "niri-ipc/**", "niri-visual-tests/**", "build.rs", "docs/**", "resources/**", "*.md", "Cargo.toml", "clippy.toml", "rustfmt.toml", "typos.toml", "flake.nix", "niri.spec.rpkg"]
+level = "allow"
+reason = "upstream niri code; widened later"
+
+[[exceptions]]
+lint = "print-in-library"
+paths = ["src/*.rs", "src/animation/**", "src/backend/**", "src/dbus/**", "src/handlers/**", "src/input/**", "src/ipc/**", "src/layer/**", "src/layout/**", "src/protocols/**", "src/render_helpers/**", "src/screencasting/**", "src/tests/**", "src/ui/**", "src/utils/**", "src/window/**", "niri-config/**", "niri-ipc/**", "niri-visual-tests/**", "build.rs", "docs/**", "resources/**", "*.md", "Cargo.toml", "clippy.toml", "rustfmt.toml", "typos.toml", "flake.nix", "niri.spec.rpkg"]
+level = "allow"
+reason = "upstream niri code; widened later"
+
+[[exceptions]]
+lint = "profile-defaults"
+paths = ["src/*.rs", "src/animation/**", "src/backend/**", "src/dbus/**", "src/handlers/**", "src/input/**", "src/ipc/**", "src/layer/**", "src/layout/**", "src/protocols/**", "src/render_helpers/**", "src/screencasting/**", "src/tests/**", "src/ui/**", "src/utils/**", "src/window/**", "niri-config/**", "niri-ipc/**", "niri-visual-tests/**", "build.rs", "docs/**", "resources/**", "*.md", "Cargo.toml", "clippy.toml", "rustfmt.toml", "typos.toml", "flake.nix", "niri.spec.rpkg"]
+level = "allow"
+reason = "upstream niri code; widened later"
+
+[[exceptions]]
+lint = "prose-run-words"
+paths = ["src/*.rs", "src/animation/**", "src/backend/**", "src/dbus/**", "src/handlers/**", "src/input/**", "src/ipc/**", "src/layer/**", "src/layout/**", "src/protocols/**", "src/render_helpers/**", "src/screencasting/**", "src/tests/**", "src/ui/**", "src/utils/**", "src/window/**", "niri-config/**", "niri-ipc/**", "niri-visual-tests/**", "build.rs", "docs/**", "resources/**", "*.md", "Cargo.toml", "clippy.toml", "rustfmt.toml", "typos.toml", "flake.nix", "niri.spec.rpkg"]
+level = "allow"
+reason = "upstream niri code; widened later"
+
+[[exceptions]]
+lint = "publish-false"
+paths = ["src/*.rs", "src/animation/**", "src/backend/**", "src/dbus/**", "src/handlers/**", "src/input/**", "src/ipc/**", "src/layer/**", "src/layout/**", "src/protocols/**", "src/render_helpers/**", "src/screencasting/**", "src/tests/**", "src/ui/**", "src/utils/**", "src/window/**", "niri-config/**", "niri-ipc/**", "niri-visual-tests/**", "build.rs", "docs/**", "resources/**", "*.md", "Cargo.toml", "clippy.toml", "rustfmt.toml", "typos.toml", "flake.nix", "niri.spec.rpkg"]
+level = "allow"
+reason = "upstream niri code; widened later"
+
+[[exceptions]]
+lint = "reading-ease"
+paths = ["src/*.rs", "src/animation/**", "src/backend/**", "src/dbus/**", "src/handlers/**", "src/input/**", "src/ipc/**", "src/layer/**", "src/layout/**", "src/protocols/**", "src/render_helpers/**", "src/screencasting/**", "src/tests/**", "src/ui/**", "src/utils/**", "src/window/**", "niri-config/**", "niri-ipc/**", "niri-visual-tests/**", "build.rs", "docs/**", "resources/**", "*.md", "Cargo.toml", "clippy.toml", "rustfmt.toml", "typos.toml", "flake.nix", "niri.spec.rpkg"]
+level = "allow"
+reason = "upstream niri code; widened later"
+
+[[exceptions]]
+lint = "readme-badges"
+paths = ["src/*.rs", "src/animation/**", "src/backend/**", "src/dbus/**", "src/handlers/**", "src/input/**", "src/ipc/**", "src/layer/**", "src/layout/**", "src/protocols/**", "src/render_helpers/**", "src/screencasting/**", "src/tests/**", "src/ui/**", "src/utils/**", "src/window/**", "niri-config/**", "niri-ipc/**", "niri-visual-tests/**", "build.rs", "docs/**", "resources/**", "*.md", "Cargo.toml", "clippy.toml", "rustfmt.toml", "typos.toml", "flake.nix", "niri.spec.rpkg"]
+level = "allow"
+reason = "upstream niri code; widened later"
+
+[[exceptions]]
+lint = "readme-per-crate"
+paths = ["src/*.rs", "src/animation/**", "src/backend/**", "src/dbus/**", "src/handlers/**", "src/input/**", "src/ipc/**", "src/layer/**", "src/layout/**", "src/protocols/**", "src/render_helpers/**", "src/screencasting/**", "src/tests/**", "src/ui/**", "src/utils/**", "src/window/**", "niri-config/**", "niri-ipc/**", "niri-visual-tests/**", "build.rs", "docs/**", "resources/**", "*.md", "Cargo.toml", "clippy.toml", "rustfmt.toml", "typos.toml", "flake.nix", "niri.spec.rpkg"]
+level = "allow"
+reason = "upstream niri code; widened later"
+
+[[exceptions]]
+lint = "repo-files"
+paths = ["src/*.rs", "src/animation/**", "src/backend/**", "src/dbus/**", "src/handlers/**", "src/input/**", "src/ipc/**", "src/layer/**", "src/layout/**", "src/protocols/**", "src/render_helpers/**", "src/screencasting/**", "src/tests/**", "src/ui/**", "src/utils/**", "src/window/**", "niri-config/**", "niri-ipc/**", "niri-visual-tests/**", "build.rs", "docs/**", "resources/**", "*.md", "Cargo.toml", "clippy.toml", "rustfmt.toml", "typos.toml", "flake.nix", "niri.spec.rpkg"]
+level = "allow"
+reason = "upstream niri code; widened later"
+
+[[exceptions]]
+lint = "restating-comments"
+paths = ["src/*.rs", "src/animation/**", "src/backend/**", "src/dbus/**", "src/handlers/**", "src/input/**", "src/ipc/**", "src/layer/**", "src/layout/**", "src/protocols/**", "src/render_helpers/**", "src/screencasting/**", "src/tests/**", "src/ui/**", "src/utils/**", "src/window/**", "niri-config/**", "niri-ipc/**", "niri-visual-tests/**", "build.rs", "docs/**", "resources/**", "*.md", "Cargo.toml", "clippy.toml", "rustfmt.toml", "typos.toml", "flake.nix", "niri.spec.rpkg"]
+level = "allow"
+reason = "upstream niri code; widened later"
+
+[[exceptions]]
+lint = "rust-version-set"
+paths = ["src/*.rs", "src/animation/**", "src/backend/**", "src/dbus/**", "src/handlers/**", "src/input/**", "src/ipc/**", "src/layer/**", "src/layout/**", "src/protocols/**", "src/render_helpers/**", "src/screencasting/**", "src/tests/**", "src/ui/**", "src/utils/**", "src/window/**", "niri-config/**", "niri-ipc/**", "niri-visual-tests/**", "build.rs", "docs/**", "resources/**", "*.md", "Cargo.toml", "clippy.toml", "rustfmt.toml", "typos.toml", "flake.nix", "niri.spec.rpkg"]
+level = "allow"
+reason = "upstream niri code; widened later"
+
+[[exceptions]]
+lint = "sentence-words"
+paths = ["src/*.rs", "src/animation/**", "src/backend/**", "src/dbus/**", "src/handlers/**", "src/input/**", "src/ipc/**", "src/layer/**", "src/layout/**", "src/protocols/**", "src/render_helpers/**", "src/screencasting/**", "src/tests/**", "src/ui/**", "src/utils/**", "src/window/**", "niri-config/**", "niri-ipc/**", "niri-visual-tests/**", "build.rs", "docs/**", "resources/**", "*.md", "Cargo.toml", "clippy.toml", "rustfmt.toml", "typos.toml", "flake.nix", "niri.spec.rpkg"]
+level = "allow"
+reason = "upstream niri code; widened later"
+
+[[exceptions]]
+lint = "static-interior-mutability"
+paths = ["src/*.rs", "src/animation/**", "src/backend/**", "src/dbus/**", "src/handlers/**", "src/input/**", "src/ipc/**", "src/layer/**", "src/layout/**", "src/protocols/**", "src/render_helpers/**", "src/screencasting/**", "src/tests/**", "src/ui/**", "src/utils/**", "src/window/**", "niri-config/**", "niri-ipc/**", "niri-visual-tests/**", "build.rs", "docs/**", "resources/**", "*.md", "Cargo.toml", "clippy.toml", "rustfmt.toml", "typos.toml", "flake.nix", "niri.spec.rpkg"]
+level = "allow"
+reason = "upstream niri code; widened later"
+
+[[exceptions]]
+lint = "stop-gap-comments"
+paths = ["src/*.rs", "src/animation/**", "src/backend/**", "src/dbus/**", "src/handlers/**", "src/input/**", "src/ipc/**", "src/layer/**", "src/layout/**", "src/protocols/**", "src/render_helpers/**", "src/screencasting/**", "src/tests/**", "src/ui/**", "src/utils/**", "src/window/**", "niri-config/**", "niri-ipc/**", "niri-visual-tests/**", "build.rs", "docs/**", "resources/**", "*.md", "Cargo.toml", "clippy.toml", "rustfmt.toml", "typos.toml", "flake.nix", "niri.spec.rpkg"]
+level = "allow"
+reason = "upstream niri code; widened later"
+
+[[exceptions]]
+lint = "taplo-fmt"
+paths = ["src/*.rs", "src/animation/**", "src/backend/**", "src/dbus/**", "src/handlers/**", "src/input/**", "src/ipc/**", "src/layer/**", "src/layout/**", "src/protocols/**", "src/render_helpers/**", "src/screencasting/**", "src/tests/**", "src/ui/**", "src/utils/**", "src/window/**", "niri-config/**", "niri-ipc/**", "niri-visual-tests/**", "build.rs", "docs/**", "resources/**", "*.md", "Cargo.toml", "clippy.toml", "rustfmt.toml", "typos.toml", "flake.nix", "niri.spec.rpkg"]
+level = "allow"
+reason = "upstream niri code; widened later"
+
+[[exceptions]]
+lint = "term-before-definition"
+paths = ["src/*.rs", "src/animation/**", "src/backend/**", "src/dbus/**", "src/handlers/**", "src/input/**", "src/ipc/**", "src/layer/**", "src/layout/**", "src/protocols/**", "src/render_helpers/**", "src/screencasting/**", "src/tests/**", "src/ui/**", "src/utils/**", "src/window/**", "niri-config/**", "niri-ipc/**", "niri-visual-tests/**", "build.rs", "docs/**", "resources/**", "*.md", "Cargo.toml", "clippy.toml", "rustfmt.toml", "typos.toml", "flake.nix", "niri.spec.rpkg"]
+level = "allow"
+reason = "upstream niri code; widened later"
+
+[[exceptions]]
+lint = "term-synonyms"
+paths = ["src/*.rs", "src/animation/**", "src/backend/**", "src/dbus/**", "src/handlers/**", "src/input/**", "src/ipc/**", "src/layer/**", "src/layout/**", "src/protocols/**", "src/render_helpers/**", "src/screencasting/**", "src/tests/**", "src/ui/**", "src/utils/**", "src/window/**", "niri-config/**", "niri-ipc/**", "niri-visual-tests/**", "build.rs", "docs/**", "resources/**", "*.md", "Cargo.toml", "clippy.toml", "rustfmt.toml", "typos.toml", "flake.nix", "niri.spec.rpkg"]
+level = "allow"
+reason = "upstream niri code; widened later"
+
+[[exceptions]]
+lint = "thinking-comments"
+paths = ["src/*.rs", "src/animation/**", "src/backend/**", "src/dbus/**", "src/handlers/**", "src/input/**", "src/ipc/**", "src/layer/**", "src/layout/**", "src/protocols/**", "src/render_helpers/**", "src/screencasting/**", "src/tests/**", "src/ui/**", "src/utils/**", "src/window/**", "niri-config/**", "niri-ipc/**", "niri-visual-tests/**", "build.rs", "docs/**", "resources/**", "*.md", "Cargo.toml", "clippy.toml", "rustfmt.toml", "typos.toml", "flake.nix", "niri.spec.rpkg"]
+level = "allow"
+reason = "upstream niri code; widened later"
+
+[[exceptions]]
+lint = "tier-clippy-set"
+paths = ["src/*.rs", "src/animation/**", "src/backend/**", "src/dbus/**", "src/handlers/**", "src/input/**", "src/ipc/**", "src/layer/**", "src/layout/**", "src/protocols/**", "src/render_helpers/**", "src/screencasting/**", "src/tests/**", "src/ui/**", "src/utils/**", "src/window/**", "niri-config/**", "niri-ipc/**", "niri-visual-tests/**", "build.rs", "docs/**", "resources/**", "*.md", "Cargo.toml", "clippy.toml", "rustfmt.toml", "typos.toml", "flake.nix", "niri.spec.rpkg"]
+level = "allow"
+reason = "upstream niri code; widened later"
+
+[[exceptions]]
+lint = "todo-macros"
+paths = ["src/*.rs", "src/animation/**", "src/backend/**", "src/dbus/**", "src/handlers/**", "src/input/**", "src/ipc/**", "src/layer/**", "src/layout/**", "src/protocols/**", "src/render_helpers/**", "src/screencasting/**", "src/tests/**", "src/ui/**", "src/utils/**", "src/window/**", "niri-config/**", "niri-ipc/**", "niri-visual-tests/**", "build.rs", "docs/**", "resources/**", "*.md", "Cargo.toml", "clippy.toml", "rustfmt.toml", "typos.toml", "flake.nix", "niri.spec.rpkg"]
+level = "allow"
+reason = "upstream niri code; widened later"
+
+[[exceptions]]
+lint = "toolchain-pinned"
+paths = ["src/*.rs", "src/animation/**", "src/backend/**", "src/dbus/**", "src/handlers/**", "src/input/**", "src/ipc/**", "src/layer/**", "src/layout/**", "src/protocols/**", "src/render_helpers/**", "src/screencasting/**", "src/tests/**", "src/ui/**", "src/utils/**", "src/window/**", "niri-config/**", "niri-ipc/**", "niri-visual-tests/**", "build.rs", "docs/**", "resources/**", "*.md", "Cargo.toml", "clippy.toml", "rustfmt.toml", "typos.toml", "flake.nix", "niri.spec.rpkg"]
+level = "allow"
+reason = "upstream niri code; widened later"
+
+[[exceptions]]
+lint = "typos-misspelling"
+paths = ["src/*.rs", "src/animation/**", "src/backend/**", "src/dbus/**", "src/handlers/**", "src/input/**", "src/ipc/**", "src/layer/**", "src/layout/**", "src/protocols/**", "src/render_helpers/**", "src/screencasting/**", "src/tests/**", "src/ui/**", "src/utils/**", "src/window/**", "niri-config/**", "niri-ipc/**", "niri-visual-tests/**", "build.rs", "docs/**", "resources/**", "*.md", "Cargo.toml", "clippy.toml", "rustfmt.toml", "typos.toml", "flake.nix", "niri.spec.rpkg"]
+level = "allow"
+reason = "upstream niri code; widened later"
+
+[[exceptions]]
+lint = "unbounded-read"
+paths = ["src/*.rs", "src/animation/**", "src/backend/**", "src/dbus/**", "src/handlers/**", "src/input/**", "src/ipc/**", "src/layer/**", "src/layout/**", "src/protocols/**", "src/render_helpers/**", "src/screencasting/**", "src/tests/**", "src/ui/**", "src/utils/**", "src/window/**", "niri-config/**", "niri-ipc/**", "niri-visual-tests/**", "build.rs", "docs/**", "resources/**", "*.md", "Cargo.toml", "clippy.toml", "rustfmt.toml", "typos.toml", "flake.nix", "niri.spec.rpkg"]
+level = "allow"
+reason = "upstream niri code; widened later"
+
+[[exceptions]]
+lint = "unit-suffix"
+paths = ["src/*.rs", "src/animation/**", "src/backend/**", "src/dbus/**", "src/handlers/**", "src/input/**", "src/ipc/**", "src/layer/**", "src/layout/**", "src/protocols/**", "src/render_helpers/**", "src/screencasting/**", "src/tests/**", "src/ui/**", "src/utils/**", "src/window/**", "niri-config/**", "niri-ipc/**", "niri-visual-tests/**", "build.rs", "docs/**", "resources/**", "*.md", "Cargo.toml", "clippy.toml", "rustfmt.toml", "typos.toml", "flake.nix", "niri.spec.rpkg"]
+level = "allow"
+reason = "upstream niri code; widened later"
+
+[[exceptions]]
+lint = "workspace-dependencies"
+paths = ["src/*.rs", "src/animation/**", "src/backend/**", "src/dbus/**", "src/handlers/**", "src/input/**", "src/ipc/**", "src/layer/**", "src/layout/**", "src/protocols/**", "src/render_helpers/**", "src/screencasting/**", "src/tests/**", "src/ui/**", "src/utils/**", "src/window/**", "niri-config/**", "niri-ipc/**", "niri-visual-tests/**", "build.rs", "docs/**", "resources/**", "*.md", "Cargo.toml", "clippy.toml", "rustfmt.toml", "typos.toml", "flake.nix", "niri.spec.rpkg"]
+level = "allow"
+reason = "upstream niri code; widened later"
+
+[[exceptions]]
+lint = "workspace-inheritance"
+paths = ["src/*.rs", "src/animation/**", "src/backend/**", "src/dbus/**", "src/handlers/**", "src/input/**", "src/ipc/**", "src/layer/**", "src/layout/**", "src/protocols/**", "src/render_helpers/**", "src/screencasting/**", "src/tests/**", "src/ui/**", "src/utils/**", "src/window/**", "niri-config/**", "niri-ipc/**", "niri-visual-tests/**", "build.rs", "docs/**", "resources/**", "*.md", "Cargo.toml", "clippy.toml", "rustfmt.toml", "typos.toml", "flake.nix", "niri.spec.rpkg"]
+level = "allow"
+reason = "upstream niri code; widened later"
+
+[[exceptions]]
+lint = "workspace-lints"
+paths = ["src/*.rs", "src/animation/**", "src/backend/**", "src/dbus/**", "src/handlers/**", "src/input/**", "src/ipc/**", "src/layer/**", "src/layout/**", "src/protocols/**", "src/render_helpers/**", "src/screencasting/**", "src/tests/**", "src/ui/**", "src/utils/**", "src/window/**", "niri-config/**", "niri-ipc/**", "niri-visual-tests/**", "build.rs", "docs/**", "resources/**", "*.md", "Cargo.toml", "clippy.toml", "rustfmt.toml", "typos.toml", "flake.nix", "niri.spec.rpkg"]
+level = "allow"
+reason = "upstream niri code; widened later"
