@@ -11,6 +11,7 @@ use ww_niri_api::{Button, InputErrorOwned, Modifiers, Point};
 
 use super::browsers::LoopIo;
 use super::host::{call, Run};
+use super::uinput;
 
 /// One step of injected input, in niri's global logical space.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -438,6 +439,14 @@ fn tap(ops: &mut Vec<Op>, key: Key, shift: u32) {
     }
 }
 
+/// The pointer's ABS value for `v` on an axis of the outputs' box. libinput maps it back as
+/// `units * size / (ABS_MAX + 1)`; rounding up lands it on `v` or a hair past, never below, so
+/// apps that floor the position see pixel `v`.
+fn abs_units(v: f64, origin: i32, size: i32) -> i32 {
+    let units = (v - f64::from(origin)) * f64::from(uinput::ABS_MAX + 1);
+    (units / f64::from(size)).ceil() as i32
+}
+
 /// niri's side of the host: injection, window points, the pointer and the keymap.
 mod niri_state {
     use smithay::input::keyboard::Keysym;
@@ -492,16 +501,11 @@ mod niri_state {
             let Some(uinput) = &self.niri.ww.uinput else {
                 return Err(InputErrorOwned::Unavailable("no uinput devices".to_owned()));
             };
-            // libinput scales ABS 0..=max to the box as `v * size / (max + 1)`.
-            let scale = |v: f64, origin: i32, size: i32| {
-                let units = (v - f64::from(origin)) * f64::from(uinput::ABS_MAX + 1);
-                (units / f64::from(size)).round() as i32
-            };
             for &op in ops {
                 let res = match op {
                     Op::Motion { x, y } => uinput.write_pointer(&uinput::abs(
-                        scale(x, bounds.loc.x, bounds.size.w),
-                        scale(y, bounds.loc.y, bounds.size.h),
+                        super::abs_units(x, bounds.loc.x, bounds.size.w),
+                        super::abs_units(y, bounds.loc.y, bounds.size.h),
                     )),
                     Op::Button { code, pressed } => {
                         uinput.write_pointer(&uinput::key(code as u16, pressed))
@@ -590,6 +594,19 @@ mod niri_state {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn abs_units_map_back_to_the_pixel() {
+        for size in [720, 1080, 1440, 1920, 2160, 3840] {
+            for v in 0..size {
+                let units = abs_units(f64::from(v + 100), 100, size);
+                assert!(units <= uinput::ABS_MAX, "{v} of {size} past ABS_MAX");
+                // libinput's mapping, then the floor an app takes.
+                let back = f64::from(units) * f64::from(size) / f64::from(uinput::ABS_MAX + 1);
+                assert_eq!(back.floor() as i32, v, "{v} of {size} came back as {back}");
+            }
+        }
+    }
 
     #[test]
     fn combos() {
