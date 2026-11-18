@@ -4,6 +4,8 @@ Changes of ww_niri on top of upstream niri. Upstream's own changes are in its re
 
 ## [Unreleased]
 
+## [26.10.0] - 2026-11-18
+
 ### Changed
 
 - `ww_niri_api` relicensed from GPL-3.0-or-later to MIT OR Apache-2.0, so clients like pult can link it.
