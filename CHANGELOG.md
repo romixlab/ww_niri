@@ -4,6 +4,8 @@ Changes of ww_niri on top of upstream niri. Upstream's own changes are in its re
 
 ## [Unreleased]
 
+## [26.8.0] - 2026-11-18
+
 ### Added
 
 - Control API: `listen "lan:PORT"` and `"tailnet:PORT"` in `ww.kdl` bind the current LAN and tailnet addresses, following changes (P2618#18nov-1357).
