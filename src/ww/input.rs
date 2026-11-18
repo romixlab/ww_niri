@@ -27,13 +27,20 @@ pub enum Op {
         code: u32,
         pressed: bool,
     },
-    /// Wheel notches in v120 units.
+    /// A wheel turn in v120 units.
     Wheel {
         dx: f64,
         dy: f64,
     },
     /// An xkb keycode of the configured keymap.
     Key {
+        code: u32,
+        pressed: bool,
+    },
+    /// A key on the pointer device: the modifiers around clicks and scrolls. libinput keeps the
+    /// order of one device's events only, so a modifier from the keyboard device may reach niri
+    /// after the click it was meant for.
+    Modifier {
         code: u32,
         pressed: bool,
     },
@@ -183,19 +190,16 @@ pub fn moved_by(
 enum Held {
     Button(u32),
     Key(u32),
+    Modifier(u32),
 }
 
 impl Held {
     fn release(self) -> Op {
+        let pressed = false;
         match self {
-            Self::Button(code) => Op::Button {
-                code,
-                pressed: false,
-            },
-            Self::Key(code) => Op::Key {
-                code,
-                pressed: false,
-            },
+            Self::Button(code) => Op::Button { code, pressed },
+            Self::Key(code) => Op::Key { code, pressed },
+            Self::Modifier(code) => Op::Modifier { code, pressed },
         }
     }
 }
@@ -213,6 +217,7 @@ impl Holds {
         let (held, pressed) = match op {
             Op::Button { code, pressed } => (Held::Button(code), pressed),
             Op::Key { code, pressed } => (Held::Key(code), pressed),
+            Op::Modifier { code, pressed } => (Held::Modifier(code), pressed),
             Op::Motion { .. } | Op::Wheel { .. } => return,
         };
         let was = self.held.iter().position(|(h, _)| *h == held);
@@ -252,7 +257,7 @@ impl Holds {
             .collect()
     }
 
-    /// The releases of everything held: buttons first, then keys in reverse.
+    /// The releases of everything held: buttons first, then keys and modifiers in reverse.
     fn all(&self) -> Vec<Op> {
         let buttons = self
             .held
@@ -262,7 +267,7 @@ impl Holds {
             .held
             .iter()
             .rev()
-            .filter(|(h, _)| matches!(h, Held::Key(_)));
+            .filter(|(h, _)| !matches!(h, Held::Button(_)));
         buttons.chain(keys).map(|(h, _)| h.release()).collect()
     }
 }
@@ -590,13 +595,13 @@ impl Input {
     }
 }
 
-/// `steps` with the keys of `mods` held around them.
+/// `steps` with the keys of `mods` held around them, on the pointer device.
 fn with_modifiers(mods: &[u32], steps: impl IntoIterator<Item = Op>) -> Vec<Op> {
-    let down = mods.iter().map(|&code| Op::Key {
+    let down = mods.iter().map(|&code| Op::Modifier {
         code,
         pressed: true,
     });
-    let up = mods.iter().rev().map(|&code| Op::Key {
+    let up = mods.iter().rev().map(|&code| Op::Modifier {
         code,
         pressed: false,
     });
@@ -786,6 +791,9 @@ mod niri_state {
                     // xkb keycodes are evdev's plus 8.
                     Op::Key { code, pressed } => {
                         uinput.write_keyboard(&uinput::key((code - 8) as u16, pressed))
+                    }
+                    Op::Modifier { code, pressed } => {
+                        uinput.write_pointer(&uinput::key((code - 8) as u16, pressed))
                     }
                 };
                 res.map_err(|err| InputErrorOwned::Unavailable(format!("uinput: {err}")))?;

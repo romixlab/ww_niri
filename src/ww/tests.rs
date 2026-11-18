@@ -614,9 +614,9 @@ fn input_for_a_touchpad_and_a_remote() {
         assert_eq!(
             taken(),
             [
-                "Key { code: 37, pressed: true }",
+                "Modifier { code: 37, pressed: true }",
                 "Wheel { dx: 0.0, dy: -30.0 }",
-                "Key { code: 37, pressed: false }",
+                "Modifier { code: 37, pressed: false }",
             ]
         );
 
@@ -1891,7 +1891,7 @@ addEventListener("mouseup", e => {
   if (down && Math.hypot(e.clientX - down[0], e.clientY - down[1]) > 5)
     { t(`drag ${down[0]} ${down[1]} ${e.clientX} ${e.clientY}`); down = "dragged"; }
 });
-addEventListener("click", e => { if (down !== "dragged") t(`click ${e.button} ${e.clientX} ${e.clientY}`); down = null; });
+addEventListener("click", e => { if (down !== "dragged") t(`click ${e.button} ${e.clientX} ${e.clientY} ${e.ctrlKey}`); down = null; });
 addEventListener("dblclick", e => t(`dblclick ${e.clientX} ${e.clientY}`));
 addEventListener("contextmenu", e => { e.preventDefault(); t(`context ${e.clientX} ${e.clientY}`); });
 addEventListener("wheel", e => t(`wheel ${Math.sign(e.deltaY)} ${++wheels} ${Math.abs(e.deltaY)} ${e.ctrlKey}`));
@@ -2060,7 +2060,7 @@ fn live_input() {
             let parse = |title: &str| -> Option<(u32, f64)> {
                 let parts: Vec<&str> = title.split(' ').collect();
                 match parts[..] {
-                    ["wheel", _, count, delta, _] => Some((count.parse().ok()?, delta.parse().ok()?)),
+                    ["wheel", _, count, delta, ..] => Some((count.parse().ok()?, delta.parse().ok()?)),
                     _ => None,
                 }
             };
@@ -2096,6 +2096,13 @@ fn live_input() {
         screenshot("3-zoomed").await;
         keyboard.press_keys("ctrl+0".to_owned()).call().await.unwrap();
         title("zoom 2").await;
+        // Modifiers reach niri in order with the click they go with.
+        pointer
+            .click(Some(at(250, 180)), Button::Left, 1, ctrl)
+            .call()
+            .await
+            .unwrap();
+        title("click 0 250 180 true").await;
 
         for (combo, key) in [
             ("XF86AudioPlay", "MediaPlay"),

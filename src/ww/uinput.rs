@@ -1,7 +1,9 @@
 //! A keyboard and an absolute pointer as kernel uinput devices: libinput finds them as it finds
 //! any device, so injected input goes through libinput, xkb, niri's binds and on to the apps.
 //! The pointer is absolute like a VM's tablet (ABS_X and ABS_Y with mouse buttons and a wheel):
-//! libinput maps it to the bounding box of all outputs, as niri does for such a device.
+//! libinput maps it to the bounding box of all outputs, as niri does for such a device. It has
+//! the keyboard's keys too, for the modifiers around its clicks and scrolls: libinput keeps the
+//! order of events within one device only.
 
 use std::fs::{File, OpenOptions};
 use std::io::{self, Write};
@@ -129,7 +131,7 @@ impl Uinput {
 
         let pointer = open()?;
         ioctl(&pointer, UI_SET_EVBIT, EV_KEY.into())?;
-        for code in BUTTONS {
+        for code in KEYS.chain(BUTTONS) {
             ioctl(&pointer, UI_SET_KEYBIT, code.into())?;
         }
         ioctl(&pointer, UI_SET_EVBIT, EV_REL.into())?;
