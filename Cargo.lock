@@ -2646,6 +2646,7 @@ dependencies = [
  "log",
  "niri-config",
  "niri-ipc",
+ "nix",
  "ordered-float",
  "pango",
  "pangocairo",
@@ -2734,6 +2735,7 @@ dependencies = [
  "cfg-if",
  "cfg_aliases",
  "libc",
+ "memoffset",
 ]
 
 [[package]]

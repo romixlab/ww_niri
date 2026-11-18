@@ -3,7 +3,9 @@
 //! Everything runs on the compositor's calloop loop, like niri's IPC: the listener is a loop
 //! source, each connection a task on the loop's executor. `ww.kdl` says where to listen; without
 //! it nothing listens. The file is checked for changes every second and applied when it parses.
-//! Each `listen` address that can't be bound yet is tried again at each check.
+//! Each `listen` address that can't be bound yet is tried again at each check, and `lan:PORT` and
+//! `tailnet:PORT` are resolved again: a changed address closes its listener and binds the new
+//! one, while open connections stay until they end.
 
 use std::net::{SocketAddr, TcpListener};
 use std::path::PathBuf;
@@ -26,6 +28,7 @@ mod connection;
 mod host;
 mod hub;
 mod input;
+mod interfaces;
 mod players;
 mod server;
 mod socket;
@@ -35,8 +38,10 @@ mod uinput;
 
 pub use audio::Audio;
 pub use browsers::Browsers;
+use config::Listen;
 pub use config::WwConfig;
 pub use host::WwHost;
+use interfaces::Interfaces;
 pub use players::Players;
 
 const CONFIG_POLL_INTERVAL: Duration = Duration::from_secs(1);
@@ -155,19 +160,31 @@ impl WwServer {
         let Some(path) = &self.path else { return };
         if config::Props::of(path) != self.props {
             self.reload(event_loop);
-        } else if !self.listeners.complete(&self.config.listen) {
-            // At boot the tailnet or LAN address may not exist yet: keep trying, quietly.
-            self.sync_listeners(event_loop);
+            return;
+        }
+        // At boot the tailnet or LAN address may not exist yet, and DHCP may change the LAN
+        // address: keep following, quietly.
+        let interfaces = match interfaces_for(&self.config.listen) {
+            Ok(interfaces) => interfaces,
+            Err(err) => {
+                debug!("ww: keeping the listeners: {err:?}");
+                return;
+            }
+        };
+        let (wanted, _) = resolve(&self.config.listen, &interfaces);
+        if !self.listeners.matches(&wanted) {
+            self.sync_listeners(event_loop, &wanted);
         }
     }
 
-    /// Binds what `ww.kdl` asks for and drops the rest; answers the addresses that failed.
+    /// Binds `wanted` and drops the rest; answers the addresses that failed.
     fn sync_listeners(
         &mut self,
         event_loop: &LoopHandle<'static, State>,
+        wanted: &[SocketAddr],
     ) -> Vec<(SocketAddr, anyhow::Error)> {
         self.listeners.sync(
-            &self.config.listen,
+            wanted,
             |addr| listen(event_loop, addr),
             // Open connections stay until they end; only the listener goes.
             |_, token| event_loop.remove(token),
@@ -188,17 +205,48 @@ impl WwServer {
                 return;
             }
         };
-        if config == self.config && self.listeners.complete(&config.listen) {
+        let interfaces = interfaces_for(&config.listen).unwrap_or_else(|err| {
+            warn!("ww: lan: and tailnet: have no address until this works: {err:?}");
+            Interfaces::default()
+        });
+        let (wanted, missing) = resolve(&config.listen, &interfaces);
+        if config == self.config && self.listeners.matches(&wanted) {
             return;
         }
         info!("ww: settings from {path:?}: {config:?}");
 
         self.services.browsers.set_count(config.browsers);
         self.config = config;
-        for (addr, err) in self.sync_listeners(event_loop) {
+        for line in missing {
+            warn!("ww: listen {line}: the host has no such address yet, trying again");
+        }
+        for (addr, err) in self.sync_listeners(event_loop, &wanted) {
             warn!("ww: error listening on {addr}, trying again: {err:?}");
         }
     }
+}
+
+/// The host's interfaces when a line of `listen` needs them; else none, without reading them.
+fn interfaces_for(listen: &[Listen]) -> anyhow::Result<Interfaces> {
+    if listen.iter().any(|line| line.is_symbolic()) {
+        Interfaces::read()
+    } else {
+        Ok(Interfaces::default())
+    }
+}
+
+/// The addresses `listen` names on `interfaces`, without repeats, and the lines that name none.
+fn resolve(listen: &[Listen], interfaces: &Interfaces) -> (Vec<SocketAddr>, Vec<Listen>) {
+    let mut wanted = Vec::new();
+    let mut missing = Vec::new();
+    for &line in listen {
+        match line.resolve(interfaces) {
+            Some(addr) if !wanted.contains(&addr) => wanted.push(addr),
+            Some(_) => (),
+            None => missing.push(line),
+        }
+    }
+    (wanted, missing)
 }
 
 /// The listeners, one per address of `ww.kdl`; `T` is what a bound one keeps.
@@ -213,11 +261,12 @@ impl<T> Default for Listeners<T> {
 }
 
 impl<T> Listeners<T> {
-    /// Whether every address of `wanted` is bound.
-    fn complete(&self, wanted: &[SocketAddr]) -> bool {
-        wanted
-            .iter()
-            .all(|addr| self.bound.iter().any(|(a, _)| a == addr))
+    /// Whether exactly the addresses of `wanted`, which has no repeats, are bound.
+    fn matches(&self, wanted: &[SocketAddr]) -> bool {
+        self.bound.len() == wanted.len()
+            && wanted
+                .iter()
+                .all(|addr| self.bound.iter().any(|(a, _)| a == addr))
     }
 
     /// Unbinds the addresses not in `wanted` and binds the missing ones; answers those that
@@ -306,7 +355,7 @@ mod listener_tests {
         let mut listeners = Listeners::default();
         let failed = listeners.sync(&wanted, bind, unbind);
         assert_eq!(failed.iter().map(|(a, _)| *a).collect::<Vec<_>>(), [lan]);
-        assert!(!listeners.complete(&wanted));
+        assert!(!listeners.matches(&wanted));
 
         // Still down: tried again, nothing bound twice.
         assert_eq!(listeners.sync(&wanted, bind, unbind).len(), 1);
@@ -314,12 +363,67 @@ mod listener_tests {
 
         up.borrow_mut().insert(lan);
         assert!(listeners.sync(&wanted, bind, unbind).is_empty());
-        assert!(listeners.complete(&wanted));
+        assert!(listeners.matches(&wanted));
 
         // The tailnet line goes from ww.kdl: only its listener goes.
         assert!(listeners.sync(&[lan], bind, unbind).is_empty());
         assert_eq!(*unbound.borrow(), [tailnet]);
         assert_eq!(listeners.bound, [(lan, lan.to_string())]);
+    }
+
+    #[test]
+    fn follows_a_changed_lan_address() {
+        let listen = [Listen::Lan(7590), Listen::Tailnet(7590)];
+        let host = |lan: &str| Interfaces {
+            addrs: vec![
+                ("tailscale0".to_owned(), "100.98.201.15".parse().unwrap()),
+                ("wlan0".to_owned(), lan.parse().unwrap()),
+            ],
+            default_routes: vec!["wlan0".to_owned()],
+        };
+        let unbound = RefCell::new(Vec::new());
+        let bind = |a: SocketAddr| Ok::<_, io::Error>(a.to_string());
+        let unbind = |a, _| unbound.borrow_mut().push(a);
+
+        let mut listeners = Listeners::default();
+        let (wanted, missing) = resolve(&listen, &host("192.168.1.95"));
+        assert!(missing.is_empty());
+        assert!(listeners.sync(&wanted, bind, unbind).is_empty());
+        assert!(listeners.matches(&wanted));
+
+        // DHCP hands out another address: only the LAN listener moves.
+        let (wanted, _) = resolve(&listen, &host("192.168.1.96"));
+        assert!(!listeners.matches(&wanted));
+        assert!(listeners.sync(&wanted, bind, unbind).is_empty());
+        assert_eq!(*unbound.borrow(), [addr("192.168.1.95:7590")]);
+        assert_eq!(
+            listeners.bound.iter().map(|(a, _)| *a).collect::<Vec<_>>(),
+            [addr("100.98.201.15:7590"), addr("192.168.1.96:7590")]
+        );
+
+        // The link goes down: its listener goes, and comes back with the address.
+        let (wanted, missing) = resolve(&listen, &Interfaces::default());
+        assert!(wanted.is_empty());
+        assert_eq!(missing, listen);
+        assert!(!listeners.matches(&wanted));
+        listeners.sync(&wanted, bind, unbind);
+        assert!(listeners.bound.is_empty());
+    }
+
+    #[test]
+    fn resolve_drops_repeats() {
+        let listen = [
+            Listen::Lan(7590),
+            Listen::Addr(addr("192.168.1.95:7590")),
+            Listen::Tailnet(7590),
+        ];
+        let host = Interfaces {
+            addrs: vec![("eth0".to_owned(), "192.168.1.95".parse().unwrap())],
+            default_routes: vec!["eth0".to_owned()],
+        };
+        let (wanted, missing) = resolve(&listen, &host);
+        assert_eq!(wanted, [addr("192.168.1.95:7590")]);
+        assert_eq!(missing, [Listen::Tailnet(7590)]);
     }
 
     #[test]

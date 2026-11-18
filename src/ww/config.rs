@@ -1,17 +1,24 @@
 //! `ww.kdl`: where the control API listens and how many browser slots there are.
 //!
 //! ```kdl
-//! listen "100.98.201.15:7590"
-//! listen "192.168.1.95:7590"
+//! listen "lan:7590"
+//! listen "tailnet:7590"
+//! listen "127.0.0.1:7591"
 //! browsers 2
 //! ```
+//!
+//! `lan:PORT` is the host's LAN address and `tailnet:PORT` its tailnet address, whatever they are
+//! now (see [`Interfaces`]); a literal address names itself.
 
-use std::net::SocketAddr;
+use std::fmt;
+use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use anyhow::{bail, Context as _};
 use directories::ProjectDirs;
+
+use super::interfaces::Interfaces;
 
 /// Browser slots when `ww.kdl` doesn't say.
 pub const DEFAULT_BROWSERS: u8 = 2;
@@ -24,11 +31,67 @@ struct RawConfig {
     browsers: Option<u8>,
 }
 
+/// One `listen` line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Listen {
+    Addr(SocketAddr),
+    /// `lan:PORT`.
+    Lan(u16),
+    /// `tailnet:PORT`.
+    Tailnet(u16),
+}
+
+impl Listen {
+    /// Whether it names an address that depends on the host's interfaces.
+    pub fn is_symbolic(self) -> bool {
+        !matches!(self, Self::Addr(_))
+    }
+
+    /// The address it names now; `None`: the host doesn't have it (yet).
+    pub fn resolve(self, interfaces: &Interfaces) -> Option<SocketAddr> {
+        match self {
+            Self::Addr(addr) => Some(addr),
+            Self::Lan(port) => Some(SocketAddr::new(IpAddr::V4(interfaces.lan()?), port)),
+            Self::Tailnet(port) => Some(SocketAddr::new(IpAddr::V4(interfaces.tailnet()?), port)),
+        }
+    }
+
+    fn parse(text: &str) -> anyhow::Result<Self> {
+        let port = |port: &str| {
+            port.parse()
+                .with_context(|| format!("listen {text:?}: {port:?} is not a port"))
+        };
+        match text.split_once(':') {
+            Some(("lan", rest)) => return Ok(Self::Lan(port(rest)?)),
+            Some(("tailnet", rest)) => return Ok(Self::Tailnet(port(rest)?)),
+            _ => (),
+        }
+
+        let addr: SocketAddr = text.parse().with_context(|| {
+            format!("listen {text:?} is not an address with a port, lan:PORT or tailnet:PORT")
+        })?;
+        // The API runs commands as this user: it listens on the addresses named, never all.
+        if addr.ip().is_unspecified() {
+            bail!("listen {text:?} would listen on every address: name each address");
+        }
+        Ok(Self::Addr(addr))
+    }
+}
+
+impl fmt::Display for Listen {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Addr(addr) => write!(f, "{addr}"),
+            Self::Lan(port) => write!(f, "lan:{port}"),
+            Self::Tailnet(port) => write!(f, "tailnet:{port}"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WwConfig {
-    /// Each address the server listens on, in the file's order without repeats; none: it
-    /// doesn't listen.
-    pub listen: Vec<SocketAddr>,
+    /// Each `listen` line, in the file's order without repeats; none: it doesn't listen.
+    pub listen: Vec<Listen>,
     pub browsers: u8,
 }
 
@@ -48,15 +111,9 @@ impl WwConfig {
 
         let mut listen = Vec::new();
         for text in raw.listen {
-            let addr: SocketAddr = text
-                .parse()
-                .with_context(|| format!("listen {text:?} is not an address with a port"))?;
-            // The API runs commands as this user: it listens on the addresses named, never all.
-            if addr.ip().is_unspecified() {
-                bail!("listen {text:?} would listen on every address: name each address");
-            }
-            if !listen.contains(&addr) {
-                listen.push(addr);
+            let line = Listen::parse(&text)?;
+            if !listen.contains(&line) {
+                listen.push(line);
             }
         }
 
@@ -107,7 +164,10 @@ mod tests {
     fn listen_and_browsers() {
         let config =
             WwConfig::parse("ww.kdl", "listen \"100.64.0.12:7590\"\nbrowsers 3\n").unwrap();
-        assert_eq!(config.listen, ["100.64.0.12:7590".parse().unwrap()]);
+        assert_eq!(
+            config.listen,
+            [Listen::Addr("100.64.0.12:7590".parse().unwrap())]
+        );
         assert_eq!(config.browsers, 3);
     }
 
@@ -116,11 +176,54 @@ mod tests {
         let text = "listen \"100.64.0.12:7590\"\nlisten \"192.168.1.95:7590\"\n\
                     listen \"100.64.0.12:7590\"\nlisten \"[fd7a::1]:7590\"\n";
         let config = WwConfig::parse("ww.kdl", text).unwrap();
-        let want: Vec<SocketAddr> = ["100.64.0.12:7590", "192.168.1.95:7590", "[fd7a::1]:7590"]
+        let want: Vec<Listen> = ["100.64.0.12:7590", "192.168.1.95:7590", "[fd7a::1]:7590"]
             .iter()
-            .map(|a| a.parse().unwrap())
+            .map(|a| Listen::Addr(a.parse().unwrap()))
             .collect();
         assert_eq!(config.listen, want);
+    }
+
+    #[test]
+    fn symbolic_listen_lines() {
+        let text = "listen \"lan:7590\"\nlisten \"tailnet:7590\"\nlisten \"lan:7590\"\n\
+                    listen \"lan:7591\"\n";
+        let config = WwConfig::parse("ww.kdl", text).unwrap();
+        assert_eq!(
+            config.listen,
+            [Listen::Lan(7590), Listen::Tailnet(7590), Listen::Lan(7591)]
+        );
+        assert_eq!(config.listen[1].to_string(), "tailnet:7590");
+    }
+
+    #[test]
+    fn refuses_symbolic_without_port() {
+        for text in ["lan:", "lan:http", "tailnet:70000", "wan:7590", "LAN:7590"] {
+            let line = format!("listen {text:?}");
+            assert!(WwConfig::parse("ww.kdl", &line).is_err(), "{line}");
+        }
+    }
+
+    #[test]
+    fn resolves_against_the_interfaces() {
+        let host = Interfaces {
+            addrs: vec![
+                ("tailscale0".to_owned(), "100.98.201.15".parse().unwrap()),
+                ("wlan0".to_owned(), "192.168.1.95".parse().unwrap()),
+            ],
+            default_routes: vec!["wlan0".to_owned()],
+        };
+        let addr = |text: &str| Some(text.parse::<SocketAddr>().unwrap());
+        assert_eq!(Listen::Lan(7590).resolve(&host), addr("192.168.1.95:7590"));
+        assert_eq!(
+            Listen::Tailnet(7590).resolve(&host),
+            addr("100.98.201.15:7590")
+        );
+        let literal = Listen::Addr("127.0.0.1:7591".parse().unwrap());
+        assert_eq!(
+            literal.resolve(&Interfaces::default()),
+            addr("127.0.0.1:7591")
+        );
+        assert_eq!(Listen::Lan(7590).resolve(&Interfaces::default()), None);
     }
 
     #[test]
