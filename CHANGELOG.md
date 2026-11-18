@@ -4,6 +4,8 @@ Changes of ww_niri on top of upstream niri. Upstream's own changes are in its re
 
 ## [Unreleased]
 
+## [26.11.0] - 2026-11-18
+
 ### Added
 
 - `ww_niri_fake`: an in-memory TV serving the control API in-process, with test knobs, for client and app tests (P2618#18nov-1316b).
