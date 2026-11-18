@@ -76,6 +76,10 @@ impl From<protocol::ProtocolError> for AudioError {
     }
 }
 
+/// A cookie's length. PipeWire ignores the cookie but refuses AUTH with "Invalid argument"
+/// unless it has this many bytes.
+const COOKIE_LEN: usize = 256;
+
 /// Where the server is and the cookie to show it.
 #[derive(Debug, Clone)]
 pub struct Target {
@@ -85,13 +89,22 @@ pub struct Target {
 
 impl Target {
     /// As libpulse finds them: `PULSE_SERVER`, `PULSE_RUNTIME_PATH`, `XDG_RUNTIME_DIR`, and
-    /// `PULSE_COOKIE` or `~/.config/pulse/cookie`. PipeWire ignores the cookie.
+    /// `PULSE_COOKIE` or `~/.config/pulse/cookie`.
     pub fn from_env() -> Option<Self> {
         let socket = pulseaudio::socket_path_from_env()?;
-        let cookie = pulseaudio::cookie_path_from_env()
+        Some(Self::with_cookie_file(
+            socket,
+            pulseaudio::cookie_path_from_env(),
+        ))
+    }
+
+    /// The server at `socket`, shown the cookie in `file`; zeros when there is none.
+    pub fn with_cookie_file(socket: PathBuf, file: Option<PathBuf>) -> Self {
+        let cookie = file
             .and_then(|path| std::fs::read(path).ok())
-            .unwrap_or_default();
-        Some(Self { socket, cookie })
+            .filter(|cookie| !cookie.is_empty())
+            .unwrap_or_else(|| vec![0; COOKIE_LEN]);
+        Self { socket, cookie }
     }
 }
 

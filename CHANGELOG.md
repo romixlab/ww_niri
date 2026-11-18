@@ -8,6 +8,10 @@ Changes of ww_niri on top of upstream niri. Upstream's own changes are in its re
 
 - Control API: `input.pointer` and `input.keyboard` (P2618#12nov-1548). Move the pointer to a point in global or window-local coordinates, click (any button, double click, modifiers held), press and release, drag, scroll, read where the pointer is and the window under it; type text, press keys and combinations (`ctrl+l`), hold keys. The input goes in below niri, through a keyboard and an absolute pointer that niri makes as kernel uinput devices on first use, so libinput, xkb, niri's binds and the apps see real devices. Needs write access to `/dev/uinput` (else `Unavailable`). Buttons and keys a connection holds are released when it ends. Text outside the configured keymap answers `NotTypeable`.
 
+### Fixed
+
+- Control API audio: with no PulseAudio cookie file (`~/.config/pulse/cookie`), the client sent an empty cookie and PipeWire refused AUTH with "Invalid argument", so volume and mute never worked. It now sends 256 zero bytes, which PipeWire accepts (it ignores the cookie but checks its length).
+
 ## [26.6.0] - 2026-11-17
 
 ### Changed

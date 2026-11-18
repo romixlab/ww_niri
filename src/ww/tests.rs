@@ -1253,6 +1253,10 @@ impl FakePulse {
             };
             while let Ok((seq, command)) = protocol::read_command_message(&mut reader, version) {
                 match command {
+                    // As PipeWire: the cookie is ignored, but it must have 256 bytes.
+                    protocol::Command::Auth(auth) if auth.cookie.len() != 256 => write(&mut |w| {
+                        protocol::write_error(w, seq, &protocol::PulseError::Invalid).unwrap()
+                    }),
                     protocol::Command::Auth(_) => write(&mut |w| {
                         let reply = protocol::AuthReply {
                             version,
@@ -1315,11 +1319,10 @@ impl FakePulse {
         fake
     }
 
+    /// The fake's socket, and no cookie file, as on a box where nothing wrote one.
     fn target(&self) -> Target {
-        Target {
-            socket: self.socket.clone(),
-            cookie: vec![0; 256],
-        }
+        let missing = self.socket.with_file_name("no-cookie");
+        Target::with_cookie_file(self.socket.clone(), Some(missing))
     }
 
     /// Changes the sink as another client would.
@@ -1348,6 +1351,26 @@ fn sink_changed(w: &mut std::os::unix::net::UnixStream) {
         index: Some(7),
     });
     protocol::write_command_message(w, u32::MAX, &event, protocol::MAX_VERSION).unwrap();
+}
+
+#[test]
+fn audio_cookie() {
+    let dir = Scratch::new("cookie");
+    let socket = dir.0.join("native");
+    let file = dir.0.join("cookie");
+    std::fs::write(&file, [7u8; 256]).unwrap();
+    let target = Target::with_cookie_file(socket.clone(), Some(file.clone()));
+    assert_eq!(target.cookie, [7u8; 256]);
+    // Missing or empty: zeros of the length PipeWire wants.
+    for file in [None, Some(dir.0.join("missing")), Some(file)] {
+        if let Some(file) = &file {
+            if file.exists() {
+                std::fs::write(file, []).unwrap();
+            }
+        }
+        let target = Target::with_cookie_file(socket.clone(), file);
+        assert_eq!(target.cookie, [0u8; 256]);
+    }
 }
 
 #[test]
