@@ -1918,7 +1918,7 @@ fn live_screen() {
 
 /// The page of `live_input`: one text field over the whole window, and the last pointer, key,
 /// zoom or text event in the title, which the slot's state reports.
-const INPUT_PAGE: &str = r#"<!doctype html><title>ready</title>
+const INPUT_PAGE: &str = r#"<!doctype html><meta charset=utf-8><title>ready</title>
 <style>html,body{margin:0;height:100%}input{position:fixed;inset:0;width:100%;height:100%;border:0;font-size:40px}</style>
 <form action="/done"><input name="q" autocomplete="off"></form>
 <script>
@@ -1947,7 +1947,8 @@ i.addEventListener("input", () => t(`text ${i.value}`));
 /// click, scroll, drag, move by deltas, scroll by quarter notches, zoom with ctrl and scroll,
 /// press media keys, hold a button past its hold limit and type into it (Russian too: the
 /// keymap needs `us,ru`), and read each back from the page's title. Screenshots to
-/// `/tmp/ww-input-*.png` there, as `live_screen` takes them.
+/// `/tmp/ww-input-*.png` there, as `live_screen` takes them; `WW_NIRI_BIN` names niri there
+/// when it is not on the PATH of niri's own services.
 #[test]
 fn live_input() {
     use exact_units::Millis;
@@ -1987,7 +1988,7 @@ fn live_input() {
         };
 
         let server = format!(
-            "import http.server\nP={:?}.encode()\nclass H(http.server.BaseHTTPRequestHandler):\n def do_GET(s):\n  s.send_response(200); s.send_header('Content-Type', 'text/html'); s.end_headers(); s.wfile.write(P)\n def log_message(*a): pass\nhttp.server.HTTPServer(('127.0.0.1', {port}), H).serve_forever()\n",
+            "import http.server\nP={:?}.encode()\nclass H(http.server.BaseHTTPRequestHandler):\n def do_GET(s):\n  s.send_response(200); s.send_header('Content-Type', 'text/html; charset=utf-8'); s.end_headers(); s.wfile.write(P)\n def log_message(*a): pass\nhttp.server.HTTPServer(('127.0.0.1', {port}), H).serve_forever()\n",
             INPUT_PAGE
         );
         let server = launch(vec!["python3".into(), "-c".into(), server]).await;
