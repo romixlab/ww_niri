@@ -34,3 +34,12 @@ tv.advance(Duration::from_secs(1)); // the slot's window maps: Running
 | `open_window`, `close_window`, `set_audio`, `set_sink` | Changes made on the TV itself. |
 
 Serving the fake over a real WebSocket is left out: ww_niri's own server tests cover that path.
+
+## License
+
+Licensed under either of:
+
+- MIT license ([LICENSE-MIT](LICENSE-MIT) or http://opensource.org/licenses/MIT)
+- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or http://www.apache.org/licenses/LICENSE-2.0)
+
+at your option.
