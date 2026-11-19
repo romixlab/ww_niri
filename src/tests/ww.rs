@@ -211,3 +211,304 @@ fn host_relative_moves_and_pointer_notices() {
         );
     }
 }
+
+#[test]
+fn host_cover_lifts_at_its_end_and_with_its_holder() {
+    use std::time::{Duration, Instant};
+
+    use ww_niri_api::{CardOwned, CoverError};
+
+    use crate::layout::LayoutElement as _;
+    use crate::ww::cover::Look;
+
+    let mut f = Fixture::new();
+    f.add_output(1, (1920, 1080));
+    let id = f.add_client();
+    let window = f.client(id).create_window();
+    let surface = window.surface.clone();
+    window.commit();
+    f.roundtrip(id);
+    let window = f.client(id).window(&surface);
+    window.attach_new_buffer();
+    window.ack_last_and_commit();
+    f.double_roundtrip(id);
+    let wid = f.niri_state().windows()[0].id.0;
+
+    let look = |lasts| Look {
+        card: CardOwned {
+            title: "Реклама".to_owned(),
+            countdown: Some("Передача вернётся через".to_owned()),
+            clock: true,
+            footer: None,
+        },
+        until: Instant::now() + lasts,
+    };
+    let covered = |f: &mut Fixture| {
+        let mut covered = None;
+        f.niri().layout.with_windows(|mapped, _, _, _| {
+            covered = Some(mapped.cover().is_some());
+        });
+        covered.unwrap()
+    };
+
+    assert_eq!(
+        f.niri_state().cover(9999, 1, look(Duration::from_secs(1))),
+        Err(CoverError::NoSuchWindow)
+    );
+    assert_eq!(f.niri_state().uncover(wid), Err(CoverError::NotCovered));
+
+    // Uncovered explicitly.
+    f.niri_state()
+        .cover(wid, 1, look(Duration::from_secs(60)))
+        .unwrap();
+    assert!(covered(&mut f));
+    f.niri_state().uncover(wid).unwrap();
+    assert!(!covered(&mut f));
+
+    // Lifted with its holder; another holder's cover stays.
+    f.niri_state()
+        .cover(wid, 1, look(Duration::from_secs(60)))
+        .unwrap();
+    f.niri_state().uncover_held_by(2);
+    assert!(covered(&mut f));
+    f.niri_state().uncover_held_by(1);
+    assert!(!covered(&mut f));
+
+    // Lifted by the timer at its end.
+    f.niri_state()
+        .cover(wid, 1, look(Duration::from_millis(50)))
+        .unwrap();
+    assert!(covered(&mut f));
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while covered(&mut f) {
+        assert!(Instant::now() < deadline, "the cover outlived its end");
+        // niri's own loop: its timers fire without waking the fixture's.
+        f.state
+            .server
+            .event_loop
+            .dispatch(Duration::from_millis(10), &mut f.state.server.state)
+            .unwrap();
+    }
+    assert!(f.niri().ww.covers.is_empty());
+    assert!(f.niri().ww.cover_timer.is_none());
+}
+
+/// Renders a covered red window on a surfaceless EGL renderer and checks the blur, the dim and
+/// the card. `WW_COVER_PNG=path` also writes the frame there to look at.
+#[test]
+fn cover_renders_blur_dim_and_card() {
+    use std::time::{Duration, Instant};
+
+    use smithay::backend::allocator::Fourcc;
+    use smithay::utils::Transform;
+    use ww_niri_api::CardOwned;
+
+    use crate::render_helpers::{render_to_vec, RenderCtx, RenderTarget};
+    use crate::ww::cover::Look;
+
+    let config = niri_config::Config::parse_mem("hotkey-overlay { skip-at-startup; }").unwrap();
+    let mut f = Fixture::with_config(config);
+    if let Err(err) = f.niri_state().backend.headless().add_renderer() {
+        // No EGL here (a build host without Mesa): nothing to render with.
+        eprintln!("skipped: no surfaceless EGL renderer: {err:?}");
+        return;
+    }
+    f.add_output(1, (1920, 1080));
+    let id = f.add_client();
+    let window = f.client(id).create_window();
+    let surface = window.surface.clone();
+    window.set_fullscreen(None);
+    window.commit();
+    f.roundtrip(id);
+    let window = f.client(id).window(&surface);
+    let (w, h) = window.configures_received.last().unwrap().1.size;
+    assert_eq!((w, h), (1920, 1080));
+    window.attach_color_buffer([u32::MAX, 0, 0, u32::MAX]);
+    window.set_size(1920, 1080);
+    window.ack_last_and_commit();
+    f.double_roundtrip(id);
+    f.niri_complete_animations();
+    let wid = f.niri_state().windows()[0].id.0;
+
+    let frame = |f: &mut Fixture| -> Vec<u8> {
+        let output = f.niri_output(1);
+        let state = f.niri_state();
+        let niri = &state.niri;
+        state
+            .backend
+            .with_primary_renderer(|renderer| {
+                let ctx = RenderCtx {
+                    renderer: &mut *renderer,
+                    target: RenderTarget::Output,
+                    xray: None,
+                };
+                let elements = niri.render_to_vec(ctx, &output, false);
+                render_to_vec(
+                    renderer,
+                    (1920, 1080).into(),
+                    1.0.into(),
+                    Transform::Normal,
+                    Fourcc::Abgr8888,
+                    elements.iter().rev(),
+                )
+                .unwrap()
+            })
+            .unwrap()
+    };
+    let px = |frame: &[u8], x: usize, y: usize| {
+        let i = (y * 1920 + x) * 4;
+        [frame[i], frame[i + 1], frame[i + 2]]
+    };
+
+    let plain = frame(&mut f);
+    assert_eq!(px(&plain, 960, 100), [255, 0, 0]);
+
+    let look = Look {
+        card: CardOwned {
+            title: "Реклама".to_owned(),
+            countdown: Some("Передача вернётся через".to_owned()),
+            clock: true,
+            footer: Some("Первый канал".to_owned()),
+        },
+        until: Instant::now() + Duration::from_secs(130),
+    };
+    f.niri_state().cover(wid, 1, look).unwrap();
+    let covered = frame(&mut f);
+    if let Some(path) = std::env::var_os("WW_COVER_PNG") {
+        let file = std::fs::File::create(path).unwrap();
+        crate::utils::write_png_rgba8(file, 1920, 1080, &covered).unwrap();
+    }
+
+    // Away from the text: the blurred red under the warm dim.
+    let [r, g, b] = px(&covered, 960, 100);
+    let near = |v: u8, want: f32| (f32::from(v) - want).abs() <= 6.;
+    assert!(
+        near(r, 255. * 0.35 + 42. * 0.65) && near(g, 29. * 0.65) && near(b, 22. * 0.65),
+        "dimmed red: {:?}",
+        [r, g, b]
+    );
+    // Each line of the card shows: light pixels across its band.
+    for (line, y) in [
+        ("title", 380),
+        ("countdown", 520),
+        ("clock", 720),
+        ("footer", 900),
+    ] {
+        let lit = (y - 30..y + 30)
+            .flat_map(|y| (0..1920).map(move |x| (x, y)))
+            .any(|(x, y)| {
+                let [r, g, _] = px(&covered, x, y);
+                r > 200 && g > 180
+            });
+        assert!(lit, "the {line} line is drawn");
+    }
+
+    f.niri_state().uncover(wid).unwrap();
+    assert_eq!(px(&frame(&mut f), 960, 100), [255, 0, 0]);
+}
+
+/// Blurs sharp stripes through the cover renderer: the edges go soft and nothing sharp is left.
+/// `WW_COVER_STRIPES_PNG=path` writes the frame there to look at.
+#[test]
+fn cover_blurs_detail_away() {
+    use std::time::{Duration, Instant};
+
+    use smithay::backend::allocator::Fourcc;
+    use smithay::backend::renderer::element::Kind;
+    use smithay::utils::{Point, Scale, Size, Transform};
+    use ww_niri_api::CardOwned;
+
+    use crate::backend::Headless;
+    use crate::layout::LayoutElementRenderElement;
+    use crate::render_helpers::render_to_vec;
+    use crate::render_helpers::solid_color::{SolidColorBuffer, SolidColorRenderElement};
+    use crate::ww::cover::render::{CoverElement, CoverRender};
+    use crate::ww::cover::Look;
+
+    let mut headless = Headless::new();
+    if let Err(err) = headless.add_renderer() {
+        eprintln!("skipped: no surfaceless EGL renderer: {err:?}");
+        return;
+    }
+    let size = Size::from((1920., 1080.));
+    let look = Look {
+        card: CardOwned {
+            title: String::new(),
+            countdown: None,
+            clock: false,
+            footer: None,
+        },
+        until: Instant::now() + Duration::from_secs(60),
+    };
+    let render = CoverRender::default();
+    let frame = headless
+        .with_primary_renderer(|renderer| {
+            let mut elements = Vec::new();
+            render.render(
+                renderer,
+                &look,
+                Point::from((0., 0.)),
+                size,
+                Scale::from(1.),
+                1.,
+                |_, _| {
+                    // White and blue stripes, 40 px wide, at the scale asked for.
+                    (0..48)
+                        .map(|i| {
+                            let color = if i % 2 == 0 {
+                                [1., 1., 1., 1.]
+                            } else {
+                                [0., 0., 1., 1.]
+                            };
+                            let buffer = SolidColorBuffer::new((40., 1080.), color);
+                            let at = Point::from((f64::from(i) * 40., 0.));
+                            let elem = SolidColorRenderElement::from_buffer(
+                                &buffer,
+                                at,
+                                1.,
+                                Kind::Unspecified,
+                            );
+                            LayoutElementRenderElement::SolidColor(elem)
+                        })
+                        .collect()
+                },
+                &mut |elem| elements.push(elem),
+            );
+            let elements: Vec<_> = elements
+                .into_iter()
+                .map(|elem| match elem {
+                    CoverElement::Texture(elem) => crate::niri::OutputRenderElements::Texture(elem),
+                    CoverElement::SolidColor(elem) => elem.into(),
+                })
+                .collect();
+            render_to_vec(
+                renderer,
+                (1920, 1080).into(),
+                1.0.into(),
+                Transform::Normal,
+                Fourcc::Abgr8888,
+                elements.iter().rev(),
+            )
+            .unwrap()
+        })
+        .unwrap();
+    if let Some(path) = std::env::var_os("WW_COVER_STRIPES_PNG") {
+        let file = std::fs::File::create(path).unwrap();
+        crate::utils::write_png_rgba8(file, 1920, 1080, &frame).unwrap();
+    }
+
+    // Unblurred, red would swing by 255 * 0.35 = 89 between the stripes.
+    let row: Vec<u8> = (0..1920).map(|x| frame[(540 * 1920 + x) * 4]).collect();
+    let swing = row[400..1500].iter().max().unwrap() - row[400..1500].iter().min().unwrap();
+    assert!(
+        swing < 30,
+        "red swings by {swing} along the row: not blurred"
+    );
+    // Between neighbours there is no sharp edge left.
+    let step = row[400..1500]
+        .windows(2)
+        .map(|w| w[0].abs_diff(w[1]))
+        .max()
+        .unwrap();
+    assert!(step <= 4, "a step of {step} between neighbours");
+}

@@ -3,7 +3,7 @@
 use exact_units::Fixed;
 use ww_niri_api::{Button, Modifiers, PlayerId};
 
-use super::{Held, LANE_PENDING_MAX, Lanes};
+use super::{Held, Lanes, LANE_PENDING_MAX};
 use crate::command::{Command, Lane, PlaybackAction, PlaybackTarget};
 
 fn queued(lanes: &Lanes, lane: &Lane) -> Vec<Command> {
@@ -120,6 +120,39 @@ fn volume_and_position_are_latest_wins_seeks_add_up() {
 }
 
 #[test]
+fn a_cover_replaces_the_one_before_of_its_window() {
+    use std::time::Duration;
+
+    use ww_niri_api::{CardOwned, WindowId};
+
+    let cover = |id, secs| Command::Cover {
+        id: WindowId(id),
+        card: CardOwned {
+            title: "Реклама".to_owned(),
+            countdown: None,
+            clock: false,
+            footer: None,
+        },
+        lasts: Duration::from_secs(secs),
+    };
+    let mut lanes = Lanes::default();
+    for c in [cover(1, 10), cover(1, 9), cover(2, 5), cover(2, 4)] {
+        lanes.push(c, None).unwrap();
+    }
+    lanes.push(Command::Uncover(WindowId(2)), None).unwrap();
+    lanes.push(cover(2, 3), None).unwrap();
+    assert_eq!(
+        queued(&lanes, &Lane::Windows),
+        [
+            cover(1, 9),
+            cover(2, 4),
+            Command::Uncover(WindowId(2)),
+            cover(2, 3)
+        ]
+    );
+}
+
+#[test]
 fn one_call_in_flight_per_lane() {
     let mut lanes = Lanes::default();
     lanes.push(Command::MoveBy { dx: 1, dy: 0 }, None).unwrap();
@@ -145,11 +178,9 @@ fn a_full_lane_refuses() {
             .push(Command::PressKeys("a".to_owned()), None)
             .unwrap();
     }
-    assert!(
-        lanes
-            .push(Command::PressKeys("a".to_owned()), None)
-            .is_err()
-    );
+    assert!(lanes
+        .push(Command::PressKeys("a".to_owned()), None)
+        .is_err());
     // Another lane still takes commands.
     lanes.push(Command::SetMuted(true), None).unwrap();
 }

@@ -45,9 +45,11 @@ On each link, and after a `Resync` event, the client lists everything again and 
 - While a call is in flight, the commands behind it merge where one call does both:
   - pointer moves and wheel turns add up;
   - a volume or mute replaces the one before;
-  - seeks add up, and a position replaces them.
+  - seeks add up, and a position replaces them;
+  - a cover replaces the one before of the same window or slot.
 - So a fast UI never floods the link, and the rate follows the round trip. Clicks, keys and text keep their order.
 - A button or key held with `press` or `key_down` is renewed every third of the hold limit until released. `Config::hold_limit` sets it, 3 s by default.
+- `tv.window(id).cover(card, lasts)` and `tv.slot(0).cover(..)` blur the window under a card for `lasts`. The cover belongs to the connection: it lifts when the link goes, also on a reconnect, so a client renews it while it should stay.
 - `Tv::release_all` lets go of everything when the app goes to the background. A phone that vanishes leaves nothing held past the hold limit.
 
 ## Tests

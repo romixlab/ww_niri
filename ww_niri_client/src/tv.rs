@@ -7,8 +7,8 @@ use std::time::Duration;
 use exact_units::Micros;
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
 use ww_niri_api::{
-    Button, InfoOwned, Modifiers, OutputOwned, PlayerId, PlayerInfoOwned, Point, Transition,
-    WindowId, WindowOwned,
+    Button, CardOwned, InfoOwned, Modifiers, OutputOwned, PlayerId, PlayerInfoOwned, Point,
+    Transition, WindowId, WindowOwned,
 };
 
 use crate::api::NiriClient;
@@ -321,6 +321,12 @@ impl WindowCalls<'_> {
         /// Asks the app to close the window.
         fn close(&self) => Command::CloseWindow(self.id);
         fn set_fullscreen(&self, on: bool) => Command::SetFullscreen { id: self.id, on };
+        /// Covers the window with a blur and `card` for `lasts`; it lifts by itself at the end
+        /// or when this client's connection ends, so renew it while it should stay.
+        fn cover(&self, card: CardOwned, lasts: Duration) =>
+            Command::Cover { id: self.id, card, lasts };
+        /// Lifts the window's cover.
+        fn uncover(&self) => Command::Uncover(self.id);
     }
 }
 
@@ -340,6 +346,11 @@ impl<'a> SlotCalls<'a> {
         /// Shows the slot's window, as [WindowCalls::show].
         fn show(&self, transition: Option<Transition>, fullscreen: Option<bool>) =>
             Command::SlotShow { slot: self.index, transition, fullscreen };
+        /// Covers the slot's window, as [WindowCalls::cover].
+        fn cover(&self, card: CardOwned, lasts: Duration) =>
+            Command::SlotCover { slot: self.index, card, lasts };
+        /// Lifts the cover of the slot's window.
+        fn uncover(&self) => Command::SlotUncover { slot: self.index };
     }
 
     /// The slot's current player.

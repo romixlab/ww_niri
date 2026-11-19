@@ -27,6 +27,7 @@ mod browsers;
 mod clock;
 mod config;
 mod connection;
+pub(crate) mod cover;
 mod host;
 mod hub;
 pub(crate) mod input;
@@ -64,6 +65,10 @@ pub struct WwServer {
     pub pointer_seen: Option<input::Seen>,
     /// Layouts to switch to, one per layout marker injected and not yet read.
     pub layout_switches: std::collections::VecDeque<u32>,
+    /// The windows covered, and who holds each cover.
+    pub covers: cover::Covers,
+    /// Wakes at the next end or countdown second of the covers.
+    pub cover_timer: Option<RegistrationToken>,
 }
 
 /// What every connection shares: the ww side's events, the browser slots, the players and the
@@ -75,6 +80,8 @@ pub struct Services {
     pub audio: Rc<Audio>,
     /// Timeouts for the handlers, as injected drags take steps.
     pub io: Rc<browsers::LoopIo>,
+    /// The last connection id handed out, for who holds a cover.
+    holders: std::cell::Cell<u64>,
 }
 
 impl Services {
@@ -102,7 +109,15 @@ impl Services {
             players,
             audio: Audio::new(),
             io: Rc::new(browsers::LoopIo::new(handle.clone())),
+            holders: std::cell::Cell::new(0),
         })
+    }
+
+    /// A new connection's id, never handed out before.
+    pub fn next_holder(&self) -> u64 {
+        let id = self.holders.get() + 1;
+        self.holders.set(id);
+        id
     }
 }
 
@@ -148,6 +163,8 @@ impl WwServer {
             pointer_sent: None,
             layout_switches: std::collections::VecDeque::new(),
             pointer_seen: None,
+            covers: cover::Covers::default(),
+            cover_timer: None,
         };
         ww.reload(event_loop);
 

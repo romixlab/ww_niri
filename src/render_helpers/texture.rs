@@ -91,6 +91,11 @@ impl<T: Texture> TextureBuffer<T> {
         &self.texture
     }
 
+    /// Marks the texture's contents as changed, for a texture drawn into again.
+    pub fn bump_commit(&mut self) {
+        self.commit_counter.increment();
+    }
+
     pub fn texture_scale(&self) -> Scale<f64> {
         self.scale
     }

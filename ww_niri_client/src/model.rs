@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use tokio::sync::{broadcast, mpsc, watch};
 use tokio::task::JoinHandle;
-use wire_weaver_client::observe::{ObserveEvent, on_change};
+use wire_weaver_client::observe::{on_change, ObserveEvent};
 use wire_weaver_client::{ConnectionEvent, StreamError};
 use ww_niri_api::{
     BrowserStateOwned, EventOwned, PlaybackStateOwned, PlayerId, PlayerInfoOwned, PointerPosition,
@@ -321,7 +321,8 @@ impl Session<'_> {
             EventOwned::Resync => return Err(End::Resync),
             // The slots' observers follow their phases.
             EventOwned::BrowserStarted(_) | EventOwned::BrowserStopped { .. } => {}
-            EventOwned::Unknown(_) => {}
+            // Covers belong to the connection that set them, not to the snapshot.
+            EventOwned::CoverLifted { .. } | EventOwned::Unknown(_) => {}
         }
         Ok(())
     }

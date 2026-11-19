@@ -1,5 +1,6 @@
 //! A generated client against the fake TV through the in-process transport.
 
+mod covers;
 mod every_method;
 mod knobs;
 mod observers;

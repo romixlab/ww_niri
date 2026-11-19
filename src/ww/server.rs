@@ -30,6 +30,8 @@ pub struct Server {
     pub events_open: bool,
     /// What the client injects, and holds down.
     pub input: Input,
+    /// This connection's id, for the covers it holds.
+    pub holder: u64,
 }
 
 impl Server {
@@ -45,6 +47,7 @@ impl Server {
             audio: services.audio.clone(),
             player_ids: Vec::new(),
             events_open: false,
+            holder: services.next_holder(),
         }
     }
 
@@ -168,6 +171,35 @@ impl Server {
         window.browser = window.pid.and_then(|pid| self.browsers.slot_of_pid(pid));
     }
 
+    /// Covers the window for this connection, after checking the card and `lasts`.
+    async fn cover(
+        &self,
+        id: u64,
+        card: ww_niri_api::CardOwned,
+        lasts: exact_units::Millis<u32>,
+    ) -> RpcResult<Result<(), Error<'_, ww_niri_api::CoverError>>> {
+        let lasts = match card.check_cover(lasts) {
+            Ok(lasts) => lasts,
+            Err(err) => return RpcResult::Ready(Err(err.into())),
+        };
+        let holder = self.holder;
+        let look = super::cover::Look {
+            card,
+            until: std::time::Instant::now() + lasts,
+        };
+        match call(&self.run, move |host| host.cover(id, holder, look)).await {
+            Some(res) => RpcResult::Ready(res.map_err(Into::into)),
+            None => Unimplemented.into(),
+        }
+    }
+
+    async fn uncover(&self, id: u64) -> RpcResult<Result<(), Error<'_, ww_niri_api::CoverError>>> {
+        match call(&self.run, move |host| host.uncover(id)).await {
+            Some(res) => RpcResult::Ready(res.map_err(Into::into)),
+            None => Unimplemented.into(),
+        }
+    }
+
     // ---- ww_niri_api::WwNiri at root ----
 
     /// niri version, ww_niri version, hostname.
@@ -266,6 +298,30 @@ impl Server {
     ) -> RpcResult<Result<(), Error<'_, ww_niri_api::WindowError>>> {
         self.window_op(move |host| host.set_fullscreen(id.0, on))
             .await
+    }
+
+    async fn windows_cover(
+        &mut self,
+        _cx: &mut Context<'_, impl EventOut>,
+        id: ww_niri_api::WindowId,
+        card: ww_niri_api::CardOwned,
+        lasts: exact_units::Fixed<
+            exact_units::units::Second,
+            exact_units::prefix::Milli,
+            u32,
+            exact_units::Unbounded,
+        >,
+    ) -> RpcResult<Result<(), Error<'_, ww_niri_api::CoverError>>> {
+        self.cover(id.0, card, lasts).await
+    }
+
+    /// Lifts the window's cover, whoever set it.
+    async fn windows_uncover(
+        &mut self,
+        _cx: &mut Context<'_, impl EventOut>,
+        id: ww_niri_api::WindowId,
+    ) -> RpcResult<Result<(), Error<'_, ww_niri_api::CoverError>>> {
+        self.uncover(id.0).await
     }
 
     // ---- ww_niri_api::Outputs at outputs ----
@@ -394,6 +450,37 @@ impl Server {
             // Closed in between.
             Some(false) => RpcResult::Ready(Err(BrowserErrorOwned::NoWindow.into())),
             None => Unimplemented.into(),
+        }
+    }
+
+    /// Covers the slot's window, as [Windows::cover].
+    async fn browsers_cover(
+        &mut self,
+        _cx: &mut Context<'_, impl EventOut>,
+        index_chain: [ResourceIndex; 1],
+        card: ww_niri_api::CardOwned,
+        lasts: exact_units::Fixed<
+            exact_units::units::Second,
+            exact_units::prefix::Milli,
+            u32,
+            exact_units::Unbounded,
+        >,
+    ) -> RpcResult<Result<(), Error<'_, ww_niri_api::CoverError>>> {
+        match self.browser_window(index_chain[0].get().0 as u8).await {
+            Some(window) => self.cover(window.id.0, card, lasts).await,
+            None => RpcResult::Ready(Err(ww_niri_api::CoverError::NoSuchWindow.into())),
+        }
+    }
+
+    /// Lifts the cover of the slot's window, as [Windows::uncover].
+    async fn browsers_uncover(
+        &mut self,
+        _cx: &mut Context<'_, impl EventOut>,
+        index_chain: [ResourceIndex; 1],
+    ) -> RpcResult<Result<(), Error<'_, ww_niri_api::CoverError>>> {
+        match self.browser_window(index_chain[0].get().0 as u8).await {
+            Some(window) => self.uncover(window.id.0).await,
+            None => RpcResult::Ready(Err(ww_niri_api::CoverError::NoSuchWindow.into())),
         }
     }
 
@@ -633,7 +720,8 @@ impl Server {
         _cx: &mut Context<'_, impl EventOut>,
         value: ww_niri_api::Volume,
     ) -> SetResult<CommonError<'_>> {
-        // observers get it after `SetResult::Set`: the generated code calls `mark_changed_audio_volume()`
+        // observers get it after `SetResult::Set`: the generated code calls
+        // `mark_changed_audio_volume()`
         audio_set(self.audio.set_volume(value.get()).await)
     }
 
@@ -656,7 +744,8 @@ impl Server {
         _cx: &mut Context<'_, impl EventOut>,
         value: bool,
     ) -> SetResult<CommonError<'_>> {
-        // observers get it after `SetResult::Set`: the generated code calls `mark_changed_audio_muted()`
+        // observers get it after `SetResult::Set`: the generated code calls
+        // `mark_changed_audio_muted()`
         audio_set(self.audio.set_muted(value).await)
     }
 

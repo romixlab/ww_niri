@@ -33,16 +33,14 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-use tokio::sync::Notify;
-use ww_niri_api::{InfoOwned, PointerPosition, WindowError, WindowId, WindowOwned};
-
-pub use clock::ClockMode;
-pub use model::{InputEntry, ReleasedBy, Sink};
-pub use record::{Call, ErrorKind, Fail, FailError, METHODS};
-
 use clock::Clock;
+pub use clock::ClockMode;
+pub use model::{Cover, InputEntry, ReleasedBy, Sink};
 use model::{Model, Setup};
 use record::Record;
+pub use record::{Call, ErrorKind, Fail, FailError, METHODS};
+use tokio::sync::Notify;
+use ww_niri_api::{InfoOwned, PointerPosition, WindowError, WindowId, WindowOwned};
 
 /// How the fake TV starts.
 #[derive(Clone, Debug)]
@@ -283,6 +281,11 @@ impl FakeTv {
 
     pub fn windows(&self) -> Vec<WindowOwned> {
         self.shared.with(|m| m.windows())
+    }
+
+    /// The covered windows, by id.
+    pub fn covers(&self) -> Vec<Cover> {
+        self.shared.with(|m| m.covers())
     }
 
     pub fn pointer(&self) -> PointerPosition {

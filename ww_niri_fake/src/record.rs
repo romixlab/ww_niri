@@ -4,7 +4,7 @@ use std::collections::{HashMap, VecDeque};
 use std::fmt;
 
 use ww_niri_api::{
-    BrowserErrorOwned, InputErrorOwned, LaunchErrorOwned, MediaErrorOwned, WindowError,
+    BrowserErrorOwned, CoverError, InputErrorOwned, LaunchErrorOwned, MediaErrorOwned, WindowError,
 };
 
 /// Calls the record keeps; older ones go.
@@ -47,6 +47,7 @@ impl fmt::Display for Call {
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum ErrorKind {
     Window,
+    Cover,
     Launch,
     Browser,
     Media,
@@ -66,12 +67,16 @@ pub const METHODS: &[(&str, ErrorKind)] = &[
     ("windows.focus", ErrorKind::Window),
     ("windows.close", ErrorKind::Window),
     ("windows.set_fullscreen", ErrorKind::Window),
+    ("windows.cover", ErrorKind::Cover),
+    ("windows.uncover", ErrorKind::Cover),
     ("outputs.list", ErrorKind::None),
     ("apps.launch", ErrorKind::Launch),
     ("browsers.start", ErrorKind::Browser),
     ("browsers.open", ErrorKind::Browser),
     ("browsers.stop", ErrorKind::Browser),
     ("browsers.show", ErrorKind::Browser),
+    ("browsers.cover", ErrorKind::Cover),
+    ("browsers.uncover", ErrorKind::Cover),
     ("browsers.state", ErrorKind::Property),
     ("browsers.playback.state", ErrorKind::Property),
     ("browsers.playback.play", ErrorKind::Media),
@@ -114,6 +119,7 @@ pub const METHODS: &[(&str, ErrorKind)] = &[
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Fail {
     Window(WindowError),
+    Cover(CoverError),
     Launch(LaunchErrorOwned),
     Browser(BrowserErrorOwned),
     Media(MediaErrorOwned),
@@ -126,6 +132,7 @@ impl Fail {
     fn kind(&self) -> ErrorKind {
         match self {
             Self::Window(_) => ErrorKind::Window,
+            Self::Cover(_) => ErrorKind::Cover,
             Self::Launch(_) => ErrorKind::Launch,
             Self::Browser(_) => ErrorKind::Browser,
             Self::Media(_) => ErrorKind::Media,

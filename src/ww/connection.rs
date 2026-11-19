@@ -158,6 +158,9 @@ pub async fn serve<D: WwHost>(
                 .await;
         }
     }
+    // The covers it held lift, as a lease does.
+    let holder = backend.holder;
+    let _ = call(&run, move |host| host.uncover_held_by(holder)).await;
     // Nothing the client held down stays down.
     if let Err(err) = backend.input.release_all().await {
         warn!("ww: error releasing what {peer} held: {err:?}");

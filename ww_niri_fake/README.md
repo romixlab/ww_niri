@@ -19,6 +19,7 @@ tv.advance(Duration::from_secs(1)); // the slot's window maps: Running
 - Volume (40 %), mute and a default sink.
 - A log of the keys, text, buttons and wheel turns injected ([`FakeTv::input_log`]). Text outside printable ASCII is `NotTypeable`, as with the us keymap.
 - Held buttons and keys come up after their hold limit or when the connection ends.
+- Covers over windows ([`FakeTv::covers`]): set and renewed by `cover`, lifted at their end, on `uncover`, when the window closes or when the connection ends, each with a `CoverLifted` event.
 
 ## Knobs for tests
 

@@ -4,6 +4,11 @@ Changes of ww_niri on top of upstream niri. Upstream's own changes are in its re
 
 ## [Unreleased]
 
+### Added
+
+- Control API: `windows.cover` and `browsers[].cover` blur a window under a card with a countdown and clock, held as a lease (P2618#19nov-2040b).
+- `ww_niri_client` and `ww_niri_fake`: cover and uncover, with covers lifting when the connection ends (P2618#19nov-2040b).
+
 ## [26.14.0] - 2026-11-19
 
 ### Added

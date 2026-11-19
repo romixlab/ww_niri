@@ -12,7 +12,10 @@ use ww_niri_api::{
     WorkspaceId,
 };
 
+mod cover;
 mod input;
+
+pub use cover::Cover;
 
 /// The output's size in logical pixels.
 pub(crate) const OUTPUT_WIDTH_PX: i32 = 1920;
@@ -247,6 +250,8 @@ pub(crate) struct Model {
     pointer: (i32, i32),
     held_buttons: Vec<(Button, u64)>,
     held_keys: Vec<(String, u64)>,
+    /// Covered windows by id.
+    covers: BTreeMap<u64, Cover>,
     input_log: VecDeque<InputEntry>,
     outbox: Vec<Out>,
     /// The outbox overflowed: the client lists again.
@@ -278,6 +283,7 @@ impl Model {
             pointer: (OUTPUT_WIDTH_PX / 2, OUTPUT_HEIGHT_PX / 2),
             held_buttons: Vec::new(),
             held_keys: Vec::new(),
+            covers: BTreeMap::new(),
             input_log: VecDeque::new(),
             outbox: Vec::new(),
             behind: false,
@@ -346,6 +352,7 @@ impl Model {
             }
             self.mark_player(id);
         }
+        self.lift_due_covers();
         let (expired, held): (Vec<_>, Vec<_>) =
             (self.held_buttons.drain(..)).partition(|(_, at)| *at <= now);
         self.held_buttons = held;
@@ -372,7 +379,10 @@ impl Model {
         let ends = self.players.values().filter_map(Player::ends_at);
         let held = (self.held_buttons.iter().map(|(_, at)| *at))
             .chain(self.held_keys.iter().map(|(_, at)| *at));
-        maps.chain(ends).chain(held).min()
+        maps.chain(ends)
+            .chain(held)
+            .chain(self.next_cover_end())
+            .min()
     }
 
     // ---- outbox ----
@@ -552,6 +562,7 @@ impl Model {
         let pos =
             (self.windows.iter().position(|w| w.id == id)).ok_or(WindowError::NoSuchWindow)?;
         let w = self.windows.remove(pos);
+        self.lift(id, ww_niri_api::CoverEnd::WindowClosed);
         self.event(EventOwned::WindowClosed(WindowId(id)));
         if self.focused == Some(id) {
             let next = (self.windows.iter())

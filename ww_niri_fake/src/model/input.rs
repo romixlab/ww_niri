@@ -222,7 +222,9 @@ impl Model {
     }
 
     /// The connection ended: nothing it held stays down.
+    /// The connection ended: what it held comes up, its covers lift.
     pub(crate) fn release_all(&mut self) {
+        self.lift_all_covers();
         for (button, _) in std::mem::take(&mut self.held_buttons) {
             self.log(InputEntry::Release {
                 button,

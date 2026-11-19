@@ -56,6 +56,16 @@ pub trait Windows {
     fn close(id: WindowId) -> Result<(), WindowError>;
 
     fn set_fullscreen(id: WindowId, on: bool) -> Result<(), WindowError>;
+
+    /// Covers the window with a blur of what it shows, dimmed, and `card` on top, for `lasts`
+    /// (1 ms to 15 min). The cover is held by this connection: it lifts at the end of `lasts`, on
+    /// [Windows::uncover], or when the connection ends, whichever comes first; then
+    /// [Event::CoverLifted] says why. Covering a covered window replaces its card and end, and
+    /// this connection holds it from then on. Popups of the window are hidden while covered.
+    fn cover(id: WindowId, card: Card<'i>, lasts: Millis<u32>) -> Result<(), CoverError>;
+
+    /// Lifts the window's cover, whoever set it.
+    fn uncover(id: WindowId) -> Result<(), CoverError>;
 }
 
 #[ww_trait]
@@ -90,6 +100,12 @@ pub trait Browser {
         transition: Option<Transition>,
         fullscreen: Option<bool>,
     ) -> Result<(), BrowserError<'i>>;
+
+    /// Covers the slot's window, as [Windows::cover]; `NoSuchWindow` while it has none.
+    fn cover(card: Card<'i>, lasts: Millis<u32>) -> Result<(), CoverError>;
+
+    /// Lifts the cover of the slot's window, as [Windows::uncover].
+    fn uncover() -> Result<(), CoverError>;
 
     /// Phase, URL, window and current player of the slot.
     property!(ro+observe state: BrowserState<'i>);
@@ -286,6 +302,64 @@ pub trait Keyboard {
     fn key_up(key: &'i str) -> Result<(), InputError<'i>>;
 }
 
+/// The card of a cover, centred on the window, line by line from the top.
+#[derive_shrink_wrap(owned(feature = "std"), derive(Clone, Debug, PartialEq, Eq))]
+pub struct Card<'i> {
+    /// The large first line, like "Реклама".
+    pub title: &'i str,
+    /// The text before the countdown, like "Передача вернётся через": the line ends with the
+    /// time left as `m:ss`. `None`: no countdown line.
+    pub countdown: Option<&'i str>,
+    /// A large clock, `HH:MM` in the compositor's local time.
+    pub clock: bool,
+    /// A small last line, like the channel's name.
+    pub footer: Option<&'i str>,
+}
+
+/// Longest `lasts` of a cover.
+pub const COVER_LASTS_MAX: core::time::Duration = core::time::Duration::from_secs(15 * 60);
+/// Longest text of a card line, in bytes.
+pub const CARD_TEXT_LEN_MAX: usize = 200;
+
+#[cfg(feature = "std")]
+impl CardOwned {
+    /// Checks the card and a cover's `lasts` against [COVER_LASTS_MAX] and
+    /// [CARD_TEXT_LEN_MAX]; answers how long the cover lasts.
+    ///
+    /// # Errors
+    ///
+    /// `BadArgument` for `lasts` of 0 or past the limit, or a line past its limit.
+    pub fn check_cover(&self, lasts: Millis<u32>) -> Result<core::time::Duration, CoverError> {
+        let lasts = core::time::Duration::from_millis(u64::from(lasts.get()));
+        let texts = [
+            Some(self.title.as_str()),
+            self.countdown.as_deref(),
+            self.footer.as_deref(),
+        ];
+        let too_long = texts
+            .into_iter()
+            .flatten()
+            .any(|text| text.len() > CARD_TEXT_LEN_MAX);
+        if lasts.is_zero() || lasts > COVER_LASTS_MAX || too_long {
+            return Err(CoverError::BadArgument);
+        }
+        Ok(lasts)
+    }
+}
+
+/// Why a cover lifted.
+#[derive_shrink_wrap(borrowed, owned(feature = "std"), derive(Copy, Clone, Debug, PartialEq, Eq), ww_repr = unib32)]
+pub enum CoverEnd {
+    /// Its `lasts` passed.
+    Deadline,
+    /// [Windows::uncover] or [Browser::uncover].
+    Uncovered,
+    /// The connection that held it ended.
+    Disconnected,
+    /// The window closed.
+    WindowClosed,
+}
+
 /// An eased move, for [Windows::show].
 #[derive_shrink_wrap(
     borrowed,
@@ -412,6 +486,11 @@ pub enum Event<'i> {
     },
     PlayerAppeared(PlayerInfo<'i>),
     PlayerGone(PlayerId),
+    /// A window's cover lifted; not sent when a new cover replaced it.
+    CoverLifted {
+        window: WindowId,
+        why: CoverEnd,
+    },
     /// The client fell behind and missed events: list everything again.
     Resync,
 }
@@ -495,6 +574,15 @@ pub enum WindowError {
     NoSuchWindow,
 }
 
+#[derive_shrink_wrap(borrowed, owned(feature = "std"), derive(Copy, Clone, Debug, PartialEq, Eq), ww_repr = unib32)]
+pub enum CoverError {
+    NoSuchWindow,
+    /// [Windows::uncover] of a window without a cover.
+    NotCovered,
+    /// `lasts` out of range, or a card text longer than 200 bytes.
+    BadArgument,
+}
+
 #[derive_shrink_wrap(owned(feature = "std"), derive(Clone, Debug, PartialEq, Eq), ww_repr = unib32)]
 pub enum LaunchError<'i> {
     EmptyArgv,
@@ -522,6 +610,7 @@ pub enum MediaError<'i> {
 }
 
 ww_api::api_error!(WindowError);
+ww_api::api_error!(CoverError);
 ww_api::api_error!(LaunchError<'i>);
 ww_api::api_error!(BrowserError<'i>);
 ww_api::api_error!(MediaError<'i>);

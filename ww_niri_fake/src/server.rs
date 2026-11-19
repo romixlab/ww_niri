@@ -8,10 +8,10 @@ use exact_units::{Fixed, Unbounded};
 use wire_weaver::prelude::*;
 use ww_client_server::ResourceIndex;
 use ww_niri_api::{
-    BrowserErrorOwned, BrowserStateOwned, Button, InfoOwned, InputErrorOwned, LaunchErrorOwned,
-    Launched, MediaErrorOwned, Modifiers, OutputOwned, PlaybackStateOwned, PlayerInfoOwned,
-    PlayerSourceOwned, Point, PointerPosition, Px, SinkOwned, Transition, WindowError, WindowId,
-    WindowOwned,
+    BrowserErrorOwned, BrowserStateOwned, Button, CardOwned, CoverError, InfoOwned,
+    InputErrorOwned, LaunchErrorOwned, Launched, MediaErrorOwned, Modifiers, OutputOwned,
+    PlaybackStateOwned, PlayerInfoOwned, PlayerSourceOwned, Point, PointerPosition, Px, SinkOwned,
+    Transition, WindowError, WindowId, WindowOwned,
 };
 
 use crate::model::{Action, Mark, Model};
@@ -52,6 +52,7 @@ macro_rules! from_fail {
 
 from_fail!(
     WindowError => Window,
+    CoverError => Cover,
     BrowserErrorOwned => Browser,
     MediaErrorOwned => Media,
     InputErrorOwned => Input,
@@ -287,6 +288,27 @@ impl Server {
         )
     }
 
+    async fn windows_cover(
+        &mut self,
+        _cx: &mut Context<'_, impl EventOut>,
+        id: WindowId,
+        card: CardOwned,
+        lasts: Millis<u32>,
+    ) -> Res<'_, CoverError> {
+        let args = format!("({id:?}, {card:?}, {}ms)", lasts.get());
+        self.op("windows.cover", None, args, |m| m.cover(id.0, card, lasts))
+    }
+
+    async fn windows_uncover(
+        &mut self,
+        _cx: &mut Context<'_, impl EventOut>,
+        id: WindowId,
+    ) -> Res<'_, CoverError> {
+        self.op("windows.uncover", None, format!("({id:?})"), |m| {
+            m.uncover(id.0)
+        })
+    }
+
     // ---- ww_niri_api::Outputs at outputs ----
 
     async fn outputs_list(
@@ -364,6 +386,36 @@ impl Server {
         self.op("browsers.show", Some(index(chain)), args, |m| {
             m.show_browser(slot(chain), fullscreen)
         })
+    }
+
+    async fn browsers_cover(
+        &mut self,
+        _cx: &mut Context<'_, impl EventOut>,
+        chain: [ResourceIndex; 1],
+        card: CardOwned,
+        lasts: Millis<u32>,
+    ) -> Res<'_, CoverError> {
+        let args = format!("({card:?}, {}ms)", lasts.get());
+        self.op("browsers.cover", Some(index(chain)), args, |m| {
+            let window = m.slot_window(slot(chain))?;
+            m.cover(window, card, lasts)
+        })
+    }
+
+    async fn browsers_uncover(
+        &mut self,
+        _cx: &mut Context<'_, impl EventOut>,
+        chain: [ResourceIndex; 1],
+    ) -> Res<'_, CoverError> {
+        self.op(
+            "browsers.uncover",
+            Some(index(chain)),
+            "()".to_owned(),
+            |m| {
+                let window = m.slot_window(slot(chain))?;
+                m.uncover(window)
+            },
+        )
     }
 
     async fn get_browsers_state(

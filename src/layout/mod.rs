@@ -327,6 +327,12 @@ pub trait LayoutElement {
 
     fn rules(&self) -> &ResolvedWindowRules;
 
+    /// What the element draws instead of itself while a control API client covers it.
+    #[cfg(feature = "ww")]
+    fn cover(&self) -> Option<&std::rc::Rc<crate::ww::cover::Look>> {
+        None
+    }
+
     /// Runs periodic clean-up tasks.
     fn refresh(&self);
 

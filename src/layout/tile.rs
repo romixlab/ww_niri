@@ -23,6 +23,7 @@ use crate::render_helpers::border::BorderRenderElement;
 use crate::render_helpers::clipped_surface::{ClippedSurfaceRenderElement, RoundedCornerDamage};
 use crate::render_helpers::damage::ExtraDamage;
 use crate::render_helpers::offscreen::{OffscreenBuffer, OffscreenRenderElement};
+use crate::render_helpers::primary_gpu_texture::PrimaryGpuTextureRenderElement;
 use crate::render_helpers::renderer::NiriRenderer;
 use crate::render_helpers::resize::ResizeRenderElement;
 use crate::render_helpers::shadow::ShadowRenderElement;
@@ -105,6 +106,10 @@ pub struct Tile<W: LayoutElement> {
     /// Extra damage for clipped surface corner radius changes.
     rounded_corner_damage: RoundedCornerDamage,
 
+    /// Draws the window's cover while a control API client covers it.
+    #[cfg(feature = "ww")]
+    cover: crate::ww::cover::render::CoverRender,
+
     /// The view size for the tile's workspace.
     ///
     /// Used as the fullscreen target size.
@@ -133,6 +138,7 @@ niri_render_elements! {
         Offscreen = OffscreenRenderElement,
         ExtraDamage = ExtraDamage,
         BackgroundEffect = BackgroundEffectElement,
+        Texture = PrimaryGpuTextureRenderElement,
     }
 }
 
@@ -213,6 +219,8 @@ impl<W: LayoutElement> Tile<W> {
             interactive_move_offset: Point::from((0., 0.)),
             unmap_snapshot: None,
             rounded_corner_damage: Default::default(),
+            #[cfg(feature = "ww")]
+            cover: Default::default(),
             view_size,
             scale,
             clock,
@@ -1116,19 +1124,61 @@ impl<W: LayoutElement> Tile<W> {
             .geometry_corner_radius()
             .scaled_by(1. - expanded_progress as f32);
 
+        // A covered window shows only its cover: no popups, no resize.
+        #[cfg(feature = "ww")]
+        let covered = self.window.cover().is_some();
+        #[cfg(not(feature = "ww"))]
+        let covered = false;
+
         // Popups go on top, whether it's resize or not.
-        self.window.render_popups(
-            ctx.r(),
-            window_render_loc,
-            scale,
-            win_alpha,
-            xray_pos,
-            &mut |elem| push(elem.into()),
-        );
+        if !covered {
+            self.window.render_popups(
+                ctx.r(),
+                window_render_loc,
+                scale,
+                win_alpha,
+                xray_pos,
+                &mut |elem| push(elem.into()),
+            );
+        }
 
         // If we're resizing, try to render a shader, or a fallback.
         let mut pushed_resize = false;
-        if let Some(resize) = &self.resize_animation {
+        #[cfg(feature = "ww")]
+        if let Some(look) = self.window.cover() {
+            use crate::ww::cover::render::CoverElement;
+
+            let ctx = ctx.as_gles();
+            let target = ctx.target;
+            let data = self.cover.render(
+                ctx.renderer,
+                look,
+                window_render_loc,
+                animated_window_size,
+                scale,
+                win_alpha,
+                |renderer, scale| {
+                    let mut elements = Vec::new();
+                    let ctx = RenderCtx {
+                        renderer,
+                        target,
+                        xray: None,
+                    };
+                    self.window
+                        .render_normal(ctx, Point::from((0., 0.)), scale, 1., &mut |elem| {
+                            elements.push(elem)
+                        });
+                    elements
+                },
+                &mut |elem| match elem {
+                    CoverElement::Texture(elem) => push(elem.into()),
+                    CoverElement::SolidColor(elem) => push(elem.into()),
+                },
+            );
+            self.window.set_offscreen_data(data);
+            pushed_resize = true;
+        }
+        if let Some(resize) = self.resize_animation.as_ref().filter(|_| !covered) {
             if ResizeRenderElement::has_shader(ctx.renderer) {
                 let mut ctx = ctx.as_gles();
 

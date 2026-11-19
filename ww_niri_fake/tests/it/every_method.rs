@@ -50,6 +50,12 @@ fn every_method_answers() {
             Err(CallError::Device(WindowError::NoSuchWindow))
         ));
 
+        w.cover(WindowId(2), super::covers::card(), Fixed::new(1000))
+            .call()
+            .await
+            .unwrap();
+        w.uncover(WindowId(2)).call().await.unwrap();
+
         let apps = client.apps();
         let launched = apps.launch(vec!["true".to_owned()]).call().await.unwrap();
         assert!(launched.pid > 0);
@@ -83,6 +89,11 @@ fn every_method_answers() {
         assert_eq!(state.url.as_deref(), Some("https://example.org/watch"));
         assert!(state.window.is_some() && state.player.is_some());
         slot.show(None, Some(false)).call().await.unwrap();
+        slot.cover(super::covers::card(), Fixed::new(1000))
+            .call()
+            .await
+            .unwrap();
+        slot.uncover().call().await.unwrap();
 
         let playback = slot.playback();
         assert_eq!(

@@ -193,6 +193,10 @@ pub struct Mapped {
 
     /// Most recent monotonic time when the window had the focus.
     focus_timestamp: Option<Duration>,
+
+    /// What the window draws instead of itself while a control API client covers it.
+    #[cfg(feature = "ww")]
+    cover: Option<std::rc::Rc<crate::ww::cover::Look>>,
 }
 
 niri_render_elements! {
@@ -312,12 +316,20 @@ impl Mapped {
             is_pending_maximized: false,
             uncommitted_maximized: Vec::new(),
             focus_timestamp: None,
+            #[cfg(feature = "ww")]
+            cover: None,
         };
 
         rv.is_maximized = rv.sizing_mode().is_maximized();
         rv.is_pending_maximized = rv.pending_sizing_mode().is_maximized();
 
         rv
+    }
+
+    /// Covers the window with `look`, or lifts its cover.
+    #[cfg(feature = "ww")]
+    pub fn set_cover(&mut self, look: Option<std::rc::Rc<crate::ww::cover::Look>>) {
+        self.cover = look;
     }
 
     pub fn toplevel(&self) -> &ToplevelSurface {
@@ -1356,6 +1368,11 @@ impl LayoutElement for Mapped {
 
     fn refresh(&self) {
         self.window.refresh();
+    }
+
+    #[cfg(feature = "ww")]
+    fn cover(&self) -> Option<&std::rc::Rc<crate::ww::cover::Look>> {
+        self.cover.as_ref()
     }
 
     fn rules(&self) -> &ResolvedWindowRules {

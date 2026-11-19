@@ -11,8 +11,8 @@ use std::time::Duration;
 use async_channel::{Receiver, Sender};
 use wire_weaver_client::{CallError, ClientConfig, Commander, WwClient};
 use ww_niri_api::{
-    EventOwned, InputErrorOwned, LaunchErrorOwned, MediaErrorOwned, OutputOwned, Transition,
-    WindowError, WindowId, WindowOwned, WorkspaceId,
+    CardOwned, CoverEnd, CoverError, EventOwned, InputErrorOwned, LaunchErrorOwned,
+    MediaErrorOwned, OutputOwned, Transition, WindowError, WindowId, WindowOwned, WorkspaceId,
 };
 
 use super::audio::Target;
@@ -62,6 +62,7 @@ struct FakeHost {
     fake: Fake,
     hub: Rc<RefCell<Hub>>,
     services: Option<Rc<Services>>,
+    covers: super::cover::Covers,
     stop: bool,
 }
 
@@ -135,6 +136,44 @@ impl WwHost for FakeHost {
 
     fn set_fullscreen(&mut self, id: u64, on: bool) -> bool {
         self.op(format!("fullscreen {id} {on}"), id)
+    }
+
+    fn cover(&mut self, id: u64, holder: u64, look: super::cover::Look) -> Result<(), CoverError> {
+        let lasts = look
+            .until
+            .saturating_duration_since(std::time::Instant::now());
+        // Whole seconds: the call's own latency stays out of the record.
+        let secs = lasts.as_secs_f64().round();
+        if !self.op(format!("cover {id} by {holder} for {secs}s"), id) {
+            return Err(CoverError::NoSuchWindow);
+        }
+        self.covers.set(id, holder, look);
+        Ok(())
+    }
+
+    fn uncover(&mut self, id: u64) -> Result<(), CoverError> {
+        self.fake
+            .calls
+            .lock()
+            .unwrap()
+            .push(format!("uncover {id}"));
+        if !self.covers.lift(id) {
+            return Err(CoverError::NotCovered);
+        }
+        let hub = self.services().hub.clone();
+        super::cover::lifted(&hub, id, CoverEnd::Uncovered);
+        Ok(())
+    }
+
+    fn uncover_held_by(&mut self, holder: u64) {
+        let lifted = self.covers.lift_held_by(holder);
+        if !lifted.is_empty() {
+            self.fake
+                .calls
+                .lock()
+                .unwrap()
+                .push(format!("uncover held by {holder}: {lifted:?}"));
+        }
     }
 
     fn services(&mut self) -> Rc<Services> {
@@ -315,6 +354,7 @@ fn bench_with(
             fake: host_fake,
             hub: hub.clone(),
             services: Some(services),
+            covers: super::cover::Covers::default(),
             stop: false,
         };
         scheduler
@@ -742,6 +782,110 @@ fn windows_list_and_actions() {
                 "fullscreen 1 false",
                 "close 2",
                 "focus 99"
+            ]
+        );
+    });
+}
+
+fn ad_card() -> CardOwned {
+    CardOwned {
+        title: "Реклама".to_owned(),
+        countdown: Some("Передача вернётся через".to_owned()),
+        clock: true,
+        footer: None,
+    }
+}
+
+#[test]
+fn cover_and_uncover() {
+    use exact_units::Millis;
+
+    bench(vec![window(1, "firefox")]).run(async |client, fake| {
+        let mut events = client.events().call().await.unwrap();
+        let windows = client.windows();
+        windows
+            .cover(WindowId(1), ad_card(), Millis::new(130_000))
+            .call()
+            .await
+            .unwrap();
+        // Renewed with a corrected end.
+        windows
+            .cover(WindowId(1), ad_card(), Millis::new(125_000))
+            .call()
+            .await
+            .unwrap();
+
+        let err = |res| device_err(res);
+        assert_eq!(
+            err(windows
+                .cover(WindowId(99), ad_card(), Millis::new(1000))
+                .call()
+                .await),
+            CoverError::NoSuchWindow
+        );
+        assert_eq!(
+            err(windows
+                .cover(WindowId(1), ad_card(), Millis::new(0))
+                .call()
+                .await),
+            CoverError::BadArgument
+        );
+        assert_eq!(
+            err(windows
+                .cover(WindowId(1), ad_card(), Millis::new(16 * 60 * 1000))
+                .call()
+                .await),
+            CoverError::BadArgument
+        );
+        let mut long = ad_card();
+        long.title = "x".repeat(201);
+        assert_eq!(
+            err(windows
+                .cover(WindowId(1), long, Millis::new(1000))
+                .call()
+                .await),
+            CoverError::BadArgument
+        );
+
+        windows.uncover(WindowId(1)).call().await.unwrap();
+        assert_eq!(
+            err(windows.uncover(WindowId(1)).call().await),
+            CoverError::NotCovered
+        );
+        let event = tokio::time::timeout(Duration::from_secs(5), events.recv())
+            .await
+            .expect("an event")
+            .unwrap();
+        assert_eq!(
+            event,
+            EventOwned::CoverLifted {
+                window: WindowId(1),
+                why: CoverEnd::Uncovered
+            }
+        );
+
+        // Held by this connection: its end lifts it.
+        windows
+            .cover(WindowId(1), ad_card(), Millis::new(60_000))
+            .call()
+            .await
+            .unwrap();
+        drop(events);
+        drop(client);
+        let calls = calls_until(fake, |calls| {
+            calls.iter().any(|c| c.starts_with("uncover held by"))
+        })
+        .await;
+        assert_eq!(
+            calls,
+            [
+                "cover 1 by 1 for 130s",
+                "cover 1 by 1 for 125s",
+                "cover 99 by 1 for 1s",
+                "uncover 1",
+                "uncover 1",
+                "cover 1 by 1 for 60s",
+                "uncover held by 1: [1]",
             ]
         );
     });

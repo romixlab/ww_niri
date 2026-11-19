@@ -3,7 +3,7 @@
 use std::time::Duration;
 
 use exact_units::{Fixed, Micros, Millis};
-use ww_niri_api::{Button, Modifiers, PlayerId, Point, Transition, Volume, WindowId};
+use ww_niri_api::{Button, CardOwned, Modifiers, PlayerId, Point, Transition, Volume, WindowId};
 
 use crate::api::NiriClient;
 use crate::error::TvError;
@@ -53,6 +53,14 @@ pub enum Command {
         id: WindowId,
         on: bool,
     },
+    /// Covers the window for `lasts`, held by this client's connection: it lifts when the
+    /// connection ends, also on a reconnect.
+    Cover {
+        id: WindowId,
+        card: CardOwned,
+        lasts: Duration,
+    },
+    Uncover(WindowId),
     SlotStart {
         slot: u8,
         fullscreen: bool,
@@ -68,6 +76,15 @@ pub enum Command {
         slot: u8,
         transition: Option<Transition>,
         fullscreen: Option<bool>,
+    },
+    /// Covers the slot's window, as [Command::Cover].
+    SlotCover {
+        slot: u8,
+        card: CardOwned,
+        lasts: Duration,
+    },
+    SlotUncover {
+        slot: u8,
     },
     Playback {
         target: PlaybackTarget,
@@ -132,11 +149,15 @@ impl Command {
             Command::ShowWindow { .. }
             | Command::FocusWindow(_)
             | Command::CloseWindow(_)
-            | Command::SetFullscreen { .. } => Lane::Windows,
+            | Command::SetFullscreen { .. }
+            | Command::Cover { .. }
+            | Command::Uncover(_) => Lane::Windows,
             Command::SlotStart { slot, .. }
             | Command::SlotOpen { slot, .. }
             | Command::SlotStop { slot }
-            | Command::SlotShow { slot, .. } => Lane::Slot(*slot),
+            | Command::SlotShow { slot, .. }
+            | Command::SlotCover { slot, .. }
+            | Command::SlotUncover { slot } => Lane::Slot(*slot),
             Command::Playback { target, .. } => Lane::Playback(*target),
             Command::SetVolume(_) => Lane::Volume,
             Command::SetMuted(_) => Lane::Muted,
@@ -156,11 +177,19 @@ impl Command {
     }
 
     /// Folds `next`, queued right after `self`, into `self` when one call does both: moves and
-    /// wheel turns add up, a volume or mute replaces the one before, seeks add up and a position
-    /// replaces what came before it. Gives `next` back otherwise.
+    /// wheel turns add up, a volume or mute replaces the one before, a cover of the same window
+    /// replaces the one before, seeks add up and a position replaces what came before it. Gives
+    /// `next` back otherwise.
     pub(crate) fn merge(&mut self, next: Command) -> Result<(), Command> {
         use PlaybackAction::{SeekBy, SetPosition};
         match (self, next) {
+            (this @ Command::Cover { .. }, next @ Command::Cover { .. })
+            | (this @ Command::SlotCover { .. }, next @ Command::SlotCover { .. })
+                if this.lane() == next.lane() && this.cover_target() == next.cover_target() =>
+            {
+                *this = next;
+                Ok(())
+            }
             (Command::MoveBy { dx, dy }, Command::MoveBy { dx: ndx, dy: ndy }) => {
                 match (dx.checked_add(ndx), dy.checked_add(ndy)) {
                     (Some(x), Some(y)) => {
@@ -236,6 +265,26 @@ impl Command {
     }
 }
 
+impl Command {
+    /// The window or slot a cover command is about.
+    fn cover_target(&self) -> Option<(Option<WindowId>, Option<u8>)> {
+        match self {
+            Command::Cover { id, .. } => Some((Some(*id), None)),
+            Command::SlotCover { slot, .. } => Some((None, Some(*slot))),
+            _ => None,
+        }
+    }
+}
+
+/// A duration as the API sends it, in whole milliseconds; `what` names it when it does not fit.
+fn millis<T: TryFrom<u128> + exact_units::Storage>(
+    duration: Duration,
+    what: &'static str,
+) -> Result<Millis<T>, TvError> {
+    let ms = T::try_from(duration.as_millis()).map_err(|_e| TvError::BadArgument { what })?;
+    Ok(Fixed::new(ms))
+}
+
 /// The hold limit a press or key-down sends.
 fn hold_limit(hold: Duration) -> Millis<u16> {
     Fixed::new(u16::try_from(hold.as_millis()).expect("Config checks the hold limit fits"))
@@ -281,6 +330,11 @@ async fn window(client: &NiriClient, command: &Command) -> Result<(), TvError> {
         Command::FocusWindow(id) => Ok(windows.focus(*id).call().await?),
         Command::CloseWindow(id) => Ok(windows.close(*id).call().await?),
         Command::SetFullscreen { id, on } => Ok(windows.set_fullscreen(*id, *on).call().await?),
+        Command::Cover { id, card, lasts } => Ok(windows
+            .cover(*id, card.clone(), millis(*lasts, "cover lasts")?)
+            .call()
+            .await?),
+        Command::Uncover(id) => Ok(windows.uncover(*id).call().await?),
         other => unreachable!("{other:?} is not in the windows lane"),
     }
 }
@@ -296,6 +350,11 @@ async fn browser(client: &NiriClient, slot: u8, command: &Command) -> Result<(),
             fullscreen,
             ..
         } => Ok(browser.show(*transition, *fullscreen).call().await?),
+        Command::SlotCover { card, lasts, .. } => Ok(browser
+            .cover(card.clone(), millis(*lasts, "cover lasts")?)
+            .call()
+            .await?),
+        Command::SlotUncover { .. } => Ok(browser.uncover().call().await?),
         other => unreachable!("{other:?} is not in a slot's lane"),
     }
 }
@@ -340,18 +399,11 @@ async fn buttons(client: &NiriClient, command: &Command, hold: Duration) -> Resu
             button,
             duration,
         } => Ok(pointer
-            .drag(*from, *to, *button, drag_duration(*duration)?)
+            .drag(*from, *to, *button, millis(*duration, "drag duration")?)
             .call()
             .await?),
         other => unreachable!("{other:?} is not a pointer command"),
     }
-}
-
-fn drag_duration(duration: Duration) -> Result<Millis<u16>, TvError> {
-    let ms = u16::try_from(duration.as_millis()).map_err(|_e| TvError::BadArgument {
-        what: "drag duration",
-    })?;
-    Ok(Fixed::new(ms))
 }
 
 async fn keyboard(client: &NiriClient, command: &Command, hold: Duration) -> Result<(), TvError> {

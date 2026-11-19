@@ -6,7 +6,9 @@ use std::rc::Rc;
 
 use async_channel::Receiver;
 use calloop::LoopHandle;
-use ww_niri_api::{InputErrorOwned, OutputOwned, PointerPosition, Transition, WindowOwned};
+use ww_niri_api::{
+    CoverError, InputErrorOwned, OutputOwned, PointerPosition, Transition, WindowOwned,
+};
 
 use super::input::{Key, Op, TextKeys};
 
@@ -25,6 +27,13 @@ pub trait WwHost: 'static {
     ) -> bool;
     fn close_window(&mut self, id: u64) -> bool;
     fn set_fullscreen(&mut self, id: u64, on: bool) -> bool;
+
+    /// Covers the window for connection `holder`, as `windows.cover`.
+    fn cover(&mut self, id: u64, holder: u64, look: super::cover::Look) -> Result<(), CoverError>;
+    /// Lifts the window's cover.
+    fn uncover(&mut self, id: u64) -> Result<(), CoverError>;
+    /// Lifts the covers connection `holder` holds: it ended.
+    fn uncover_held_by(&mut self, holder: u64);
 
     /// What every connection shares.
     fn services(&mut self) -> Rc<super::Services>;
@@ -96,8 +105,8 @@ mod niri_state {
     use smithay::desktop::Window;
     use smithay::output::Output;
     use ww_niri_api::{
-        InputErrorOwned, OutputOwned, PointerPosition, Transition, WindowId, WindowOwned,
-        WorkspaceId,
+        CoverError, InputErrorOwned, OutputOwned, PointerPosition, Transition, WindowId,
+        WindowOwned, WorkspaceId,
     };
 
     use super::{Key, Op, TextKeys, WwHost};
@@ -222,6 +231,23 @@ mod niri_state {
             self.niri.layout.set_fullscreen(&window, on);
             self.niri.queue_redraw_all();
             true
+        }
+
+        fn cover(
+            &mut self,
+            id: u64,
+            holder: u64,
+            look: crate::ww::cover::Look,
+        ) -> Result<(), CoverError> {
+            self.ww_cover(id, holder, look)
+        }
+
+        fn uncover(&mut self, id: u64) -> Result<(), CoverError> {
+            self.ww_uncover(id)
+        }
+
+        fn uncover_held_by(&mut self, holder: u64) {
+            self.ww_uncover_held_by(holder);
         }
 
         fn services(&mut self) -> std::rc::Rc<crate::ww::Services> {
