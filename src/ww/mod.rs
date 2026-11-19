@@ -5,7 +5,8 @@
 //! it nothing listens. The file is checked for changes every second and applied when it parses.
 //! Each `listen` address that can't be bound yet is tried again at each check, and `lan:PORT` and
 //! `tailnet:PORT` are resolved again: a changed address closes its listener and binds the new
-//! one, while open connections stay until they end.
+//! one, while open connections stay until they end. Each bound `lan:PORT` listener is announced on
+//! the LAN over DNS-SD (see [`advertise`]).
 
 use std::net::{SocketAddr, TcpListener};
 use std::path::PathBuf;
@@ -19,6 +20,7 @@ use calloop::{Interest, LoopHandle, Mode, PostAction, RegistrationToken};
 
 use crate::niri::State;
 
+mod advertise;
 mod audio;
 mod bidi;
 mod browsers;
@@ -51,6 +53,7 @@ pub struct WwServer {
     props: Option<config::Props>,
     config: WwConfig,
     listeners: Listeners<RegistrationToken>,
+    advertising: advertise::Advertising,
     services: Rc<Services>,
     /// The keyboard and pointer of `input`, made on first use.
     pub uinput: Option<uinput::Uinput>,
@@ -139,6 +142,7 @@ impl WwServer {
             props: None,
             config,
             listeners: Listeners::default(),
+            advertising: advertise::Advertising::default(),
             services,
             uinput: None,
             pointer_sent: None,
@@ -185,6 +189,21 @@ impl WwServer {
         if !self.listeners.matches(&wanted) {
             self.sync_listeners(event_loop, &wanted);
         }
+        self.advertise(&interfaces);
+    }
+
+    /// Announces the bound `lan:` listeners at their addresses now, and withdraws the rest.
+    fn advertise(&mut self, interfaces: &Interfaces) {
+        let lan: Vec<SocketAddr> = self
+            .config
+            .listen
+            .iter()
+            .filter(|line| matches!(line, Listen::Lan(_)))
+            .filter_map(|line| line.resolve(interfaces))
+            .filter(|addr| self.listeners.is_bound(*addr))
+            .collect();
+        self.advertising
+            .follow(self.config.advertise.as_ref(), &lan);
     }
 
     /// Binds `wanted` and drops the rest; answers the addresses that failed.
@@ -221,6 +240,7 @@ impl WwServer {
         });
         let (wanted, missing) = resolve(&config.listen, &interfaces);
         if config == self.config && self.listeners.matches(&wanted) {
+            self.advertise(&interfaces);
             return;
         }
         info!("ww: settings from {path:?}: {config:?}");
@@ -233,6 +253,7 @@ impl WwServer {
         for (addr, err) in self.sync_listeners(event_loop, &wanted) {
             warn!("ww: error listening on {addr}, trying again: {err:?}");
         }
+        self.advertise(&interfaces);
     }
 }
 
@@ -277,6 +298,10 @@ impl<T> Listeners<T> {
             && wanted
                 .iter()
                 .all(|addr| self.bound.iter().any(|(a, _)| a == addr))
+    }
+
+    fn is_bound(&self, addr: SocketAddr) -> bool {
+        self.bound.iter().any(|(a, _)| *a == addr)
     }
 
     /// Unbinds the addresses not in `wanted` and binds the missing ones; answers those that

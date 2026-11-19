@@ -1,14 +1,17 @@
-//! `ww.kdl`: where the control API listens and how many browser slots there are.
+//! `ww.kdl`: where the control API listens, the name it is announced under and how many browser
+//! slots there are.
 //!
 //! ```kdl
 //! listen "lan:7590"
 //! listen "tailnet:7590"
 //! listen "127.0.0.1:7591"
+//! advertise "Living room TV"
 //! browsers 2
 //! ```
 //!
 //! `lan:PORT` is the host's LAN address and `tailnet:PORT` its tailnet address, whatever they are
-//! now (see [`Interfaces`]); a literal address names itself.
+//! now (see [`Interfaces`]); a literal address names itself. Each `lan:` listener is announced
+//! on the LAN over DNS-SD under the `advertise` name, the host name when it is left out.
 
 use std::fmt;
 use std::net::{IpAddr, SocketAddr};
@@ -17,6 +20,7 @@ use std::time::SystemTime;
 
 use anyhow::{bail, Context as _};
 use directories::ProjectDirs;
+use ww_dns_sd::InstanceName;
 
 use super::interfaces::Interfaces;
 
@@ -27,6 +31,8 @@ pub const DEFAULT_BROWSERS: u8 = 2;
 struct RawConfig {
     #[knuffel(children(name = "listen"), unwrap(argument))]
     listen: Vec<String>,
+    #[knuffel(child, unwrap(argument))]
+    advertise: Option<String>,
     #[knuffel(child, unwrap(argument))]
     browsers: Option<u8>,
 }
@@ -92,6 +98,8 @@ impl fmt::Display for Listen {
 pub struct WwConfig {
     /// Each `listen` line, in the file's order without repeats; none: it doesn't listen.
     pub listen: Vec<Listen>,
+    /// The `advertise` name; `None`: the host name.
+    pub advertise: Option<InstanceName>,
     pub browsers: u8,
 }
 
@@ -99,6 +107,7 @@ impl Default for WwConfig {
     fn default() -> Self {
         Self {
             listen: Vec::new(),
+            advertise: None,
             browsers: DEFAULT_BROWSERS,
         }
     }
@@ -117,8 +126,14 @@ impl WwConfig {
             }
         }
 
+        let advertise = raw
+            .advertise
+            .map(|name| InstanceName::new(name).context("advertise"))
+            .transpose()?;
+
         Ok(Self {
             listen,
+            advertise,
             browsers: raw.browsers.unwrap_or(DEFAULT_BROWSERS),
         })
     }
@@ -224,6 +239,15 @@ mod tests {
             addr("127.0.0.1:7591")
         );
         assert_eq!(Listen::Lan(7590).resolve(&Interfaces::default()), None);
+    }
+
+    #[test]
+    fn advertise_name() {
+        let config = WwConfig::parse("ww.kdl", "advertise \"Living room TV\"\n").unwrap();
+        assert_eq!(config.advertise.unwrap().as_str(), "Living room TV");
+        assert!(WwConfig::parse("ww.kdl", "advertise \"\"").is_err());
+        let long = format!("advertise {:?}", "x".repeat(64));
+        assert!(WwConfig::parse("ww.kdl", &long).is_err());
     }
 
     #[test]
