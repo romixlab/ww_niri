@@ -4,6 +4,8 @@ Changes of ww_niri on top of upstream niri. Upstream's own changes are in its re
 
 ## [Unreleased]
 
+## [26.17.0] - 2026-11-20
+
 ### Added
 
 - `ww_niri_client`: `Tv::cover_lifted` tells of each lifted cover and why, its own lost with the link as `Disconnected` (P2618#20nov-0043).
