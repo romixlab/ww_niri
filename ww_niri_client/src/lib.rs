@@ -32,6 +32,7 @@ mod tv;
 pub use command::{Command, PlaybackAction, PlaybackTarget};
 pub use config::{Address, Config, HOLD_LIMIT_MAX, HOLD_LIMIT_MIN, OnChange};
 pub use error::{StartError, TvError};
+pub use model::CoverLifted;
 pub use queue::Failed;
 pub use snapshot::{AudioState, ConnectionState, Playback, PlayerState, SlotState, Snapshot};
 pub use tv::{AudioCalls, KeyboardCalls, PlaybackCalls, PointerCalls, SlotCalls, Tv, WindowCalls};

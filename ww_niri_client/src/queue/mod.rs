@@ -14,6 +14,7 @@ use ww_niri_api::Button;
 use crate::api::NiriClient;
 use crate::command::{Command, Lane, execute};
 use crate::error::TvError;
+use crate::model::Shared;
 
 /// Commands waiting in one lane; more are refused with [TvError::QueueFull].
 pub(crate) const LANE_PENDING_MAX: usize = 256;
@@ -242,6 +243,7 @@ impl Queue {
 /// Runs the commands of `requests` until the [Tv](crate::Tv) is dropped.
 pub(crate) async fn run(
     client: NiriClient,
+    shared: Arc<Shared>,
     mut requests: mpsc::Receiver<Request>,
     errors: broadcast::Sender<Failed>,
     hold: Duration,
@@ -275,6 +277,9 @@ pub(crate) async fn run(
             Some(done) = in_flight.join_next() => match done {
                 Ok((lane, pending, result)) => {
                     queue.lanes.done(&lane);
+                    if result.is_ok() {
+                        note_cover(&shared, &pending.command);
+                    }
                     queue.answer(pending.command, pending.replies, result);
                 }
                 Err(e) if e.is_panic() => std::panic::resume_unwind(e.into_panic()),
@@ -296,6 +301,18 @@ pub(crate) async fn run(
             },
             _ = stop.changed() => return,
         }
+    }
+}
+
+/// Follows the covers this client holds, for [Tv::cover_lifted](crate::Tv::cover_lifted).
+fn note_cover(shared: &Shared, command: &Command) {
+    let window = match command {
+        Command::Cover { id, .. } => Some(*id),
+        Command::SlotCover { slot, .. } => shared.slot_window(*slot),
+        _ => None,
+    };
+    if let Some(window) = window {
+        shared.hold_cover(window);
     }
 }
 

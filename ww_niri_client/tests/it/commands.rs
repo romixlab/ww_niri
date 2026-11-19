@@ -188,11 +188,18 @@ fn a_point_in_a_window() {
 
 #[test]
 fn covers_reach_the_tv_and_lift_with_the_connection() {
-    use ww_niri_api::{CardOwned, CoverError, WindowId};
+    use ww_niri_api::{CardOwned, CoverEnd, CoverError, WindowId};
+    use ww_niri_client::CoverLifted;
 
     let fake = fake();
     run(async {
         let tv = connect(&fake).await;
+        let mut lifted = tv.cover_lifted();
+        let mut next_lifted = async || {
+            super::soon("a cover lifts", lifted.recv())
+                .await
+                .expect("no lifted cover missed")
+        };
         let card = CardOwned {
             title: "Реклама".to_owned(),
             countdown: Some("Передача вернётся через".to_owned()),
@@ -206,7 +213,9 @@ fn covers_reach_the_tv_and_lift_with_the_connection() {
             .unwrap();
         assert_eq!(fake.covers()[0].window, WindowId(2));
         assert!(matches!(
-            tv.slot(0).cover(card.clone(), Duration::from_secs(1)).await,
+            tv.slot(0)
+                .cover(card.clone(), Duration::from_secs(1))
+                .await,
             Err(TvError::Cover(CoverError::NoSuchWindow))
         ));
         assert!(matches!(
@@ -219,10 +228,84 @@ fn covers_reach_the_tv_and_lift_with_the_connection() {
         ));
         window.uncover().await.unwrap();
         assert!(fake.covers().is_empty());
+        assert_eq!(
+            next_lifted().await,
+            CoverLifted {
+                window: WindowId(2),
+                why: CoverEnd::Uncovered
+            }
+        );
 
-        // A reconnect lifts it: the client renews what should stay.
-        window.cover(card, Duration::from_secs(130)).await.unwrap();
+        // Its end.
+        window
+            .cover(card.clone(), Duration::from_secs(5))
+            .await
+            .unwrap();
+        fake.advance(Duration::from_secs(5));
+        assert_eq!(
+            next_lifted().await,
+            CoverLifted {
+                window: WindowId(2),
+                why: CoverEnd::Deadline
+            }
+        );
+
+        // A reconnect lifts it, and the client tells: it renews what should stay.
+        window
+            .cover(card, Duration::from_secs(130))
+            .await
+            .unwrap();
         fake.drop_connection();
         until_fake("the cover lifts", || fake.covers().is_empty()).await;
+        assert_eq!(
+            next_lifted().await,
+            CoverLifted {
+                window: WindowId(2),
+                why: CoverEnd::Disconnected
+            }
+        );
+        super::connected(&tv).await;
+        assert!(lifted.try_recv().is_err());
+    });
+}
+
+#[test]
+fn a_slot_cover_lifts_with_its_window() {
+    use ww_niri_api::{CardOwned, CoverEnd};
+    use ww_niri_client::CoverLifted;
+
+    let fake = fake();
+    run(async {
+        let tv = connect(&fake).await;
+        let mut lifted = tv.cover_lifted();
+        tv.slot(0).start(true).await.unwrap();
+        fake.advance(Duration::from_millis(500));
+        let snapshot = super::until(&tv, "the slot's window", |s| {
+            s.slots[0]
+                .state
+                .as_ref()
+                .is_some_and(|s| s.window.is_some())
+        })
+        .await;
+        let window = snapshot.slots[0].state.as_ref().unwrap().window.unwrap();
+        let card = CardOwned {
+            title: "Реклама".to_owned(),
+            countdown: None,
+            clock: false,
+            footer: None,
+        };
+        tv.slot(0)
+            .cover(card, Duration::from_secs(60))
+            .await
+            .unwrap();
+        fake.drop_connection();
+        let got = super::soon("a cover lifts", lifted.recv()).await.unwrap();
+        assert_eq!(
+            got,
+            CoverLifted {
+                window,
+                why: CoverEnd::Disconnected
+            }
+        );
     });
 }

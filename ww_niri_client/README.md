@@ -50,6 +50,7 @@ On each link, and after a `Resync` event, the client lists everything again and 
 - So a fast UI never floods the link, and the rate follows the round trip. Clicks, keys and text keep their order.
 - A button or key held with `press` or `key_down` is renewed every third of the hold limit until released. `Config::hold_limit` sets it, 3 s by default.
 - `tv.window(id).cover(card, lasts)` and `tv.slot(0).cover(..)` blur the window under a card for `lasts`. The cover belongs to the connection: it lifts when the link goes, also on a reconnect, so a client renews it while it should stay.
+- `Tv::cover_lifted` tells of every cover that lifts on the TV, whoever set it, with the window and why: `Deadline`, `Uncovered`, `WindowClosed` or `Disconnected`. The covers this client holds when its link goes come as `Disconnected`, made by the client itself.
 - `Tv::release_all` lets go of everything when the app goes to the background. A phone that vanishes leaves nothing held past the hold limit.
 
 ## Tests
