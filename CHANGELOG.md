@@ -4,6 +4,10 @@ Changes of ww_niri on top of upstream niri. Upstream's own changes are in its re
 
 ## [Unreleased]
 
+### Added
+
+- `wwn`: a CLI on `ww_niri_client`, every control API call as a subcommand, `--json`, `watch`, shell completion (P2618#18nov-1316c).
+
 ## [26.15.0] - 2026-11-19
 
 ### Added

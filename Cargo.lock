@@ -751,6 +751,9 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3be2ad0423bdbbb0e25bc89add796f3559706d4a95e1bc98e4d9662a957b6a19"
 dependencies = [
  "clap",
+ "clap_lex",
+ "is_executable",
+ "shlex 2.0.1",
 ]
 
 [[package]]
@@ -2068,6 +2071,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "inventory"
+version = "0.3.25"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6928282826c822ad91bf1c9a1cb90a30ba1c26770749929b4656cd6be829cd7c"
+dependencies = [
+ "rustversion",
+]
+
+[[package]]
 name = "io-kit-sys"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2104,6 +2116,15 @@ name = "is_ci"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7655c9839580ee829dfacba1d1278c2b7883e50a277ff7541299489d6bdfdc45"
+
+[[package]]
+name = "is_executable"
+version = "1.0.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "82cb6a9f675da968c63b6208c641b9dca58fc0133ae53375736b1767b0cab8bd"
+dependencies = [
+ "windows-sys 0.61.2",
+]
 
 [[package]]
 name = "is_terminal_polyfill"
@@ -4508,6 +4529,7 @@ dependencies = [
  "libc",
  "mio",
  "pin-project-lite",
+ "signal-hook-registry",
  "socket2",
  "tokio-macros",
  "windows-sys 0.61.2",
@@ -4667,7 +4689,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ab27f167b093214c68413a2e0bcd318f0591af475597405ff68138ba0a433379"
 dependencies = [
  "cc",
- "windows-targets 0.48.5",
+ "windows-targets 0.52.6",
 ]
 
 [[package]]
@@ -5156,7 +5178,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.48.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5835,6 +5857,24 @@ version = "0.1.0"
 dependencies = [
  "ww_api",
  "ww_si",
+]
+
+[[package]]
+name = "ww_niri_cli"
+version = "0.0.0"
+dependencies = [
+ "anstream",
+ "anstyle",
+ "anyhow",
+ "clap",
+ "clap_complete",
+ "exact_units",
+ "inventory",
+ "serde_json",
+ "tokio",
+ "ww_niri_api",
+ "ww_niri_client",
+ "ww_niri_fake",
 ]
 
 [[package]]

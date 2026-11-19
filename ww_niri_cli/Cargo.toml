@@ -1,0 +1,40 @@
+[package]
+name = "ww_niri_cli"
+description = "wwn, the command line for a TV box running ww_niri: every control API call as a subcommand"
+authors = ["Roman Isaikin <roman@vhrd.tech>"]
+license = "MIT OR Apache-2.0"
+edition = "2024"
+rust-version.workspace = true
+repository = "https://github.com/romixlab/ww_niri"
+publish = false
+
+[[bin]]
+name = "wwn"
+path = "src/main.rs"
+
+[dependencies]
+anstream.workspace = true
+anstyle.workspace = true
+anyhow.workspace = true
+clap = { workspace = true, features = ["derive", "env", "string"] }
+clap_complete = { workspace = true, features = ["unstable-dynamic"] }
+exact_units = { workspace = true, features = [
+  "std",
+  "shrink_wrap",
+  "time",
+  "dimensionless",
+] }
+inventory.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = [
+  "rt",
+  "macros",
+  "signal",
+  "time",
+  "sync",
+] }
+ww_niri_api.workspace = true
+ww_niri_client.workspace = true
+
+[dev-dependencies]
+ww_niri_fake.workspace = true
