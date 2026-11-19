@@ -2349,3 +2349,103 @@ fn live_input() {
         launch(vec!["kill".into(), server.pid.to_string()]).await;
     });
 }
+
+/// `WW_NIRI_LIVE_COVER=VIDEO_URL`: play the video in browser slot 1, cover it for 20 s and wait
+/// for the deadline, cover it from a second connection that then goes, cover and uncover; a
+/// screenshot on the TV (`/tmp/ww-cover-*.png`) before, while covered and after.
+#[test]
+fn live_cover() {
+    use exact_units::Millis;
+
+    let (Some(url), Some(video)) = (
+        std::env::var_os("WW_NIRI_URL"),
+        std::env::var_os("WW_NIRI_LIVE_COVER"),
+    ) else {
+        eprintln!("live_cover: skipped, set WW_NIRI_URL and WW_NIRI_LIVE_COVER=VIDEO_URL to run against a running niri");
+        return;
+    };
+    let url = url.into_string().unwrap();
+    let video = video.into_string().unwrap();
+    let niri = std::env::var("WW_NIRI_BIN").unwrap_or_else(|_| "niri".to_owned());
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        let connect = async || {
+            NiriClient::config(|c| c.websocket_url(url.clone()))
+                .connect()
+                .await
+                .unwrap()
+        };
+        let client = connect().await;
+        let mut events = client.events().call().await.unwrap();
+        let screenshot = async |name: &str| {
+            let path = format!("/tmp/ww-cover-{name}.png");
+            let argv = [&niri, "msg", "action", "screenshot-screen", "--path", &path];
+            let argv = argv.map(|s| s.to_string()).to_vec();
+            client.apps().launch(argv).call().await.unwrap();
+            eprintln!("screenshot: {path}");
+        };
+        let long = Duration::from_secs(60);
+
+        let tv = client.browsers(1);
+        tv.start(true).with_timeout(long).call().await.unwrap();
+        tv.open(video).with_timeout(long).call().await.unwrap();
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        tv.show(None, Some(true)).call().await.unwrap();
+        let _ = tv.playback().play().call().await;
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        let window = tv.read_state().read().await.unwrap().window.unwrap();
+        screenshot("0-video").await;
+
+        let mut lifted = async |why: CoverEnd, within: Duration| {
+            tokio::time::timeout(within, async {
+                loop {
+                    if let EventOwned::CoverLifted {
+                        window: w,
+                        why: got,
+                    } = events.recv().await.unwrap()
+                    {
+                        assert_eq!((w, got), (window, why));
+                        break;
+                    }
+                }
+            })
+            .await
+            .unwrap_or_else(|_| panic!("the cover lifts: {why:?}"));
+            eprintln!("lifted: {why:?}");
+        };
+
+        let started = std::time::Instant::now();
+        tv.cover(ad_card(), Millis::new(20_000))
+            .call()
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        screenshot("1-covered").await;
+        lifted(CoverEnd::Deadline, Duration::from_secs(25)).await;
+        eprintln!("deadline after {:?}", started.elapsed());
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        screenshot("2-lifted").await;
+
+        let other = connect().await;
+        other
+            .windows()
+            .cover(window, ad_card(), Millis::new(60_000))
+            .call()
+            .await
+            .unwrap();
+        drop(other);
+        lifted(CoverEnd::Disconnected, Duration::from_secs(10)).await;
+
+        tv.cover(ad_card(), Millis::new(60_000))
+            .call()
+            .await
+            .unwrap();
+        tv.uncover().call().await.unwrap();
+        lifted(CoverEnd::Uncovered, Duration::from_secs(5)).await;
+
+        tv.stop().with_timeout(long).call().await.unwrap();
+    });
+}
