@@ -5755,6 +5755,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "ww_niri_client"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "exact_units",
+ "thiserror 2.0.20",
+ "tokio",
+ "wire_weaver",
+ "wire_weaver_client",
+ "ww_niri_api",
+ "ww_niri_fake",
+]
+
+[[package]]
 name = "ww_niri_fake"
 version = "0.1.0"
 dependencies = [
