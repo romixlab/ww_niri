@@ -339,12 +339,28 @@ async fn window(client: &NiriClient, command: &Command) -> Result<(), TvError> {
     }
 }
 
+/// `SlotStart`/`SlotOpen`/`SlotStop` launch or close Firefox and load a page: far past
+/// `wire_weaver_client`'s 1 s default request timeout, and past the slot's own 5 s stop grace.
+const SLOT_LIFECYCLE_TIMEOUT: Duration = Duration::from_secs(60);
+
 async fn browser(client: &NiriClient, slot: u8, command: &Command) -> Result<(), TvError> {
     let browser = client.browsers(u32::from(slot));
     match command {
-        Command::SlotStart { fullscreen, .. } => Ok(browser.start(*fullscreen).call().await?),
-        Command::SlotOpen { url, .. } => Ok(browser.open(url.clone()).call().await?),
-        Command::SlotStop { .. } => Ok(browser.stop().call().await?),
+        Command::SlotStart { fullscreen, .. } => Ok(browser
+            .start(*fullscreen)
+            .with_timeout(SLOT_LIFECYCLE_TIMEOUT)
+            .call()
+            .await?),
+        Command::SlotOpen { url, .. } => Ok(browser
+            .open(url.clone())
+            .with_timeout(SLOT_LIFECYCLE_TIMEOUT)
+            .call()
+            .await?),
+        Command::SlotStop { .. } => Ok(browser
+            .stop()
+            .with_timeout(SLOT_LIFECYCLE_TIMEOUT)
+            .call()
+            .await?),
         Command::SlotShow {
             transition,
             fullscreen,
