@@ -208,19 +208,21 @@ fn covers_reach_the_tv_and_lift_with_the_connection() {
         };
         let window = tv.window(WindowId(2));
         window
-            .cover(card.clone(), Duration::from_secs(130))
+            .cover(card.clone(), Duration::from_secs(130), true)
             .await
             .unwrap();
         assert_eq!(fake.covers()[0].window, WindowId(2));
+        assert!(fake.covers()[0].mute);
+        until_fake("the sink is muted", || fake.audio().1).await;
         assert!(matches!(
             tv.slot(0)
-                .cover(card.clone(), Duration::from_secs(1))
+                .cover(card.clone(), Duration::from_secs(1), false)
                 .await,
             Err(TvError::Cover(CoverError::NoSuchWindow))
         ));
         assert!(matches!(
             window
-                .cover(card.clone(), Duration::from_secs(u64::from(u32::MAX)))
+                .cover(card.clone(), Duration::from_secs(u64::from(u32::MAX)), true)
                 .await,
             Err(TvError::BadArgument {
                 what: "cover lasts"
@@ -228,6 +230,7 @@ fn covers_reach_the_tv_and_lift_with_the_connection() {
         ));
         window.uncover().await.unwrap();
         assert!(fake.covers().is_empty());
+        assert!(!fake.audio().1);
         assert_eq!(
             next_lifted().await,
             CoverLifted {
@@ -238,7 +241,7 @@ fn covers_reach_the_tv_and_lift_with_the_connection() {
 
         // Its end.
         window
-            .cover(card.clone(), Duration::from_secs(5))
+            .cover(card.clone(), Duration::from_secs(5), false)
             .await
             .unwrap();
         fake.advance(Duration::from_secs(5));
@@ -252,7 +255,7 @@ fn covers_reach_the_tv_and_lift_with_the_connection() {
 
         // A reconnect lifts it, and the client tells: it renews what should stay.
         window
-            .cover(card, Duration::from_secs(130))
+            .cover(card, Duration::from_secs(130), true)
             .await
             .unwrap();
         fake.drop_connection();
@@ -264,6 +267,7 @@ fn covers_reach_the_tv_and_lift_with_the_connection() {
                 why: CoverEnd::Disconnected
             }
         );
+        assert!(!fake.audio().1);
         super::connected(&tv).await;
         assert!(lifted.try_recv().is_err());
     });
@@ -295,7 +299,7 @@ fn a_slot_cover_lifts_with_its_window() {
             footer: None,
         };
         tv.slot(0)
-            .cover(card, Duration::from_secs(60))
+            .cover(card, Duration::from_secs(60), false)
             .await
             .unwrap();
         fake.drop_connection();

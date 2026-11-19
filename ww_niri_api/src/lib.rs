@@ -62,7 +62,16 @@ pub trait Windows {
     /// [Windows::uncover], or when the connection ends, whichever comes first; then
     /// [Event::CoverLifted] says why. Covering a covered window replaces its card and end, and
     /// this connection holds it from then on. Popups of the window are hidden while covered.
-    fn cover(id: WindowId, card: Card<'i>, lasts: Millis<u32>) -> Result<(), CoverError>;
+    ///
+    /// With `mute` the default sink is muted while the cover holds, under the same lease: when
+    /// the last muting cover lifts, the sink gets back the mute it had before the first. Without
+    /// an audio server or a default sink the cover still holds, unmuted.
+    fn cover(
+        id: WindowId,
+        card: Card<'i>,
+        lasts: Millis<u32>,
+        #[default = false] mute: bool,
+    ) -> Result<(), CoverError>;
 
     /// Lifts the window's cover, whoever set it.
     fn uncover(id: WindowId) -> Result<(), CoverError>;
@@ -102,7 +111,11 @@ pub trait Browser {
     ) -> Result<(), BrowserError<'i>>;
 
     /// Covers the slot's window, as [Windows::cover]; `NoSuchWindow` while it has none.
-    fn cover(card: Card<'i>, lasts: Millis<u32>) -> Result<(), CoverError>;
+    fn cover(
+        card: Card<'i>,
+        lasts: Millis<u32>,
+        #[default = false] mute: bool,
+    ) -> Result<(), CoverError>;
 
     /// Lifts the cover of the slot's window, as [Windows::uncover].
     fn uncover() -> Result<(), CoverError>;

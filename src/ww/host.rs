@@ -29,7 +29,13 @@ pub trait WwHost: 'static {
     fn set_fullscreen(&mut self, id: u64, on: bool) -> bool;
 
     /// Covers the window for connection `holder`, as `windows.cover`.
-    fn cover(&mut self, id: u64, holder: u64, look: super::cover::Look) -> Result<(), CoverError>;
+    fn cover(
+        &mut self,
+        id: u64,
+        holder: u64,
+        look: super::cover::Look,
+        mute: bool,
+    ) -> Result<(), CoverError>;
     /// Lifts the window's cover.
     fn uncover(&mut self, id: u64) -> Result<(), CoverError>;
     /// Lifts the covers connection `holder` holds: it ended.
@@ -238,8 +244,9 @@ mod niri_state {
             id: u64,
             holder: u64,
             look: crate::ww::cover::Look,
+            mute: bool,
         ) -> Result<(), CoverError> {
-            self.ww_cover(id, holder, look)
+            self.ww_cover(id, holder, look, mute)
         }
 
         fn uncover(&mut self, id: u64) -> Result<(), CoverError> {

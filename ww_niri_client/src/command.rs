@@ -54,11 +54,12 @@ pub enum Command {
         on: bool,
     },
     /// Covers the window for `lasts`, held by this client's connection: it lifts when the
-    /// connection ends, also on a reconnect.
+    /// connection ends, also on a reconnect. With `mute` the TV's sink is muted while it holds.
     Cover {
         id: WindowId,
         card: CardOwned,
         lasts: Duration,
+        mute: bool,
     },
     Uncover(WindowId),
     SlotStart {
@@ -82,6 +83,7 @@ pub enum Command {
         slot: u8,
         card: CardOwned,
         lasts: Duration,
+        mute: bool,
     },
     SlotUncover {
         slot: u8,
@@ -330,8 +332,13 @@ async fn window(client: &NiriClient, command: &Command) -> Result<(), TvError> {
         Command::FocusWindow(id) => Ok(windows.focus(*id).call().await?),
         Command::CloseWindow(id) => Ok(windows.close(*id).call().await?),
         Command::SetFullscreen { id, on } => Ok(windows.set_fullscreen(*id, *on).call().await?),
-        Command::Cover { id, card, lasts } => Ok(windows
-            .cover(*id, card.clone(), millis(*lasts, "cover lasts")?)
+        Command::Cover {
+            id,
+            card,
+            lasts,
+            mute,
+        } => Ok(windows
+            .cover(*id, card.clone(), millis(*lasts, "cover lasts")?, *mute)
             .call()
             .await?),
         Command::Uncover(id) => Ok(windows.uncover(*id).call().await?),
@@ -366,8 +373,10 @@ async fn browser(client: &NiriClient, slot: u8, command: &Command) -> Result<(),
             fullscreen,
             ..
         } => Ok(browser.show(*transition, *fullscreen).call().await?),
-        Command::SlotCover { card, lasts, .. } => Ok(browser
-            .cover(card.clone(), millis(*lasts, "cover lasts")?)
+        Command::SlotCover {
+            card, lasts, mute, ..
+        } => Ok(browser
+            .cover(card.clone(), millis(*lasts, "cover lasts")?, *mute)
             .call()
             .await?),
         Command::SlotUncover { .. } => Ok(browser.uncover().call().await?),

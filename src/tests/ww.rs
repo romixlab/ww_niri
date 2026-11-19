@@ -252,14 +252,15 @@ fn host_cover_lifts_at_its_end_and_with_its_holder() {
     };
 
     assert_eq!(
-        f.niri_state().cover(9999, 1, look(Duration::from_secs(1))),
+        f.niri_state()
+            .cover(9999, 1, look(Duration::from_secs(1)), false),
         Err(CoverError::NoSuchWindow)
     );
     assert_eq!(f.niri_state().uncover(wid), Err(CoverError::NotCovered));
 
     // Uncovered explicitly.
     f.niri_state()
-        .cover(wid, 1, look(Duration::from_secs(60)))
+        .cover(wid, 1, look(Duration::from_secs(60)), false)
         .unwrap();
     assert!(covered(&mut f));
     f.niri_state().uncover(wid).unwrap();
@@ -267,7 +268,7 @@ fn host_cover_lifts_at_its_end_and_with_its_holder() {
 
     // Lifted with its holder; another holder's cover stays.
     f.niri_state()
-        .cover(wid, 1, look(Duration::from_secs(60)))
+        .cover(wid, 1, look(Duration::from_secs(60)), false)
         .unwrap();
     f.niri_state().uncover_held_by(2);
     assert!(covered(&mut f));
@@ -276,7 +277,7 @@ fn host_cover_lifts_at_its_end_and_with_its_holder() {
 
     // Lifted by the timer at its end.
     f.niri_state()
-        .cover(wid, 1, look(Duration::from_millis(50)))
+        .cover(wid, 1, look(Duration::from_millis(50)), false)
         .unwrap();
     assert!(covered(&mut f));
     let deadline = Instant::now() + Duration::from_secs(5);
@@ -372,7 +373,7 @@ fn cover_renders_blur_dim_and_card() {
         },
         until: Instant::now() + Duration::from_secs(130),
     };
-    f.niri_state().cover(wid, 1, look).unwrap();
+    f.niri_state().cover(wid, 1, look, false).unwrap();
     let covered = frame(&mut f);
     if let Some(path) = std::env::var_os("WW_COVER_PNG") {
         let file = std::fs::File::create(path).unwrap();

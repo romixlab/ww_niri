@@ -107,6 +107,12 @@ impl FakeHost {
         self.fake.calls.lock().unwrap().push(call);
         self.windows().iter().any(|w| w.id.0 == id)
     }
+
+    /// As the compositor: the sink stays muted while a cover asks for it.
+    fn hold_mute(&mut self) {
+        let mutes = self.covers.mutes();
+        self.services().audio.hold_mute(mutes);
+    }
 }
 
 impl WwHost for FakeHost {
@@ -138,16 +144,24 @@ impl WwHost for FakeHost {
         self.op(format!("fullscreen {id} {on}"), id)
     }
 
-    fn cover(&mut self, id: u64, holder: u64, look: super::cover::Look) -> Result<(), CoverError> {
+    fn cover(
+        &mut self,
+        id: u64,
+        holder: u64,
+        look: super::cover::Look,
+        mute: bool,
+    ) -> Result<(), CoverError> {
         let lasts = look
             .until
             .saturating_duration_since(std::time::Instant::now());
         // Whole seconds: the call's own latency stays out of the record.
         let secs = lasts.as_secs_f64().round();
-        if !self.op(format!("cover {id} by {holder} for {secs}s"), id) {
+        let muting = if mute { " muting" } else { "" };
+        if !self.op(format!("cover {id} by {holder} for {secs}s{muting}"), id) {
             return Err(CoverError::NoSuchWindow);
         }
-        self.covers.set(id, holder, look);
+        self.covers.set(id, holder, look, mute);
+        self.hold_mute();
         Ok(())
     }
 
@@ -162,6 +176,7 @@ impl WwHost for FakeHost {
         }
         let hub = self.services().hub.clone();
         super::cover::lifted(&hub, id, CoverEnd::Uncovered);
+        self.hold_mute();
         Ok(())
     }
 
@@ -174,6 +189,7 @@ impl WwHost for FakeHost {
                 .unwrap()
                 .push(format!("uncover held by {holder}: {lifted:?}"));
         }
+        self.hold_mute();
     }
 
     fn services(&mut self) -> Rc<Services> {
@@ -804,13 +820,13 @@ fn cover_and_uncover() {
         let mut events = client.events().call().await.unwrap();
         let windows = client.windows();
         windows
-            .cover(WindowId(1), ad_card(), Millis::new(130_000))
+            .cover(WindowId(1), ad_card(), Millis::new(130_000), false)
             .call()
             .await
             .unwrap();
         // Renewed with a corrected end.
         windows
-            .cover(WindowId(1), ad_card(), Millis::new(125_000))
+            .cover(WindowId(1), ad_card(), Millis::new(125_000), false)
             .call()
             .await
             .unwrap();
@@ -818,21 +834,21 @@ fn cover_and_uncover() {
         let err = |res| device_err(res);
         assert_eq!(
             err(windows
-                .cover(WindowId(99), ad_card(), Millis::new(1000))
+                .cover(WindowId(99), ad_card(), Millis::new(1000), false)
                 .call()
                 .await),
             CoverError::NoSuchWindow
         );
         assert_eq!(
             err(windows
-                .cover(WindowId(1), ad_card(), Millis::new(0))
+                .cover(WindowId(1), ad_card(), Millis::new(0), false)
                 .call()
                 .await),
             CoverError::BadArgument
         );
         assert_eq!(
             err(windows
-                .cover(WindowId(1), ad_card(), Millis::new(16 * 60 * 1000))
+                .cover(WindowId(1), ad_card(), Millis::new(16 * 60 * 1000), false)
                 .call()
                 .await),
             CoverError::BadArgument
@@ -841,7 +857,7 @@ fn cover_and_uncover() {
         long.title = "x".repeat(201);
         assert_eq!(
             err(windows
-                .cover(WindowId(1), long, Millis::new(1000))
+                .cover(WindowId(1), long, Millis::new(1000), false)
                 .call()
                 .await),
             CoverError::BadArgument
@@ -866,7 +882,7 @@ fn cover_and_uncover() {
 
         // Held by this connection: its end lifts it.
         windows
-            .cover(WindowId(1), ad_card(), Millis::new(60_000))
+            .cover(WindowId(1), ad_card(), Millis::new(60_000), false)
             .call()
             .await
             .unwrap();
@@ -889,6 +905,79 @@ fn cover_and_uncover() {
             ]
         );
     });
+}
+
+#[test]
+fn muting_cover_holds_the_mute() {
+    use exact_units::Millis;
+    use wire_weaver_client::observe::on_change;
+
+    let dir = Scratch::new("cover-mute");
+    let pulse = FakePulse::start(&dir.0);
+    let windows = vec![window(1, "firefox"), window(2, "mpv")];
+    bench_with(windows, Settings::default(), None, Some(pulse.target())).run(
+        async |client, fake| {
+            let audio = client.audio();
+            let mut mutes = audio
+                .observe_muted(on_change(Duration::ZERO))
+                .subscribe()
+                .await
+                .unwrap();
+            async fn until_muted(
+                mutes: &mut wire_weaver_client::observe::Observer<
+                    impl wire_weaver_client::observe::LevelUpdate,
+                    bool,
+                >,
+                muted: bool,
+            ) {
+                tokio::time::timeout(Duration::from_secs(5), async {
+                    while mutes.recv().await.unwrap().value != muted {}
+                })
+                .await
+                .unwrap_or_else(|_| panic!("the sink gets muted {muted}"));
+            }
+            until_muted(&mut mutes, false).await;
+
+            let cover = |id, mute| {
+                client
+                    .windows()
+                    .cover(WindowId(id), ad_card(), Millis::new(60_000), mute)
+            };
+            // A cover without mute leaves the sink as it is.
+            cover(2, false).call().await.unwrap();
+            cover(1, true).call().await.unwrap();
+            until_muted(&mut mutes, true).await;
+            // The user unmutes during the cover; renewals keep that.
+            audio.write_muted(false).write().await.unwrap();
+            until_muted(&mut mutes, false).await;
+            cover(1, true).call().await.unwrap();
+            cover(2, true).call().await.unwrap();
+            client.windows().uncover(WindowId(1)).call().await.unwrap();
+
+            // The connection ends: its covers lift and the sink gets its mute from before.
+            drop(mutes);
+            drop(client);
+            calls_until(fake, |calls| {
+                calls.iter().any(|c| c.starts_with("uncover held by"))
+            })
+            .await;
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while pulse.calls.lock().unwrap().len() < 3 {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("the mute from before is set again");
+            assert_eq!(
+                *pulse.calls.lock().unwrap(),
+                [
+                    "mute Some(\"fake_sink\") true",
+                    "mute Some(\"fake_sink\") false",
+                    "mute Some(\"fake_sink\") false",
+                ]
+            );
+        },
+    );
 }
 
 #[test]
@@ -2351,8 +2440,9 @@ fn live_input() {
 }
 
 /// `WW_NIRI_LIVE_COVER=VIDEO_URL`: play the video in browser slot 1, cover it for 20 s and wait
-/// for the deadline, cover it from a second connection that then goes, cover and uncover; a
-/// screenshot on the TV (`/tmp/ww-cover-*.png`) before, while covered and after.
+/// for the deadline, cover it muted from a second connection that then goes (the sink is muted
+/// meanwhile and gets its mute back), cover and uncover; a screenshot on the TV
+/// (`/tmp/ww-cover-*.png`) before, while covered and after.
 #[test]
 fn live_cover() {
     use exact_units::Millis;
@@ -2418,7 +2508,7 @@ fn live_cover() {
         };
 
         let started = std::time::Instant::now();
-        tv.cover(ad_card(), Millis::new(20_000))
+        tv.cover(ad_card(), Millis::new(20_000), false)
             .call()
             .await
             .unwrap();
@@ -2429,17 +2519,31 @@ fn live_cover() {
         tokio::time::sleep(Duration::from_secs(2)).await;
         screenshot("2-lifted").await;
 
+        let audio = client.audio();
+        let muted_before = audio.read_muted().read().await.unwrap();
+        let until_muted = async |muted: bool| {
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while audio.read_muted().read().await.unwrap() != muted {
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+            })
+            .await
+            .unwrap_or_else(|_| panic!("the sink gets muted {muted}"));
+        };
         let other = connect().await;
         other
             .windows()
-            .cover(window, ad_card(), Millis::new(60_000))
+            .cover(window, ad_card(), Millis::new(60_000), true)
             .call()
             .await
             .unwrap();
+        until_muted(true).await;
+        eprintln!("muted under the cover, was muted {muted_before}");
         drop(other);
         lifted(CoverEnd::Disconnected, Duration::from_secs(10)).await;
+        until_muted(muted_before).await;
 
-        tv.cover(ad_card(), Millis::new(60_000))
+        tv.cover(ad_card(), Millis::new(60_000), false)
             .call()
             .await
             .unwrap();

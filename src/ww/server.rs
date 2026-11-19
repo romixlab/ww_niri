@@ -177,6 +177,7 @@ impl Server {
         id: u64,
         card: ww_niri_api::CardOwned,
         lasts: exact_units::Millis<u32>,
+        mute: bool,
     ) -> RpcResult<Result<(), Error<'_, ww_niri_api::CoverError>>> {
         let lasts = match card.check_cover(lasts) {
             Ok(lasts) => lasts,
@@ -187,7 +188,7 @@ impl Server {
             card,
             until: std::time::Instant::now() + lasts,
         };
-        match call(&self.run, move |host| host.cover(id, holder, look)).await {
+        match call(&self.run, move |host| host.cover(id, holder, look, mute)).await {
             Some(res) => RpcResult::Ready(res.map_err(Into::into)),
             None => Unimplemented.into(),
         }
@@ -311,8 +312,9 @@ impl Server {
             u32,
             exact_units::Unbounded,
         >,
+        mute: bool,
     ) -> RpcResult<Result<(), Error<'_, ww_niri_api::CoverError>>> {
-        self.cover(id.0, card, lasts).await
+        self.cover(id.0, card, lasts, mute).await
     }
 
     /// Lifts the window's cover, whoever set it.
@@ -465,9 +467,10 @@ impl Server {
             u32,
             exact_units::Unbounded,
         >,
+        mute: bool,
     ) -> RpcResult<Result<(), Error<'_, ww_niri_api::CoverError>>> {
         match self.browser_window(index_chain[0].get().0 as u8).await {
-            Some(window) => self.cover(window.id.0, card, lasts).await,
+            Some(window) => self.cover(window.id.0, card, lasts, mute).await,
             None => RpcResult::Ready(Err(ww_niri_api::CoverError::NoSuchWindow.into())),
         }
     }

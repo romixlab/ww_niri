@@ -1,5 +1,6 @@
 //! Covers over windows: set, renewed, lifted at their end, on `uncover`, when the connection
-//! ends or when the window closes.
+//! ends or when the window closes. While one asks for `mute` the sink is muted, and it gets its
+//! earlier mute back when the last such cover lifts.
 
 use exact_units::Millis;
 use ww_niri_api::{CardOwned, CoverEnd, CoverError, EventOwned, WindowId};
@@ -13,6 +14,8 @@ pub struct Cover {
     pub card: CardOwned,
     /// When it lifts by itself, on the fake's clock.
     pub until_us: u64,
+    /// It mutes the sink while it holds.
+    pub mute: bool,
 }
 
 impl Model {
@@ -21,6 +24,7 @@ impl Model {
         window: u64,
         card: CardOwned,
         lasts: Millis<u32>,
+        mute: bool,
     ) -> Result<(), CoverError> {
         let lasts = card.check_cover(lasts)?;
         if self.window(window).is_none() {
@@ -35,8 +39,10 @@ impl Model {
                 window: WindowId(window),
                 card,
                 until_us,
+                mute,
             },
         );
+        self.hold_mute();
         Ok(())
     }
 
@@ -68,8 +74,26 @@ impl Model {
                 window: WindowId(window),
                 why,
             });
+            self.hold_mute();
         }
         lifted
+    }
+
+    /// Mutes the sink when the first muting cover starts; sets its earlier mute again when the
+    /// last one lifts.
+    fn hold_mute(&mut self) {
+        let mutes = self.covers.values().any(|c| c.mute);
+        match (mutes, self.mute_held) {
+            (true, None) => {
+                self.mute_held = Some(self.muted);
+                self.set_audio(self.volume, true);
+            }
+            (false, Some(before)) => {
+                self.mute_held = None;
+                self.set_audio(self.volume, before);
+            }
+            _ => {}
+        }
     }
 
     pub(super) fn lift_due_covers(&mut self) {

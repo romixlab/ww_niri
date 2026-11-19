@@ -294,9 +294,12 @@ impl Server {
         id: WindowId,
         card: CardOwned,
         lasts: Millis<u32>,
+        mute: bool,
     ) -> Res<'_, CoverError> {
-        let args = format!("({id:?}, {card:?}, {}ms)", lasts.get());
-        self.op("windows.cover", None, args, |m| m.cover(id.0, card, lasts))
+        let args = format!("({id:?}, {card:?}, {}ms, mute {mute})", lasts.get());
+        self.op("windows.cover", None, args, |m| {
+            m.cover(id.0, card, lasts, mute)
+        })
     }
 
     async fn windows_uncover(
@@ -394,11 +397,12 @@ impl Server {
         chain: [ResourceIndex; 1],
         card: CardOwned,
         lasts: Millis<u32>,
+        mute: bool,
     ) -> Res<'_, CoverError> {
-        let args = format!("({card:?}, {}ms)", lasts.get());
+        let args = format!("({card:?}, {}ms, mute {mute})", lasts.get());
         self.op("browsers.cover", Some(index(chain)), args, |m| {
             let window = m.slot_window(slot(chain))?;
-            m.cover(window, card, lasts)
+            m.cover(window, card, lasts, mute)
         })
     }
 

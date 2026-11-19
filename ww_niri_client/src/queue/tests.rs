@@ -126,6 +126,7 @@ fn a_cover_replaces_the_one_before_of_its_window() {
     use ww_niri_api::{CardOwned, WindowId};
 
     let cover = |id, secs| Command::Cover {
+        mute: false,
         id: WindowId(id),
         card: CardOwned {
             title: "Реклама".to_owned(),

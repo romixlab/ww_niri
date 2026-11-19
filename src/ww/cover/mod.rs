@@ -4,6 +4,8 @@
 //! A cover is a lease: [Covers] keeps which connection holds each and when it ends, and lifts it
 //! at the end, on `uncover`, when the holder's connection ends or when the window closes. The
 //! window carries what to draw ([Look]); [render] draws it in the tile instead of the window.
+//! While any cover asked for `mute`, the default sink is muted ([Covers::mutes],
+//! [super::Audio::hold_mute]).
 
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -36,6 +38,8 @@ struct Lease {
     /// The connection that set it last.
     holder: u64,
     look: Rc<Look>,
+    /// It mutes the default sink.
+    mute: bool,
 }
 
 /// The covers by window id, and who holds each.
@@ -45,18 +49,24 @@ pub struct Covers {
 }
 
 impl Covers {
-    /// Covers `window` for `holder` until `look.until`, replacing a cover it has; answers what
-    /// the window draws.
-    pub fn set(&mut self, window: u64, holder: u64, look: Look) -> Rc<Look> {
+    /// Covers `window` for `holder` until `look.until`, muting with `mute`, replacing a cover it
+    /// has; answers what the window draws.
+    pub fn set(&mut self, window: u64, holder: u64, look: Look, mute: bool) -> Rc<Look> {
         let look = Rc::new(look);
         self.leases.insert(
             window,
             Lease {
                 holder,
                 look: look.clone(),
+                mute,
             },
         );
         look
+    }
+
+    /// Whether a cover mutes the default sink.
+    pub fn mutes(&self) -> bool {
+        self.leases.values().any(|lease| lease.mute)
     }
 
     /// Lifts the cover of `window`; whether it had one.
@@ -144,13 +154,15 @@ mod niri_state {
             window: u64,
             holder: u64,
             look: Look,
+            mute: bool,
         ) -> Result<(), CoverError> {
             if !self.ww_window_ids().contains(&window) {
                 return Err(CoverError::NoSuchWindow);
             }
-            let look = self.niri.ww.covers.set(window, holder, look);
+            let look = self.niri.ww.covers.set(window, holder, look, mute);
             self.ww_set_look(window, Some(look));
             self.ww_arm_cover_timer();
+            self.ww_hold_mute();
             Ok(())
         }
 
@@ -206,6 +218,13 @@ mod niri_state {
                 lifted(&hub, window, why);
             }
             self.ww_arm_cover_timer();
+            self.ww_hold_mute();
+        }
+
+        /// Mutes the default sink while a cover asks for it.
+        fn ww_hold_mute(&mut self) {
+            let mutes = self.niri.ww.covers.mutes();
+            self.niri.ww.services().audio.hold_mute(mutes);
         }
 
         /// One timer for every cover: at each end and each second of the countdowns.

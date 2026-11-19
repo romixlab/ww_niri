@@ -5,6 +5,10 @@
 //! sink's state; every change, made here or elsewhere (a volume key, `wpctl`), tells the watchers.
 //! When the server goes away the task connects again every few seconds. The `pulseaudio` crate
 //! gives the messages; the socket is the loop's.
+//!
+//! Covers hold a mute ([Audio::hold_mute]): the sink is muted when the first muting cover starts
+//! and gets its earlier mute back when the last one lifts. Changes in between, a user's unmute
+//! too, stay.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -294,6 +298,12 @@ pub struct Audio {
     client: RefCell<Option<Rc<Client>>>,
     sink: RefCell<Option<SinkState>>,
     watchers: RefCell<Vec<Sender<()>>>,
+    /// While covers hold the mute: the sink's mute before they did.
+    mute_held: Cell<Option<bool>>,
+    /// The mute the mute task sets next.
+    mute_next: Cell<Option<bool>>,
+    /// Wakes the mute task.
+    mute_wake: (Sender<()>, Receiver<()>),
 }
 
 impl Audio {
@@ -302,7 +312,47 @@ impl Audio {
             client: RefCell::new(None),
             sink: RefCell::new(None),
             watchers: RefCell::new(Vec::new()),
+            mute_held: Cell::new(None),
+            mute_next: Cell::new(None),
+            mute_wake: async_channel::bounded(1),
         })
+    }
+
+    /// Holds the sink muted while `on`: mutes it when the hold starts, and sets its earlier mute
+    /// again when the hold ends. Without a default sink no hold starts.
+    pub fn hold_mute(&self, on: bool) {
+        match (on, self.mute_held.get()) {
+            (true, None) => {
+                let Some(sink) = self.sink() else {
+                    warn!("ww: no default sink to mute under a cover");
+                    return;
+                };
+                self.mute_held.set(Some(sink.muted));
+                self.want_muted(true);
+            }
+            (false, Some(before)) => {
+                self.mute_held.set(None);
+                self.want_muted(before);
+            }
+            _ => {}
+        }
+    }
+
+    fn want_muted(&self, muted: bool) {
+        self.mute_next.set(Some(muted));
+        // Full: the task is woken already and reads the latest.
+        let _ = self.mute_wake.0.try_send(());
+    }
+
+    /// Sets the mutes [Audio::hold_mute] asks for, one at a time, the latest only.
+    async fn apply_mutes(&self) {
+        while self.mute_wake.1.recv().await.is_ok() {
+            if let Some(muted) = self.mute_next.take() {
+                if let Err(err) = self.set_muted(muted).await {
+                    warn!("ww: error setting the cover's mute {muted}: {err}");
+                }
+            }
+        }
     }
 
     /// Follows the server at `target` as a task on `scheduler`, for good.
@@ -328,6 +378,10 @@ impl Audio {
         });
         if let Err(err) = res {
             warn!("ww: error scheduling the audio task: {err:?}");
+        }
+        let this = self.clone();
+        if let Err(err) = scheduler.schedule(async move { this.apply_mutes().await }) {
+            warn!("ww: error scheduling the audio mute task: {err:?}");
         }
     }
 

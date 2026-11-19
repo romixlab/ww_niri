@@ -252,6 +252,8 @@ pub(crate) struct Model {
     held_keys: Vec<(String, u64)>,
     /// Covered windows by id.
     covers: BTreeMap<u64, Cover>,
+    /// While a cover mutes the sink: its mute before.
+    mute_held: Option<bool>,
     input_log: VecDeque<InputEntry>,
     outbox: Vec<Out>,
     /// The outbox overflowed: the client lists again.
@@ -284,6 +286,7 @@ impl Model {
             held_buttons: Vec::new(),
             held_keys: Vec::new(),
             covers: BTreeMap::new(),
+            mute_held: None,
             input_log: VecDeque::new(),
             outbox: Vec::new(),
             behind: false,

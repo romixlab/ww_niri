@@ -7,6 +7,7 @@ Changes of ww_niri on top of upstream niri. Upstream's own changes are in its re
 ### Added
 
 - `ww_niri_client`: `Tv::cover_lifted` tells of each lifted cover and why, its own lost with the link as `Disconnected` (P2618#20nov-0043).
+- Control API: `cover` takes `mute`, muting the default sink while the cover holds and restoring its mute after (P2618#20nov-0043b).
 
 ## [26.16.0] - 2026-11-19
 

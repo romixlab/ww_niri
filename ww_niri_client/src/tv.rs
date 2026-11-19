@@ -331,10 +331,12 @@ impl WindowCalls<'_> {
         fn close(&self) => Command::CloseWindow(self.id);
         fn set_fullscreen(&self, on: bool) => Command::SetFullscreen { id: self.id, on };
         /// Covers the window with a blur and `card` for `lasts`; it lifts by itself at the end
-        /// or when this client's connection ends, so renew it while it should stay.
-        /// [Tv::cover_lifted] tells when and why it lifted.
-        fn cover(&self, card: CardOwned, lasts: Duration) =>
-            Command::Cover { id: self.id, card, lasts };
+        /// or when this client's connection ends, so renew it while it should stay. With `mute`
+        /// the TV's sink is muted from the first muting cover until the last one lifts, then
+        /// gets its mute from before; renewals leave it as it is. [Tv::cover_lifted] tells when
+        /// and why it lifted.
+        fn cover(&self, card: CardOwned, lasts: Duration, mute: bool) =>
+            Command::Cover { id: self.id, card, lasts, mute };
         /// Lifts the window's cover.
         fn uncover(&self) => Command::Uncover(self.id);
     }
@@ -358,8 +360,8 @@ impl<'a> SlotCalls<'a> {
             Command::SlotShow { slot: self.index, transition, fullscreen };
         /// Covers the slot's window, as [WindowCalls::cover]; [Tv::cover_lifted] names the
         /// window, [SlotState::state](crate::SlotState)'s `window`.
-        fn cover(&self, card: CardOwned, lasts: Duration) =>
-            Command::SlotCover { slot: self.index, card, lasts };
+        fn cover(&self, card: CardOwned, lasts: Duration, mute: bool) =>
+            Command::SlotCover { slot: self.index, card, lasts, mute };
         /// Lifts the cover of the slot's window.
         fn uncover(&self) => Command::SlotUncover { slot: self.index };
     }
