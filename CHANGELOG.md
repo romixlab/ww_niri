@@ -4,6 +4,8 @@ Changes of ww_niri on top of upstream niri. Upstream's own changes are in its re
 
 ## [Unreleased]
 
+## [26.14.0] - 2026-11-19
+
 ### Added
 
 - Control API: `lan:` listeners are announced over DNS-SD as `_wireweaver._tcp`, named by `advertise` in `ww.kdl` (P2618#18nov-1357b).
