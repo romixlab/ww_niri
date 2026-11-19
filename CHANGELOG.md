@@ -4,6 +4,8 @@ Changes of ww_niri on top of upstream niri. Upstream's own changes are in its re
 
 ## [Unreleased]
 
+## [26.13.0] - 2026-11-19
+
 ### Added
 
 - `ww_niri_client`: a TV handle that reconnects, follows the TV live, and sends typed, merged commands (P2618#12nov-1559).
