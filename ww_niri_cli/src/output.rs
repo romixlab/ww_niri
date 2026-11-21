@@ -260,9 +260,13 @@ pub fn browser_state(s: &BrowserStateOwned) -> (Value, String) {
         "title": s.title,
         "window": s.window.map(|w| w.0),
         "player": s.player.map(|p| p.0),
+        "owner": s.owner,
     });
     let text = format!(
-        "{phase}{}",
+        "{phase}{}{}",
+        s.owner
+            .as_deref()
+            .map_or(String::new(), |o| format!("  ({o})")),
         s.url.as_deref().map_or(String::new(), |u| format!("  {u}"))
     );
     (value, text)

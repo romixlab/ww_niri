@@ -50,6 +50,9 @@ pub struct Options {
     pub clock: ClockMode,
     /// Browser slots, as `browsers` in ww.kdl.
     pub browser_slots: u8,
+    /// The owner of each slot by index, as `browser N owner=...` in ww.kdl; a slot past the
+    /// list has none.
+    pub slot_owners: Vec<Option<String>>,
     /// From a slot's start until its window maps and it is Running.
     pub start_delay: Duration,
     /// Every page opened in a slot plays media: the slot gets a playing player.
@@ -64,6 +67,7 @@ impl Default for Options {
             path: None,
             clock: ClockMode::Real,
             browser_slots: 2,
+            slot_owners: Vec::new(),
             start_delay: Duration::from_millis(500),
             pages_play: true,
             info: InfoOwned {
@@ -162,6 +166,7 @@ impl FakeTv {
         });
         let setup = Setup {
             slots: options.browser_slots,
+            owners: options.slot_owners.clone(),
             start_delay_us: u64::try_from(options.start_delay.as_micros()).unwrap_or(u64::MAX),
             pages_play: options.pages_play,
         };

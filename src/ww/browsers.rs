@@ -35,6 +35,7 @@ use ww_niri_api::{
 };
 
 use super::bidi::{self, Bidi, BidiError};
+use super::config::SlotConfig;
 use super::host::{call, Run};
 use super::hub::Hub;
 
@@ -121,6 +122,8 @@ async fn timeout<T>(io: &LoopIo, after: Duration, fut: impl Future<Output = T>) 
 
 #[derive(Default)]
 struct Slot {
+    /// From ww.kdl; a slot past the count keeps its last one while it stops.
+    config: SlotConfig,
     run: Option<Running>,
 }
 
@@ -171,9 +174,13 @@ impl Browsers {
         io: LoopIo,
         scheduler: Scheduler<()>,
         hub: Rc<Hub>,
-        count: u8,
+        configs: Vec<SlotConfig>,
     ) -> Rc<Self> {
-        let slots = (0..count).map(|_| Slot::default()).collect();
+        let count = u8::try_from(configs.len()).expect("ww.kdl's count is a u8");
+        let slots = configs
+            .into_iter()
+            .map(|config| Slot { config, run: None })
+            .collect();
         Rc::new(Self {
             settings,
             run,
@@ -190,17 +197,30 @@ impl Browsers {
         self.wanted.get()
     }
 
-    /// A new count from ww.kdl: slots past it are stopped, and go once their Firefox has exited.
-    pub fn set_count(self: &Rc<Self>, count: u8) {
+    /// The slots from ww.kdl: slots past their count are stopped, and go once their Firefox has
+    /// exited. A changed owner reaches the state's observers; a changed user agent applies from
+    /// the slot's next start.
+    pub fn configure(self: &Rc<Self>, configs: Vec<SlotConfig>) {
+        let count = u8::try_from(configs.len()).expect("ww.kdl's count is a u8");
+        let mut changed = Vec::new();
+        {
+            let mut slots = self.slots.borrow_mut();
+            if slots.len() < configs.len() {
+                slots.resize_with(configs.len(), Slot::default);
+            }
+            for (index, (slot, config)) in slots.iter_mut().zip(configs).enumerate() {
+                if slot.config.owner != config.owner {
+                    changed.push(index as u8);
+                }
+                slot.config = config;
+            }
+        }
+        for slot in changed {
+            self.hub.browser_changed(slot);
+        }
         let old = self.wanted.replace(count);
         if old == count {
             return;
-        }
-        {
-            let mut slots = self.slots.borrow_mut();
-            if slots.len() < usize::from(count) {
-                slots.resize_with(usize::from(count), Slot::default);
-            }
         }
         for slot in count..old {
             let this = self.clone();
@@ -290,12 +310,18 @@ impl Browsers {
         let (phase, url) = self
             .with_run(slot, |run| (run.phase, run.url.clone()))
             .unwrap_or((BrowserPhase::Stopped, None));
+        let owner = self
+            .slots
+            .borrow()
+            .get(usize::from(slot))
+            .and_then(|s| s.config.owner.clone());
         BrowserStateOwned {
             phase,
             url,
             title: window.and_then(|w| w.title.clone()),
             window: window.map(|w| w.id),
             player: None,
+            owner,
         }
     }
 
@@ -393,6 +419,21 @@ impl Browsers {
             "ww: browser slot {slot} at {addr}: session {}",
             session["sessionId"]
         );
+
+        // For every page of the session, before the first is opened.
+        let user_agent = self
+            .slots
+            .borrow()
+            .get(usize::from(slot))
+            .and_then(|s| s.config.user_agent.clone());
+        if let Some(user_agent) = user_agent {
+            bidi.command(
+                "emulation.setUserAgentOverride",
+                json!({ "userAgent": user_agent }),
+            )
+            .await
+            .map_err(bidi_error)?;
+        }
 
         let tree = bidi
             .command("browsingContext.getTree", json!({ "maxDepth": 0 }))

@@ -4,6 +4,11 @@ Changes of ww_niri on top of upstream niri. Upstream's own changes are in its re
 
 ## [Unreleased]
 
+### Added
+
+- `ww.kdl`: `browser N owner=... user-agent=...` gives a slot its person and the user agent its Firefox sends (P2618#21nov-1232b).
+- Control API: `BrowserState.owner` names the slot's person; `ww_niri_fake` takes `slot_owners`, `wwn` prints them (P2618#21nov-1232b).
+
 ## [26.19.0] - 2026-11-21
 
 ### Added

@@ -158,6 +158,7 @@ struct Slot {
     /// When the window maps and the slot is Running.
     maps_at_us: Option<u64>,
     fullscreen: bool,
+    owner: Option<String>,
 }
 
 struct Player {
@@ -232,6 +233,8 @@ pub struct Sink {
 /// Settings the model starts from.
 pub(crate) struct Setup {
     pub slots: u8,
+    /// The owner of each slot by index; a slot past the list has none.
+    pub owners: Vec<Option<String>>,
     pub start_delay_us: u64,
     pub pages_play: bool,
 }
@@ -277,7 +280,12 @@ impl Model {
             workspace: START_WORKSPACE,
             next_window_id: 1,
             next_pid: 1000,
-            slots: (0..setup.slots).map(|_| Slot::default()).collect(),
+            slots: (0..usize::from(setup.slots))
+                .map(|i| Slot {
+                    owner: setup.owners.get(i).cloned().flatten(),
+                    ..Slot::default()
+                })
+                .collect(),
             players: BTreeMap::new(),
             next_player_id: 0,
             volume: 40,
@@ -674,6 +682,7 @@ impl Model {
                 .map(|w| w.title.clone()),
             window: window.map(WindowId),
             player: s.and_then(|s| s.player).map(PlayerId),
+            owner: s.and_then(|s| s.owner.clone()),
         }
     }
 
@@ -695,6 +704,7 @@ impl Model {
             url: Some("about:blank".to_owned()),
             maps_at_us: Some(maps_at),
             fullscreen,
+            owner: s.owner.take(),
             ..Slot::default()
         };
         self.event(EventOwned::BrowserStarted(BrowserSlot(slot)));
@@ -808,7 +818,10 @@ impl Model {
             self.remove_player(id);
         }
         if let Some(s) = self.slot_mut(slot) {
-            *s = Slot::default();
+            *s = Slot {
+                owner: s.owner.take(),
+                ..Slot::default()
+            };
         }
         self.event(EventOwned::BrowserStopped {
             slot: BrowserSlot(slot),
@@ -993,6 +1006,7 @@ mod tests {
     fn model() -> Model {
         Model::new(&Setup {
             slots: 1,
+            owners: Vec::new(),
             start_delay_us: 0,
             pages_play: true,
         })
