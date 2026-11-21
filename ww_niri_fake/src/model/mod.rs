@@ -260,6 +260,8 @@ pub(crate) struct Model {
     behind: bool,
     start_delay_us: u64,
     pages_play: bool,
+    /// The TV's screen is on the HDMI port; without it niri lists no output.
+    screen_connected: bool,
 }
 
 impl Model {
@@ -292,6 +294,7 @@ impl Model {
             behind: false,
             start_delay_us: setup.start_delay_us,
             pages_play: setup.pages_play,
+            screen_connected: true,
         };
         let half = Rect {
             x: 0,
@@ -486,7 +489,7 @@ impl Model {
             title: Some(w.title.clone()),
             pid: Some(w.pid),
             workspace: Some(WorkspaceId(w.workspace)),
-            output: Some(OUTPUT_NAME.to_owned()),
+            output: self.screen_connected.then(|| OUTPUT_NAME.to_owned()),
             focused: self.focused == Some(w.id),
             fullscreen: w.fullscreen,
             browser: w.slot.map(BrowserSlot),
@@ -517,7 +520,25 @@ impl Model {
         self.windows.iter().map(|w| self.window_owned(w)).collect()
     }
 
-    pub(crate) fn outputs() -> Vec<OutputOwned> {
+    /// The screen came on the HDMI port, or went (TV off or unplugged): the output list changes, and every
+    /// window's output with it.
+    pub(crate) fn set_screen_connected(&mut self, connected: bool) {
+        if self.screen_connected == connected {
+            return;
+        }
+        self.screen_connected = connected;
+        self.event(EventOwned::OutputsChanged);
+        let ids: Vec<u64> = self.windows.iter().map(|w| w.id).collect();
+        for id in ids {
+            self.window_changed(id);
+        }
+    }
+
+    /// One output while the screen is connected, none without it.
+    pub(crate) fn outputs(&self) -> Vec<OutputOwned> {
+        if !self.screen_connected {
+            return Vec::new();
+        }
         vec![OutputOwned {
             name: OUTPUT_NAME.to_owned(),
             make: "Fake".to_owned(),

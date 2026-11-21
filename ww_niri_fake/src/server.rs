@@ -322,7 +322,7 @@ impl Server {
         _cx: &mut Context<'_, impl EventOut>,
     ) -> RpcResult<Vec<OutputOwned>> {
         self.begin("outputs.list", None, "()".to_owned());
-        RpcResult::Ready(Model::outputs())
+        RpcResult::Ready(self.with(|m| m.outputs()))
     }
 
     // ---- ww_niri_api::Apps at apps ----

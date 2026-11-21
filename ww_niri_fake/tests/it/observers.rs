@@ -238,3 +238,32 @@ fn pointer_observers_and_hold_limits() {
         );
     });
 }
+
+#[test]
+fn a_screen_that_goes_and_comes_back_changes_the_outputs() {
+    let tv = fake();
+    run(async {
+        let client = connect(&tv).await.unwrap();
+        let mut events = client.events().call().await.unwrap();
+        let mut next = async || soon("an event", events.recv()).await.unwrap();
+        assert_eq!(client.outputs().list().call().await.unwrap().len(), 1);
+
+        tv.set_screen_connected(false);
+        assert_eq!(next().await, EventOwned::OutputsChanged);
+        assert!(client.outputs().list().call().await.unwrap().is_empty());
+        assert!(tv.windows().iter().all(|w| w.output.is_none()));
+
+        tv.set_screen_connected(true);
+        loop {
+            if next().await == EventOwned::OutputsChanged {
+                break;
+            }
+        }
+        let outputs = client.outputs().list().call().await.unwrap();
+        assert_eq!(outputs.len(), 1);
+        assert!(tv
+            .windows()
+            .iter()
+            .all(|w| w.output.as_deref() == Some(outputs[0].name.as_str())));
+    });
+}
