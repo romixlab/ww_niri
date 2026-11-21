@@ -4,6 +4,11 @@ Changes of ww_niri on top of upstream niri. Upstream's own changes are in its re
 
 ## [Unreleased]
 
+### Added
+
+- Control API: `windows.hide` keeps a window running off screen, never drawn or focused; `windows.show` brings it back (P2618).
+- `ww_niri_client`, `wwn windows hide` and `ww_niri_fake`: hide a window; `Window.hidden` tells which are hidden (P2618).
+
 ## [26.18.0] - 2026-11-21
 
 ### Added

@@ -77,6 +77,7 @@ fn window(id: u64, app_id: &str) -> WindowOwned {
         focused: false,
         fullscreen: false,
         browser: None,
+        hidden: false,
     }
 }
 
@@ -138,6 +139,10 @@ impl WwHost for FakeHost {
 
     fn close_window(&mut self, id: u64) -> bool {
         self.op(format!("close {id}"), id)
+    }
+
+    fn hide_window(&mut self, id: u64) -> bool {
+        self.op(format!("hide {id}"), id)
     }
 
     fn set_fullscreen(&mut self, id: u64, on: bool) -> bool {
@@ -931,6 +936,7 @@ fn windows_list_and_actions() {
             .await
             .unwrap();
         client.windows().close(WindowId(2)).call().await.unwrap();
+        client.windows().hide(WindowId(1)).call().await.unwrap();
         assert!(matches!(
             client.windows().focus(WindowId(99)).call().await,
             Err(CallError::Device(WindowError::NoSuchWindow))
@@ -943,6 +949,7 @@ fn windows_list_and_actions() {
                 "show 1 Some(true)",
                 "fullscreen 1 false",
                 "close 2",
+                "hide 1",
                 "focus 99"
             ]
         );

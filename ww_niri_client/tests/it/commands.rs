@@ -51,6 +51,11 @@ fn typed_calls_reach_the_tv() {
         assert!(matches!(log[1], InputEntry::Scroll { dy: 120, .. }));
         assert_eq!(log[2], InputEntry::Text("hi".to_owned()));
         assert!(tv.launch(vec!["true".to_owned()]).await.unwrap() > 0);
+        let mpv = tv.window(ww_niri_api::WindowId(2));
+        mpv.hide().await.unwrap();
+        assert!(fake.windows()[1].hidden);
+        mpv.show(None, Some(true)).await.unwrap();
+        assert!(!fake.windows()[1].hidden);
     });
 }
 

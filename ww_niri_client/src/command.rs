@@ -62,6 +62,8 @@ pub enum Command {
         mute: bool,
     },
     Uncover(WindowId),
+    /// Hides the window until a [Command::ShowWindow].
+    HideWindow(WindowId),
     SlotStart {
         slot: u8,
         fullscreen: bool,
@@ -153,7 +155,8 @@ impl Command {
             | Command::CloseWindow(_)
             | Command::SetFullscreen { .. }
             | Command::Cover { .. }
-            | Command::Uncover(_) => Lane::Windows,
+            | Command::Uncover(_)
+            | Command::HideWindow(_) => Lane::Windows,
             Command::SlotStart { slot, .. }
             | Command::SlotOpen { slot, .. }
             | Command::SlotStop { slot }
@@ -342,6 +345,7 @@ async fn window(client: &NiriClient, command: &Command) -> Result<(), TvError> {
             .call()
             .await?),
         Command::Uncover(id) => Ok(windows.uncover(*id).call().await?),
+        Command::HideWindow(id) => Ok(windows.hide(*id).call().await?),
         other => unreachable!("{other:?} is not in the windows lane"),
     }
 }

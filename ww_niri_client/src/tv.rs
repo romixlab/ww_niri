@@ -318,6 +318,9 @@ impl WindowCalls<'_> {
             Command::Cover { id: self.id, card, lasts, mute };
         /// Lifts the window's cover.
         fn uncover(&self) => Command::Uncover(self.id);
+        /// Hides the window: alive, but never drawn or focused until [WindowCalls::show], which
+        /// brings it back on the active workspace.
+        fn hide(&self) => Command::HideWindow(self.id);
     }
 }
 

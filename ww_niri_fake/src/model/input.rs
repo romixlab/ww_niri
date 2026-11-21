@@ -32,7 +32,7 @@ impl Model {
         let under = (self.focused.iter())
             .chain(self.windows.iter().map(|w| &w.id))
             .filter_map(|id| self.window(*id))
-            .find(|w| w.workspace == self.workspace && w.rect().contains(x, y));
+            .find(|w| !w.hidden && w.workspace == self.workspace && w.rect().contains(x, y));
         PointerPosition {
             x: Fixed::new(x),
             y: Fixed::new(y),
@@ -50,7 +50,7 @@ impl Model {
             Point::Global { x, y } => (x.get(), y.get()),
             Point::Window { id, x, y } => {
                 let w = self.window(id.0).ok_or(InputErrorOwned::NoSuchWindow)?;
-                if w.workspace != self.workspace {
+                if w.hidden || w.workspace != self.workspace {
                     return Err(InputErrorOwned::WindowNotVisible);
                 }
                 let r = w.rect();

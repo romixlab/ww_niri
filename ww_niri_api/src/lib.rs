@@ -42,7 +42,8 @@ pub trait Windows {
 
     /// Brings the window on screen: switches to its workspace and output, scrolls to its column
     /// and focuses it. `transition: None` uses niri's configured animations; `fullscreen` sets
-    /// fullscreen on the way when given.
+    /// fullscreen on the way when given. A hidden window ([Windows::hide]) comes back on the
+    /// active workspace of the focused output, with the size and fullscreen it had.
     fn show(
         id: WindowId,
         transition: Option<Transition>,
@@ -75,6 +76,12 @@ pub trait Windows {
 
     /// Lifts the window's cover, whoever set it.
     fn uncover(id: WindowId) -> Result<(), CoverError>;
+
+    /// Hides the window: it leaves its workspace and keeps running, mapped, but niri never
+    /// draws or focuses it, in no workspace, overview or switch, until [Windows::show]. Listed
+    /// with `hidden` set and no workspace or output; `focus` and `set_fullscreen` leave it
+    /// hidden. Hiding a hidden window changes nothing.
+    fn hide(id: WindowId) -> Result<(), WindowError>;
 }
 
 #[ww_trait]
@@ -229,6 +236,8 @@ pub struct Window<'i> {
     pub fullscreen: bool,
     /// Set when the window is a browser slot's Firefox.
     pub browser: Option<BrowserSlot>,
+    /// Hidden by [Windows::hide]: never drawn or focused until [Windows::show].
+    pub hidden: bool,
 }
 
 #[derive_shrink_wrap(owned(feature = "std"), derive(Clone, Debug, PartialEq, Eq))]

@@ -347,6 +347,14 @@ impl Server {
         self.uncover(id.0).await
     }
 
+    async fn windows_hide(
+        &mut self,
+        _cx: &mut Context<'_, impl EventOut>,
+        id: ww_niri_api::WindowId,
+    ) -> RpcResult<Result<(), Error<'_, ww_niri_api::WindowError>>> {
+        self.window_op(move |host| host.hide_window(id.0)).await
+    }
+
     // ---- ww_niri_api::Outputs at outputs ----
 
     async fn outputs_list(

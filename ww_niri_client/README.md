@@ -67,6 +67,7 @@ On each link, and after a `Resync` event, the client lists everything again and 
 - `tv.window(id).cover(card, lasts, mute)` and `tv.slot(0).cover(..)` blur the window under a card for `lasts`. The cover belongs to the connection: it lifts when the link goes, also on a reconnect, so a client renews it while it should stay.
 - With `mute` the TV's default sink is muted when the first muting cover starts. When the last one lifts, the sink gets its mute from before. Renewals leave the mute as it is, so a user's unmute during the cover holds. A client that hangs or crashes never leaves the TV muted: its connection ends and the cover lifts.
 - `Tv::cover_lifted` tells of every cover that lifts on the TV, whoever set it, with the window and why: `Deadline`, `Uncovered`, `WindowClosed` or `Disconnected`. The covers this client holds when its link goes come as `Disconnected`, made by the client itself.
+- `tv.window(id).hide()` keeps the window running off screen: niri never draws or focuses it until `show`, which brings it back on the active workspace. A hidden window is a lasting state, not a lease: it stays hidden when the link goes.
 - `Tv::release_all` lets go of everything when the app goes to the background. A phone that vanishes leaves nothing held past the hold limit.
 
 ## Tests

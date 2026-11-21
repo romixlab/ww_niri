@@ -2,6 +2,7 @@
 
 mod covers;
 mod every_method;
+mod hide;
 mod knobs;
 mod observers;
 

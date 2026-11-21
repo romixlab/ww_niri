@@ -55,6 +55,8 @@ fn every_method_answers() {
             .await
             .unwrap();
         w.uncover(WindowId(2)).call().await.unwrap();
+        w.hide(WindowId(2)).call().await.unwrap();
+        w.show(WindowId(2), None, None).call().await.unwrap();
 
         let apps = client.apps();
         let launched = apps.launch(vec!["true".to_owned()]).call().await.unwrap();

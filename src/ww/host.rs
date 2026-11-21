@@ -26,6 +26,8 @@ pub trait WwHost: 'static {
         fullscreen: Option<bool>,
     ) -> bool;
     fn close_window(&mut self, id: u64) -> bool;
+    /// Hides the window, as `windows.hide`; true for one already hidden.
+    fn hide_window(&mut self, id: u64) -> bool;
     fn set_fullscreen(&mut self, id: u64, on: bool) -> bool;
 
     /// Covers the window for connection `holder`, as `windows.cover`.
@@ -126,6 +128,7 @@ mod niri_state {
         mapped: &Mapped,
         output: Option<&Output>,
         workspace: Option<crate::layout::workspace::WorkspaceId>,
+        hidden: bool,
     ) -> WindowOwned {
         let (title, app_id) = with_toplevel_role(mapped.toplevel(), |role| {
             (role.title.clone(), role.app_id.clone())
@@ -140,6 +143,7 @@ mod niri_state {
             focused: mapped.is_focused(),
             fullscreen: mapped.sizing_mode().is_fullscreen(),
             browser: None,
+            hidden,
         }
     }
 
@@ -151,24 +155,24 @@ mod niri_state {
 
     impl WwHost for State {
         fn windows(&mut self) -> Vec<WindowOwned> {
+            let layout = &self.niri.layout;
             let mut windows = Vec::new();
-            self.niri
-                .layout
-                .with_windows(|mapped, output, workspace, _| {
-                    windows.push(make_window(mapped, output, workspace));
-                });
+            layout.with_windows(|mapped, output, workspace, _| {
+                let hidden = layout.ww_is_hidden(&mapped.window);
+                windows.push(make_window(mapped, output, workspace, hidden));
+            });
             windows
         }
 
         fn window(&mut self, id: u64) -> Option<WindowOwned> {
+            let layout = &self.niri.layout;
             let mut found = None;
-            self.niri
-                .layout
-                .with_windows(|mapped, output, workspace, _| {
-                    if mapped.id().get() == id {
-                        found = Some(make_window(mapped, output, workspace));
-                    }
-                });
+            layout.with_windows(|mapped, output, workspace, _| {
+                if mapped.id().get() == id {
+                    let hidden = layout.ww_is_hidden(&mapped.window);
+                    found = Some(make_window(mapped, output, workspace, hidden));
+                }
+            });
             found
         }
 
@@ -212,6 +216,9 @@ mod niri_state {
             let Some(window) = self.ww_find(id) else {
                 return false;
             };
+            if self.niri.layout.ww_unhide_window(&window) {
+                self.niri.queue_redraw_all();
+            }
             self.focus_window_with_anim_config(&window, transition.map(super::animation));
             if let Some(on) = fullscreen {
                 self.niri.layout.set_fullscreen(&window, on);
@@ -228,6 +235,16 @@ mod niri_state {
                 }
                 None => false,
             }
+        }
+
+        fn hide_window(&mut self, id: u64) -> bool {
+            let Some(window) = self.ww_find(id) else {
+                return false;
+            };
+            if self.niri.layout.ww_hide_window(&window) {
+                self.niri.queue_redraw_all();
+            }
+            true
         }
 
         fn set_fullscreen(&mut self, id: u64, on: bool) -> bool {

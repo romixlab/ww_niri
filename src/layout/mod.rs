@@ -86,6 +86,8 @@ pub mod shadow;
 pub mod tab_indicator;
 pub mod tile;
 pub mod workspace;
+#[cfg(feature = "ww")]
+mod ww_hidden;
 
 #[cfg(test)]
 mod tests;
@@ -377,6 +379,9 @@ pub struct Layout<W: LayoutElement> {
     overview_open: bool,
     /// The overview zoom progress.
     overview_progress: Option<OverviewProgress>,
+    /// Windows hidden through the control API, out of every workspace (`ww_hidden`).
+    #[cfg(feature = "ww")]
+    hidden: Vec<RemovedTile<W>>,
     /// Configurable properties of the layout.
     options: Rc<Options>,
 }
@@ -502,6 +507,7 @@ pub enum ConfigureIntent {
 }
 
 /// Tile that was just removed from the layout.
+#[derive(Debug)]
 pub struct RemovedTile<W: LayoutElement> {
     tile: Tile<W>,
     /// Width of the column the tile was in.
@@ -734,6 +740,8 @@ impl<W: LayoutElement> Layout<W> {
             update_render_elements_time: Duration::ZERO,
             overview_open: false,
             overview_progress: None,
+            #[cfg(feature = "ww")]
+            hidden: Vec::new(),
             options: Rc::new(options),
         }
     }
@@ -759,6 +767,8 @@ impl<W: LayoutElement> Layout<W> {
             update_render_elements_time: Duration::ZERO,
             overview_open: false,
             overview_progress: None,
+            #[cfg(feature = "ww")]
+            hidden: Vec::new(),
             options: opts,
         }
     }
@@ -1163,6 +1173,11 @@ impl<W: LayoutElement> Layout<W> {
         window: &W::Id,
         transaction: Transaction,
     ) -> Option<RemovedTile<W>> {
+        #[cfg(feature = "ww")]
+        if let Some(removed) = self.ww_take_hidden(window) {
+            return Some(removed);
+        }
+
         if let Some(state) = &self.interactive_move {
             match state {
                 InteractiveMoveState::Starting { window_id, .. } => {
@@ -1274,6 +1289,18 @@ impl<W: LayoutElement> Layout<W> {
                 move_.tile.update_window();
                 return;
             }
+        }
+
+        #[cfg(feature = "ww")]
+        if let Some(tile) = self
+            .ww_hidden_tiles_mut()
+            .find(|tile| tile.window().id() == window)
+        {
+            if let Some(serial) = serial {
+                tile.window_mut().on_commit(serial);
+            }
+            tile.update_window();
+            return;
         }
 
         match &mut self.monitor_set {
@@ -1414,6 +1441,14 @@ impl<W: LayoutElement> Layout<W> {
             }
         }
 
+        #[cfg(feature = "ww")]
+        if let Some(tile) = self
+            .ww_hidden_tiles()
+            .find(|tile| tile.window().is_wl_surface(wl_surface))
+        {
+            return Some((tile.window(), None));
+        }
+
         match &self.monitor_set {
             MonitorSet::Normal { monitors, .. } => {
                 for mon in monitors {
@@ -1444,6 +1479,16 @@ impl<W: LayoutElement> Layout<W> {
             if move_.tile.window().is_wl_surface(wl_surface) {
                 return Some((move_.tile.window_mut(), Some(&move_.output)));
             }
+        }
+
+        #[cfg(feature = "ww")]
+        if let Some(tile) = self
+            .hidden
+            .iter_mut()
+            .map(|h| &mut h.tile)
+            .find(|tile| tile.window().is_wl_surface(wl_surface))
+        {
+            return Some((tile.window_mut(), None));
         }
 
         match &mut self.monitor_set {
@@ -1745,6 +1790,11 @@ impl<W: LayoutElement> Layout<W> {
             f(move_.tile.window(), Some(&move_.output), None, layout);
         }
 
+        #[cfg(feature = "ww")]
+        for tile in self.ww_hidden_tiles() {
+            f(tile.window(), None, None, tile.ipc_layout_template());
+        }
+
         match &self.monitor_set {
             MonitorSet::Normal { monitors, .. } => {
                 for mon in monitors {
@@ -1768,6 +1818,11 @@ impl<W: LayoutElement> Layout<W> {
     pub fn with_windows_mut(&mut self, mut f: impl FnMut(&mut W, Option<&Output>)) {
         if let Some(InteractiveMoveState::Moving(move_)) = &mut self.interactive_move {
             f(move_.tile.window_mut(), Some(&move_.output));
+        }
+
+        #[cfg(feature = "ww")]
+        for tile in self.ww_hidden_tiles_mut() {
+            f(tile.window_mut(), None);
         }
 
         match &mut self.monitor_set {
@@ -2881,6 +2936,11 @@ impl<W: LayoutElement> Layout<W> {
     pub fn update_shaders(&mut self) {
         if let Some(InteractiveMoveState::Moving(move_)) = &mut self.interactive_move {
             move_.tile.update_shaders();
+        }
+
+        #[cfg(feature = "ww")]
+        for tile in self.ww_hidden_tiles_mut() {
+            tile.update_shaders();
         }
 
         match &mut self.monitor_set {
@@ -5065,6 +5125,9 @@ impl<W: LayoutElement> Layout<W> {
         let rest = self
             .workspaces()
             .flat_map(|(mon, _, ws)| ws.windows().map(move |win| (mon, win)));
+
+        #[cfg(feature = "ww")]
+        let rest = rest.chain(self.ww_hidden_tiles().map(|tile| (None, tile.window())));
 
         moving_window.chain(rest)
     }

@@ -134,6 +134,8 @@ struct Win {
     rect: Rect,
     fullscreen: bool,
     slot: Option<u8>,
+    /// Hidden by `windows.hide`: in no workspace, never drawn or focused.
+    hidden: bool,
 }
 
 impl Win {
@@ -457,6 +459,7 @@ impl Model {
             rect,
             fullscreen,
             slot,
+            hidden: false,
         });
         self.window_changed(id);
         id
@@ -488,11 +491,12 @@ impl Model {
             app_id: Some(w.app_id.clone()),
             title: Some(w.title.clone()),
             pid: Some(w.pid),
-            workspace: Some(WorkspaceId(w.workspace)),
-            output: self.screen_connected.then(|| OUTPUT_NAME.to_owned()),
+            workspace: (!w.hidden).then_some(WorkspaceId(w.workspace)),
+            output: (self.screen_connected && !w.hidden).then(|| OUTPUT_NAME.to_owned()),
             focused: self.focused == Some(w.id),
             fullscreen: w.fullscreen,
             browser: w.slot.map(BrowserSlot),
+            hidden: w.hidden,
         }
     }
 
@@ -551,15 +555,21 @@ impl Model {
         }]
     }
 
-    /// Switches to the window's workspace and focuses it; `fullscreen` on the way when given.
+    /// Switches to the window's workspace and focuses it; `fullscreen` on the way when given. A
+    /// hidden window comes back on the current workspace, as niri puts it on the active one.
     pub(crate) fn show_window(
         &mut self,
         id: u64,
         fullscreen: Option<bool>,
     ) -> Result<(), WindowError> {
+        let current = self.workspace;
         let w = self.window_mut(id).ok_or(WindowError::NoSuchWindow)?;
+        let unhidden = std::mem::take(&mut w.hidden);
+        if unhidden {
+            w.workspace = current;
+        }
         let workspace = w.workspace;
-        let changed = fullscreen.is_some_and(|on| on != w.fullscreen);
+        let changed = unhidden || fullscreen.is_some_and(|on| on != w.fullscreen);
         if let Some(on) = fullscreen {
             w.fullscreen = on;
         }
@@ -572,9 +582,42 @@ impl Model {
         Ok(())
     }
 
+    /// Keyboard focus, as niri's `focus-window`: a hidden window stays hidden and unfocused.
+    pub(crate) fn focus_window(&mut self, id: u64) -> Result<(), WindowError> {
+        let w = self.window(id).ok_or(WindowError::NoSuchWindow)?;
+        if w.hidden {
+            return Ok(());
+        }
+        self.show_window(id, None)
+    }
+
+    /// Takes the window out of its workspace, alive but never drawn or focused, until
+    /// `show_window`; focus goes to another window of the current workspace, if any.
+    pub(crate) fn hide_window(&mut self, id: u64) -> Result<(), WindowError> {
+        let w = self.window_mut(id).ok_or(WindowError::NoSuchWindow)?;
+        if w.hidden {
+            return Ok(());
+        }
+        w.hidden = true;
+        self.window_changed(id);
+        if self.focused == Some(id) {
+            self.set_focus(self.focus_after(id));
+        }
+        self.mark(Mark::Pointer);
+        Ok(())
+    }
+
+    /// What niri focuses when `gone` leaves: another shown window of the current workspace.
+    fn focus_after(&self, gone: u64) -> Option<u64> {
+        (self.windows.iter())
+            .find(|w| w.id != gone && !w.hidden && w.workspace == self.workspace)
+            .map(|w| w.id)
+    }
+
+    /// Sets fullscreen; a hidden window is out of the layout and keeps what it had, as in niri.
     pub(crate) fn set_fullscreen(&mut self, id: u64, on: bool) -> Result<(), WindowError> {
         let w = self.window_mut(id).ok_or(WindowError::NoSuchWindow)?;
-        if w.fullscreen != on {
+        if !w.hidden && w.fullscreen != on {
             w.fullscreen = on;
             self.window_changed(id);
         }
@@ -589,10 +632,7 @@ impl Model {
         self.lift(id, ww_niri_api::CoverEnd::WindowClosed);
         self.event(EventOwned::WindowClosed(WindowId(id)));
         if self.focused == Some(id) {
-            let next = (self.windows.iter())
-                .find(|w| w.workspace == self.workspace)
-                .map(|w| w.id);
-            self.set_focus(next);
+            self.set_focus(self.focus_after(id));
         }
         self.mark(Mark::Pointer);
         if let Some(slot) = w.slot {

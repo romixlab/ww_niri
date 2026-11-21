@@ -263,7 +263,7 @@ impl Server {
         id: WindowId,
     ) -> Res<'_, WindowError> {
         self.op("windows.focus", None, format!("({id:?})"), |m| {
-            m.show_window(id.0, None)
+            m.focus_window(id.0)
         })
     }
 
@@ -312,6 +312,16 @@ impl Server {
     ) -> Res<'_, CoverError> {
         self.op("windows.uncover", None, format!("({id:?})"), |m| {
             m.uncover(id.0)
+        })
+    }
+
+    async fn windows_hide(
+        &mut self,
+        _cx: &mut Context<'_, impl EventOut>,
+        id: WindowId,
+    ) -> Res<'_, WindowError> {
+        self.op("windows.hide", None, format!("({id:?})"), |m| {
+            m.hide_window(id.0)
         })
     }
 

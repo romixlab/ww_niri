@@ -65,6 +65,7 @@ fn window_value(w: &WindowOwned) -> Value {
         "focused": w.focused,
         "fullscreen": w.fullscreen,
         "browser_slot": w.browser.map(|s| s.0),
+        "hidden": w.hidden,
     })
 }
 
@@ -75,6 +76,9 @@ fn window_line(w: &WindowOwned) -> String {
     }
     if w.fullscreen {
         flags.push("fullscreen");
+    }
+    if w.hidden {
+        flags.push("hidden");
     }
     let flags = if flags.is_empty() {
         String::new()

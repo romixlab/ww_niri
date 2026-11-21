@@ -1,4 +1,4 @@
-//! `wwn windows`: list, show, focus, close, set-fullscreen.
+//! `wwn windows`: list, show, focus, close, set-fullscreen, hide.
 
 use anyhow::Result;
 use clap::{FromArgMatches, Subcommand};
@@ -39,6 +39,10 @@ enum Action {
         id: u64,
         state: OnOff,
     },
+    /// Hides a window: it keeps running but is never drawn or focused until `show`.
+    Hide {
+        id: u64,
+    },
 }
 
 fn command() -> clap::Command {
@@ -70,6 +74,7 @@ fn run<'a>(tv: &'a Tv, matches: &'a clap::ArgMatches) -> BoxFuture<'a, Result<()
             }
             Action::Focus { id } => tv.window(WindowId(id)).focus().await?,
             Action::Close { id } => tv.window(WindowId(id)).close().await?,
+            Action::Hide { id } => tv.window(WindowId(id)).hide().await?,
             Action::SetFullscreen { id, state } => {
                 tv.window(WindowId(id))
                     .set_fullscreen(state.as_bool())

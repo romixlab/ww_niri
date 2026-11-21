@@ -69,6 +69,7 @@ pub const METHODS: &[(&str, ErrorKind)] = &[
     ("windows.set_fullscreen", ErrorKind::Window),
     ("windows.cover", ErrorKind::Cover),
     ("windows.uncover", ErrorKind::Cover),
+    ("windows.hide", ErrorKind::Window),
     ("outputs.list", ErrorKind::None),
     ("apps.launch", ErrorKind::Launch),
     ("browsers.start", ErrorKind::Browser),
