@@ -199,6 +199,7 @@ lto = "thin"
 debug = false
 
 [profile.dev.package]
+debug = false
 insta.opt-level = 3
 similar.opt-level = 3
 png.opt-level = 3
