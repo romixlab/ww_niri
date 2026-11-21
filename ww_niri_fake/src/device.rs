@@ -24,15 +24,19 @@ enum End {
     Stop,
 }
 
-/// The link's side of the API, the same on both paths.
-fn link_config() -> ww_device::LinkConfig<'static> {
-    ww_device::LinkConfig::new(
+/// The link's side of the API, the same on both paths; [Shared::api_hash] overrides `api_hash()`.
+fn link_config(shared: &Shared) -> ww_device::LinkConfig<'static> {
+    let mut config = ww_device::LinkConfig::new(
         ww_niri_api::WW_NIRI_FULL_GID,
         ww_niri_api::WW_NIRI_WIRE_VERSION,
         api_impl::api_hash(),
         api_impl::image_facts(),
         ww_client_server::COMPACT_VERSION,
-    )
+    );
+    if let Some(hash) = shared.api_hash {
+        config.api_hash = hash;
+    }
+    config
 }
 
 /// Waits until the TV is reachable; `false` when the fake is dropped first. `wake` is the
@@ -71,7 +75,7 @@ async fn serve(shared: &Arc<Shared>, tx: in_process::DeviceTx, rx: in_process::D
     let mut event_scratch = vec![0u8; MESSAGE_LEN_MAX];
     let mut observe_buf = vec![0u8; MESSAGE_LEN_MAX];
     let mut server = ww_device::Server::new(
-        link_config(),
+        link_config(shared),
         tx,
         rx,
         TokioClock::new(),
@@ -167,7 +171,7 @@ async fn serve_motion(
 ) -> End {
     let mut buffers = Box::new(UdpBuffers::<MESSAGE_LEN_MAX>::new());
     let mut server = udp_server(
-        link_config(),
+        link_config(shared),
         connection,
         0,
         TokioClock::new(),

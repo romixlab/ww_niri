@@ -995,6 +995,7 @@ pub mod api_impl {
     wire_weaver::ww_codegen!(
         ww_niri_api :: WwNiri for super::Server,
         server = true, no_alloc = false, use_async = true,
+        introspect = "with_docs",
         method_model = "_=immediate",
         property_model = "_=get_set",
     );
