@@ -56,6 +56,11 @@ pub struct Options {
     pub pages_play: bool,
     /// What `info()` answers.
     pub info: InfoOwned,
+    /// Reports this hash at link setup instead of the generated `api_hash()`, as a build whose
+    /// crate version moved, with no shape change, would (P2618): a client built against the real
+    /// API has to see the fake's shape is still the same, instead of every call being refused on
+    /// wire w0, the design line. `None`, the default, reports the real `api_hash()`.
+    pub api_hash: Option<wire_weaver::ww_version::ApiHashPair<'static>>,
 }
 
 impl Default for Options {
@@ -66,6 +71,7 @@ impl Default for Options {
             browser_slots: 2,
             start_delay: Duration::from_millis(500),
             pages_play: true,
+            api_hash: None,
             info: InfoOwned {
                 niri_version: "fake".to_owned(),
                 ww_niri_version: "fake".to_owned(),
@@ -98,6 +104,8 @@ pub(crate) struct Shared {
     /// Wakes the motion path: the control changed.
     wake_motion: Notify,
     info: InfoOwned,
+    /// [Options::api_hash].
+    pub(crate) api_hash: Option<wire_weaver::ww_version::ApiHashPair<'static>>,
 }
 
 /// A poisoned lock panics: the fake is broken past use.
@@ -180,6 +188,7 @@ impl FakeTv {
             wake: Notify::new(),
             wake_motion: Notify::new(),
             info: options.info,
+            api_hash: options.api_hash,
         });
         let motion_path = format!("{path}/motion");
         let thread = {
