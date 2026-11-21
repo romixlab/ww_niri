@@ -30,5 +30,5 @@ deploy:
     [ -z "$(git status --porcelain)" ] || { echo "local changes, not deploying:" >&2; git status --short >&2; exit 1; }
     git pull --ff-only
     {{just_executable()}} install
-    target/deploy/niri --version | rg -F "$(git describe --always --dirty=-modified)"
+    target/deploy/niri --version | grep -qF "$(git describe --always --dirty=-modified)"
     @echo "niri installed, not restarted: the new niri runs after the next session restart"
