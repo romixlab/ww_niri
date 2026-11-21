@@ -92,7 +92,7 @@ impl Services {
         handle: &LoopHandle<'static, D>,
         scheduler: &Scheduler<()>,
         settings: browsers::Settings,
-        count: u8,
+        slots: Vec<config::SlotConfig>,
     ) -> Rc<Self> {
         let hub = Rc::new(hub::Hub::default());
         let run = host::runner(handle.clone());
@@ -102,7 +102,7 @@ impl Services {
             browsers::LoopIo::new(handle.clone()),
             scheduler.clone(),
             hub.clone(),
-            count,
+            slots,
         );
         browsers.follow_windows();
         let players = Players::new(hub.clone(), run, browsers.clone());
@@ -140,7 +140,7 @@ impl WwServer {
             event_loop,
             scheduler,
             browsers::Settings::default(),
-            config.browsers,
+            config.slots.clone(),
         );
         if !cfg!(test) {
             services
@@ -267,7 +267,7 @@ impl WwServer {
         }
         info!("ww: settings from {path:?}: {config:?}");
 
-        self.services.browsers.set_count(config.browsers);
+        self.services.browsers.configure(config.slots.clone());
         self.config = config;
         for line in missing {
             warn!("ww: listen {line}: the host has no such address yet, trying again");

@@ -346,6 +346,11 @@ pub struct Card<'i> {
     pub footer: Option<&'i str>,
 }
 
+/// Longest `owner` of a browser slot, in bytes.
+pub const OWNER_LEN_MAX: usize = 64;
+/// Longest user agent of a browser slot, in bytes.
+pub const USER_AGENT_LEN_MAX: usize = 512;
+
 /// Longest `lasts` of a cover.
 pub const COVER_LASTS_MAX: core::time::Duration = core::time::Duration::from_secs(15 * 60);
 /// Longest text of a card line, in bytes.
@@ -429,6 +434,9 @@ pub struct BrowserState<'i> {
     pub window: Option<WindowId>,
     /// The slot's MPRIS player, while its page plays media.
     pub player: Option<PlayerId>,
+    /// The person the slot belongs to, from `owner` of its `browser` line in ww.kdl: their
+    /// sign-ins live in its profile.
+    pub owner: Option<&'i str>,
 }
 
 #[derive_shrink_wrap(borrowed, owned(feature = "std"), derive(Copy, Clone, Debug, PartialEq, Eq), ww_repr = unib32)]

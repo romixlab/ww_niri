@@ -267,3 +267,27 @@ fn a_screen_that_goes_and_comes_back_changes_the_outputs() {
             .all(|w| w.output.as_deref() == Some(outputs[0].name.as_str())));
     });
 }
+
+#[test]
+fn slot_owners_stay_through_start_and_stop() {
+    let tv = ww_niri_fake::FakeTv::start(ww_niri_fake::Options {
+        clock: ww_niri_fake::ClockMode::Manual,
+        start_delay: Duration::ZERO,
+        slot_owners: vec![None, Some("Роман".to_owned())],
+        ..ww_niri_fake::Options::default()
+    });
+    run(async {
+        let client = connect(&tv).await.unwrap();
+        let owner = async |slot: u32| {
+            let state = client.browsers(slot).read_state().read().await.unwrap();
+            state.owner
+        };
+        assert_eq!(owner(0).await, None);
+        assert_eq!(owner(1).await.as_deref(), Some("Роман"));
+        let slot = client.browsers(1);
+        slot.start(true).call().await.unwrap();
+        assert_eq!(owner(1).await.as_deref(), Some("Роман"));
+        slot.stop().call().await.unwrap();
+        assert_eq!(owner(1).await.as_deref(), Some("Роман"));
+    });
+}

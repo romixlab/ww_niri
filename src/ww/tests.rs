@@ -17,6 +17,7 @@ use ww_niri_api::{
 
 use super::audio::Target;
 use super::browsers::{LoopIo, Settings};
+use super::config::SlotConfig;
 use super::connection::serve;
 use super::host::WwHost;
 use super::input::{Key, Op, TextKeys};
@@ -347,13 +348,15 @@ fn bench_with(
     bus: Option<String>,
     audio: Option<Target>,
 ) -> Bench {
-    bench_on(Medium::WebSocket, windows, settings, bus, audio)
+    let slots = vec![SlotConfig::default(); 2];
+    bench_on(Medium::WebSocket, windows, settings, slots, bus, audio)
 }
 
 fn bench_on(
     medium: Medium,
     windows: Vec<WindowOwned>,
     settings: Settings,
+    slots: Vec<SlotConfig>,
     bus: Option<String>,
     audio: Option<Target>,
 ) -> Bench {
@@ -384,7 +387,7 @@ fn bench_on(
             .unwrap();
 
         let hub = Rc::new(RefCell::new(Hub::default()));
-        let services = Services::new(&handle, &scheduler, settings, 2);
+        let services = Services::new(&handle, &scheduler, settings, slots);
         if let Some(bus) = bus {
             services.players.follow(&scheduler, async move {
                 zbus::connection::Builder::address(bus.as_str())?
@@ -850,7 +853,15 @@ fn pointer_motion_over_udp_from_two_hosts() {
     use wire_weaver_client::observe::on_change;
     use ww_niri_api::{MotionSeq, PointerMotion, PointerPosition};
 
-    let bench = bench_on(Medium::Udp, Vec::new(), Settings::default(), None, None);
+    let slots = vec![SlotConfig::default(); 2];
+    let bench = bench_on(
+        Medium::Udp,
+        Vec::new(),
+        Settings::default(),
+        slots,
+        None,
+        None,
+    );
     let addr = bench.url.clone();
     bench.run(async |phone, _| {
         let desktop = NiriClient::config(|c| c.udp_addr(addr.clone()))
@@ -1240,7 +1251,11 @@ fn fake_bidi() -> (std::net::SocketAddr, std::thread::JoinHandle<Vec<String>>) {
                     "params": {"context": "tab1", "url": "https://example.org/next"}});
                 ws.send(Message::text(event.to_string())).unwrap();
             }
-            methods.push(method.clone());
+            if method == "emulation.setUserAgentOverride" {
+                methods.push(format!("{method} {}", cmd["params"]));
+            } else {
+                methods.push(method.clone());
+            }
             if method == "browser.close" {
                 let _ = ws.close(None);
             }
@@ -1403,6 +1418,7 @@ fn browser_slot_lifecycle() {
                 title: Some("Mozilla Firefox".to_owned()),
                 window: Some(WindowId(7)),
                 player: None,
+                owner: None,
             }
         );
 
@@ -1453,8 +1469,53 @@ fn browser_slot_lifecycle() {
     );
 }
 
-/// Serves one small page to every request, on a thread, until the test ends.
-fn page_server() -> std::net::SocketAddr {
+#[test]
+fn browser_slot_owner_and_user_agent() {
+    let (bidi_addr, bidi) = fake_bidi();
+    let scratch = Scratch::new("browser-owner");
+    let script =
+        format!("echo 'WebDriver BiDi listening on ws://{bidi_addr}' >&2 && exec sleep 30");
+    let settings = Settings {
+        command: vec!["sh".into(), "-c".into(), script, "fake-firefox".into()],
+        profiles: scratch.0.clone(),
+        port_base: 9300,
+        stop_grace: Duration::from_millis(100),
+    };
+    let slots = vec![
+        SlotConfig {
+            owner: Some("Роман".to_owned()),
+            user_agent: Some("TV/1.0".to_owned()),
+        },
+        SlotConfig::default(),
+    ];
+
+    bench_on(Medium::WebSocket, Vec::new(), settings, slots, None, None).run(async |client, _| {
+        let owner = async |slot: u32| {
+            let state = client.browsers(slot).read_state().read().await.unwrap();
+            state.owner
+        };
+        assert_eq!(owner(0).await.as_deref(), Some("Роман"));
+        assert_eq!(owner(1).await, None);
+        let slot = client.browsers(0);
+        slot.start(true).call().await.unwrap();
+        slot.stop().call().await.unwrap();
+    });
+
+    assert_eq!(
+        bidi.join().unwrap(),
+        [
+            "session.new",
+            r#"emulation.setUserAgentOverride {"userAgent":"TV/1.0"}"#,
+            "browsingContext.getTree",
+            "session.subscribe",
+            "browser.close"
+        ]
+    );
+}
+
+/// Serves one small page to every request, on a thread, until the test ends; each request's
+/// `User-Agent` goes to `agents`.
+fn page_server(agents: std::sync::mpsc::Sender<String>) -> std::net::SocketAddr {
     use std::io::{Read as _, Write as _};
 
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -1463,7 +1524,14 @@ fn page_server() -> std::net::SocketAddr {
         for stream in listener.incoming() {
             let Ok(mut stream) = stream else { continue };
             let mut buf = [0; 4096];
-            let _ = stream.read(&mut buf);
+            let n = stream.read(&mut buf).unwrap_or(0);
+            let request = String::from_utf8_lossy(&buf[..n]);
+            let agent = request.lines().find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                name.eq_ignore_ascii_case("user-agent")
+                    .then(|| value.trim().to_owned())
+            });
+            let _ = agents.send(agent.unwrap_or_default());
             let body = "<html><head><title>ww</title></head><body>ww</body></html>";
             let _ = write!(
                 stream,
@@ -1496,9 +1564,14 @@ fn browser_slot_real_firefox() {
         port_base: port,
         stop_grace: Duration::from_secs(5),
     };
-    let page = format!("http://{}/page", page_server());
+    let (agents_tx, agents) = std::sync::mpsc::channel();
+    let page = format!("http://{}/page", page_server(agents_tx));
+    let slots = vec![SlotConfig {
+        owner: None,
+        user_agent: Some("Mozilla/5.0 (SMART-TV; Linux) ww-test".to_owned()),
+    }];
 
-    bench_with(Vec::new(), settings, None, None).run(async |client, _| {
+    bench_on(Medium::WebSocket, Vec::new(), settings, slots, None, None).run(async |client, _| {
         let mut events = client.events().call().await.unwrap();
         let slot = client.browsers(0);
         slot.start(false)
@@ -1516,6 +1589,10 @@ fn browser_slot_real_firefox() {
         // Headless: no window, so never Running.
         assert_eq!(state.phase, BrowserPhase::Starting);
         assert_eq!(state.url.as_deref(), Some(page.as_str()));
+        let agent = agents
+            .recv_timeout(Duration::from_secs(10))
+            .expect("Firefox asks for the page");
+        assert_eq!(agent, "Mozilla/5.0 (SMART-TV; Linux) ww-test");
 
         slot.stop()
             .with_timeout(Duration::from_secs(20))

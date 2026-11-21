@@ -1,13 +1,18 @@
-//! `ww.kdl`: where the control API listens, the name it is announced under and how many browser
-//! slots there are.
+//! `ww.kdl`: where the control API listens, the name it is announced under, how many browser
+//! slots there are and whose they are.
 //!
 //! ```kdl
 //! listen "lan:7590"
 //! listen "tailnet:7590"
 //! listen "127.0.0.1:7591"
 //! advertise "Living room TV"
-//! browsers 2
+//! browsers 3
+//! browser 1 owner="Roman" user-agent="Mozilla/5.0 (SMART-TV; Linux; Tizen 6.0) AppleWebKit/538.1 (KHTML, like Gecko) Version/6.0 TV Safari/538.1"
 //! ```
+//!
+//! A `browser N` line belongs to slot `N` (below the `browsers` count): `owner` names the person
+//! whose sign-ins the slot's profile keeps, and `user-agent` is the user agent its Firefox sends
+//! from its next start, as a smart TV's makes youtube.com/tv serve its TV interface.
 //!
 //! `lan:PORT` is the host's LAN address and `tailnet:PORT` its tailnet address, whatever they are
 //! now (see [`Interfaces`]); a literal address names itself. Each `lan:` listener is announced
@@ -22,6 +27,7 @@ use std::time::SystemTime;
 use anyhow::{bail, Context as _};
 use directories::ProjectDirs;
 use ww_dns_sd::InstanceName;
+use ww_niri_api::{OWNER_LEN_MAX, USER_AGENT_LEN_MAX};
 
 use super::interfaces::Interfaces;
 
@@ -36,6 +42,28 @@ struct RawConfig {
     advertise: Option<String>,
     #[knuffel(child, unwrap(argument))]
     browsers: Option<u8>,
+    #[knuffel(children(name = "browser"))]
+    browser: Vec<RawSlot>,
+}
+
+/// One `browser N` line.
+#[derive(knuffel::Decode, Debug, Default, Clone, PartialEq, Eq)]
+struct RawSlot {
+    #[knuffel(argument)]
+    index: u8,
+    #[knuffel(property)]
+    owner: Option<String>,
+    #[knuffel(property(name = "user-agent"))]
+    user_agent: Option<String>,
+}
+
+/// What ww.kdl says of one browser slot.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct SlotConfig {
+    /// The person the slot belongs to.
+    pub owner: Option<String>,
+    /// The user agent its Firefox sends; `None`: Firefox's own.
+    pub user_agent: Option<String>,
 }
 
 /// One `listen` line.
@@ -101,7 +129,8 @@ pub struct WwConfig {
     pub listen: Vec<Listen>,
     /// The `advertise` name; `None`: the host name.
     pub advertise: Option<InstanceName>,
-    pub browsers: u8,
+    /// The browser slots by index: their count is `browsers`.
+    pub slots: Vec<SlotConfig>,
 }
 
 impl Default for WwConfig {
@@ -109,7 +138,7 @@ impl Default for WwConfig {
         Self {
             listen: Vec::new(),
             advertise: None,
-            browsers: DEFAULT_BROWSERS,
+            slots: vec![SlotConfig::default(); usize::from(DEFAULT_BROWSERS)],
         }
     }
 }
@@ -132,12 +161,55 @@ impl WwConfig {
             .map(|name| InstanceName::new(name).context("advertise"))
             .transpose()?;
 
+        let count = raw.browsers.unwrap_or(DEFAULT_BROWSERS);
+        let mut slots = vec![SlotConfig::default(); usize::from(count)];
+        let mut seen = Vec::new();
+        for line in raw.browser {
+            let index = line.index;
+            if seen.contains(&index) {
+                bail!("browser {index}: a second line for the slot");
+            }
+            seen.push(index);
+            let slot = slots.get_mut(usize::from(index)).with_context(|| {
+                format!("browser {index}: there are only {count} slots (`browsers`)")
+            })?;
+            *slot = SlotConfig {
+                owner: line
+                    .owner
+                    .map(|owner| checked(index, "owner", owner, OWNER_LEN_MAX))
+                    .transpose()?,
+                user_agent: line
+                    .user_agent
+                    .map(|ua| checked(index, "user-agent", ua, USER_AGENT_LEN_MAX))
+                    .transpose()?,
+            };
+        }
+
         Ok(Self {
             listen,
             advertise,
-            browsers: raw.browsers.unwrap_or(DEFAULT_BROWSERS),
+            slots,
         })
     }
+
+    /// The browser slot count.
+    pub fn browsers(&self) -> u8 {
+        u8::try_from(self.slots.len()).expect("the slots come from a u8 count")
+    }
+}
+
+/// A text of slot `index`'s line: not empty, at most `len_max` bytes, no control characters.
+fn checked(index: u8, what: &str, text: String, len_max: usize) -> anyhow::Result<String> {
+    if text.trim().is_empty() {
+        bail!("browser {index}: {what} is empty");
+    }
+    if text.len() > len_max {
+        bail!("browser {index}: {what} is longer than {len_max} bytes");
+    }
+    if text.chars().any(char::is_control) {
+        bail!("browser {index}: {what} has a control character");
+    }
+    Ok(text)
 }
 
 /// `~/.config/niri/ww.kdl`, next to niri's own config.
@@ -184,7 +256,47 @@ mod tests {
             config.listen,
             [Listen::Addr("100.64.0.12:7590".parse().unwrap())]
         );
-        assert_eq!(config.browsers, 3);
+        assert_eq!(config.browsers(), 3);
+        assert_eq!(config.slots, vec![SlotConfig::default(); 3]);
+    }
+
+    #[test]
+    fn slot_owner_and_user_agent() {
+        let text = "browsers 3\nbrowser 2 owner=\"Роман\" user-agent=\"TV/1.0\"\n\
+                    browser 0 owner=\"Аня\"\n";
+        let config = WwConfig::parse("ww.kdl", text).unwrap();
+        let slot = |owner: Option<&str>, ua: Option<&str>| SlotConfig {
+            owner: owner.map(str::to_owned),
+            user_agent: ua.map(str::to_owned),
+        };
+        assert_eq!(
+            config.slots,
+            [
+                slot(Some("Аня"), None),
+                slot(None, None),
+                slot(Some("Роман"), Some("TV/1.0")),
+            ]
+        );
+    }
+
+    #[test]
+    fn refuses_bad_slot_lines() {
+        let long = format!("browser 0 owner={:?}", "x".repeat(OWNER_LEN_MAX + 1));
+        let long_ua = format!(
+            "browser 0 user-agent={:?}",
+            "x".repeat(USER_AGENT_LEN_MAX + 1)
+        );
+        for text in [
+            "browsers 2\nbrowser 2 owner=\"Роман\"",
+            "browser 0 owner=\"a\"\nbrowser 0 owner=\"b\"",
+            "browser 0 owner=\" \"",
+            "browser 0 user-agent=\"TV\\n1\"",
+            "browser 0 colour=\"red\"",
+            &long,
+            &long_ua,
+        ] {
+            assert!(WwConfig::parse("ww.kdl", text).is_err(), "{text}");
+        }
     }
 
     #[test]
@@ -255,7 +367,7 @@ mod tests {
     fn empty_is_default() {
         let config = WwConfig::parse("ww.kdl", "").unwrap();
         assert_eq!(config, WwConfig::default());
-        assert_eq!(config.browsers, DEFAULT_BROWSERS);
+        assert_eq!(config.browsers(), DEFAULT_BROWSERS);
     }
 
     #[test]
