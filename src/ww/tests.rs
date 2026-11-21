@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_channel::{Receiver, Sender};
+use wire_weaver::ww_api::{Totals, TotalsSession};
 use wire_weaver_client::{CallError, ClientConfig, Commander, WwClient};
 use ww_niri_api::{
     CardOwned, CoverEnd, CoverError, EventOwned, InputErrorOwned, LaunchErrorOwned,
@@ -752,21 +753,23 @@ fn input_for_a_touchpad_and_a_remote() {
         assert_eq!(taken(), ["Motion { x: 1919.0, y: 67.0 }"]);
         assert_eq!(until(1919, 67).await.window, None);
 
-        // Motion writes: the first is where the totals start, a duplicate and a late one are
-        // dropped.
+        // Motion writes: a session's first is where its totals start, a duplicate brings no
+        // change, and a new session starts anew.
         let mut motion = pointer.motion().await.unwrap();
-        for (seq, dx, dy) in [
+        for (session, dx, dy) in [
             (3, 0, 0),
-            (4, -19, 1),
-            (4, -19, 1),
-            (3, -500, 0),
-            (5, -119, 2),
+            (3, -19, 1),
+            (3, -19, 1),
+            (4, -500, 0),
+            (4, -600, 1),
         ] {
             motion
-                .send(ww_niri_api::PointerMotion {
-                    seq: ww_niri_api::MotionSeq::new(seq),
-                    dx_total: dx.into(),
-                    dy_total: dy.into(),
+                .send(Totals {
+                    session: TotalsSession(session),
+                    total: ww_niri_api::Delta {
+                        dx: dx.into(),
+                        dy: dy.into(),
+                    },
                 })
                 .await
                 .unwrap();
@@ -848,7 +851,7 @@ fn input_for_a_touchpad_and_a_remote() {
 #[test]
 fn pointer_motion_over_udp_from_two_hosts() {
     use wire_weaver_client::observe::on_change;
-    use ww_niri_api::{MotionSeq, PointerMotion, PointerPosition};
+    use ww_niri_api::{Delta, PointerPosition};
 
     let bench = bench_on(Medium::Udp, Vec::new(), Settings::default(), None, None);
     let addr = bench.url.clone();
@@ -886,27 +889,29 @@ fn pointer_motion_over_udp_from_two_hosts() {
         };
         until(110, 70).await;
 
-        // Each host has its own sequence and totals, starting with its first write: the
-        // desktop's 1 is not late after the phone's 5.
-        let motion = |seq: u16, dx: i32, dy: i32| PointerMotion {
-            seq: MotionSeq::new(seq),
-            dx_total: dx.into(),
-            dy_total: dy.into(),
+        // Each host has its own connection and totals, starting with its first write: the
+        // two sessions don't start each other anew.
+        let motion = |session: u16, dx: i32, dy: i32| Totals {
+            session: TotalsSession(session),
+            total: Delta {
+                dx: dx.into(),
+                dy: dy.into(),
+            },
         };
         let mut from_phone = phone.input().pointer().motion().await.unwrap();
         let mut from_desktop = desktop.input().pointer().motion().await.unwrap();
         from_phone.send(motion(4, 0, 0)).await.unwrap();
         from_desktop.send(motion(0, 50, 50)).await.unwrap();
-        from_phone.send(motion(5, 10, 0)).await.unwrap();
+        from_phone.send(motion(4, 10, 0)).await.unwrap();
         until(120, 70).await;
-        from_desktop.send(motion(1, 50, 60)).await.unwrap();
+        from_desktop.send(motion(0, 50, 60)).await.unwrap();
         until(120, 80).await;
-        from_phone.send(motion(6, -10, -20)).await.unwrap();
+        from_phone.send(motion(4, -10, -20)).await.unwrap();
         until(100, 60).await;
 
         // The phone goes: the desktop's link stays, and a new host gets a slot.
         drop((from_phone, phone));
-        from_desktop.send(motion(2, 51, 61)).await.unwrap();
+        from_desktop.send(motion(0, 51, 61)).await.unwrap();
         until(101, 61).await;
         let again = NiriClient::config(|c| c.udp_addr(addr.clone()))
             .connect()

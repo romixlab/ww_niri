@@ -4,6 +4,11 @@ Changes of ww_niri on top of upstream niri. Upstream's own changes are in its re
 
 ## [Unreleased]
 
+### Changed
+
+- Control API: `input.pointer.motion` takes `Totals<Delta>`, a session per link; wire break (P2618).
+- `MotionSender` sends through wire_weaver's `TotalsSender`, repeating the last write after 50 ms without moves (P2618).
+
 ## [26.19.0] - 2026-11-21
 
 ### Added

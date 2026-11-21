@@ -4,11 +4,12 @@ use std::collections::BTreeSet;
 use std::time::Duration;
 
 use exact_units::Fixed;
+use wire_weaver::ww_api::{Totals, TotalsSession};
 use wire_weaver_client::CallError;
 use ww_niri_api::{
-    BrowserErrorOwned, BrowserPhase, BrowserSlot, Button, InputErrorOwned, LaunchErrorOwned,
-    MediaErrorOwned, Modifiers, MotionSeq, PlaybackStatus, PlayerSourceOwned, Point, PointerMotion,
-    Volume, WindowError, WindowId,
+    BrowserErrorOwned, BrowserPhase, BrowserSlot, Button, Delta, InputErrorOwned, LaunchErrorOwned,
+    MediaErrorOwned, Modifiers, PlaybackStatus, PlayerSourceOwned, Point, Volume, WindowError,
+    WindowId,
 };
 use ww_niri_fake::{ErrorKind, InputEntry, ReleasedBy, METHODS};
 
@@ -185,28 +186,31 @@ fn every_method_answers() {
             .unwrap();
         let at = pointer.read_position().read().await.unwrap();
         assert_eq!((at.x.get(), at.y.get()), (0, 1079));
-        // Motion: the first write is where the totals start, a duplicate and a late write are
-        // dropped, a lost one's distance comes with the next.
+        // Motion: a session's first write is where its totals start, a duplicate brings no
+        // change, a lost write's distance comes with the next, and a new session starts anew.
         let mut motion = pointer.motion().await.unwrap();
-        for (seq, dx, dy) in [
+        for (session, dx, dy) in [
             (7, 100, 100),
-            (8, 110, 91),
-            (8, 110, 91),
-            (10, 111, 90),
-            (9, 0, 0),
+            (7, 110, 91),
+            (7, 110, 91),
+            (7, 111, 90),
+            (8, 0, 0),
+            (8, 5, 5),
         ] {
             motion
-                .send(PointerMotion {
-                    seq: MotionSeq::new(seq),
-                    dx_total: Fixed::new(dx),
-                    dy_total: Fixed::new(dy),
+                .send(Totals {
+                    session: TotalsSession(session),
+                    total: Delta {
+                        dx: Fixed::new(dx),
+                        dy: Fixed::new(dy),
+                    },
                 })
                 .await
                 .unwrap();
         }
         // Requests are handled in order: the writes are done once this answers.
         let at = pointer.read_position().read().await.unwrap();
-        assert_eq!((at.x.get(), at.y.get()), (11, 1069));
+        assert_eq!((at.x.get(), at.y.get()), (16, 1074));
         let ctrl = Modifiers {
             ctrl: true,
             ..Modifiers::default()

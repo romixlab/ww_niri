@@ -8,11 +8,12 @@ use exact_units::{Fixed, Unbounded};
 use wire_weaver::prelude::*;
 use ww_client_server::ResourceIndex;
 use ww_niri_api::{
-    BrowserErrorOwned, BrowserStateOwned, Button, CardOwned, CoverError, InfoOwned,
+    BrowserErrorOwned, BrowserStateOwned, Button, CardOwned, CoverError, Delta, InfoOwned,
     InputErrorOwned, LaunchErrorOwned, Launched, MediaErrorOwned, Modifiers, OutputOwned,
     PlaybackStateOwned, PlayerInfoOwned, PlayerSourceOwned, Point, PointerPosition, Px, SinkOwned,
     Transition, WindowError, WindowId, WindowOwned,
 };
+use ww_stream::totals::TotalsRx;
 
 use crate::model::{Action, Mark, Model};
 use crate::record::{Call, Fail};
@@ -31,7 +32,7 @@ pub(crate) struct Server {
     /// The client opened the `events` stream.
     pub(crate) events_open: bool,
     /// Where the `input.pointer.motion` writes are.
-    motion: ww_niri_api::MotionTracker,
+    motion: TotalsRx<Delta>,
 }
 
 /// The API error a [Fail] stands for, when it is of this error's kind.
@@ -82,7 +83,7 @@ impl Server {
             shared,
             player_ids: Vec::new(),
             events_open: false,
-            motion: ww_niri_api::MotionTracker::default(),
+            motion: TotalsRx::new(),
         }
     }
 
@@ -792,22 +793,26 @@ impl Server {
         )
     }
 
-    /// Every write is recorded; the tracker says how far each moves the pointer.
+    /// Every write is recorded; the receiver says how far each moves the pointer.
     async fn write_input_pointer_motion(
         &mut self,
         _cx: &mut Context<'_, impl EventOut>,
-        motion: ww_niri_api::PointerMotion,
+        motion: Totals<Delta>,
     ) {
-        let (seq, dx, dy) = (
-            motion.seq.get(),
-            motion.dx_total.get(),
-            motion.dy_total.get(),
+        let (session, dx, dy) = (
+            motion.session.0,
+            motion.total.dx.get(),
+            motion.total.dy.get(),
         );
         // A sink answers nothing, so an error asked for has nowhere to go.
-        let _no_fail = self.begin("input.pointer.motion", None, format!("({seq}, {dx}, {dy})"));
-        if let Some((dx, dy)) = self.motion.track(motion) {
+        let _no_fail = self.begin(
+            "input.pointer.motion",
+            None,
+            format!("({session}, {dx}, {dy})"),
+        );
+        if let Some(change) = self.motion.receive(motion) {
             // The fake's pointer stops at the edges: move_by never fails.
-            let _moved = self.with(|m| m.move_by(dx.get(), dy.get()));
+            let _moved = self.with(|m| m.move_by(change.dx.get(), change.dy.get()));
         }
     }
 

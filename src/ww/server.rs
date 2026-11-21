@@ -6,6 +6,7 @@ use std::rc::Rc;
 
 use wire_weaver::prelude::*;
 use ww_client_server::ResourceIndex;
+use ww_stream::totals::TotalsRx;
 
 use super::host::{call, Run, WwHost};
 use super::hub::{Hub, Mark};
@@ -51,7 +52,7 @@ pub struct Server {
     /// This connection's id, for the covers it holds.
     pub holder: u64,
     /// Where the `input.pointer.motion` writes are.
-    motion: ww_niri_api::MotionTracker,
+    motion: TotalsRx<ww_niri_api::Delta>,
 }
 
 impl Server {
@@ -68,7 +69,7 @@ impl Server {
             player_ids: Vec::new(),
             events_open: false,
             holder: services.next_holder(),
-            motion: ww_niri_api::MotionTracker::default(),
+            motion: TotalsRx::new(),
         }
     }
 
@@ -841,13 +842,13 @@ impl Server {
     async fn write_input_pointer_motion(
         &mut self,
         _cx: &mut Context<'_, impl EventOut>,
-        motion: ww_niri_api::PointerMotion,
+        motion: Totals<ww_niri_api::Delta>,
     ) {
-        let Some((dx, dy)) = self.motion.track(motion) else {
+        let Some(change) = self.motion.receive(motion) else {
             return;
         };
         // A sink has no reply: an off-screen pointer is only logged.
-        if let Err(err) = self.input.move_by(dx, dy).await {
+        if let Err(err) = self.input.move_by(change.dx, change.dy).await {
             debug!("ww: motion from {} not applied: {err:?}", self.peer);
         }
     }

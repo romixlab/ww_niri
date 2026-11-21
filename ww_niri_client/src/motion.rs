@@ -1,15 +1,15 @@
 //! [MotionSender]: pointer motion over UDP, beside a [Tv](crate::Tv) on WebSocket.
 //!
 //! Over a lossy Wi-Fi, TCP holds every later move until a lost segment is resent, and the
-//! pointer stutters. Over UDP a lost datagram is skipped. Each datagram carries the sum of all
-//! moves so far, so the next one brings the distance a lost one had.
+//! pointer stutters. Over UDP a lost datagram is skipped. Each datagram carries the running
+//! totals of all moves (wire_weaver's `Totals`), so the next one brings the distance a lost one
+//! had.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicI32, Ordering};
 
-use tokio::sync::{Notify, watch};
-use wire_weaver_client::{ConnectionState, KeepTrying};
-use ww_niri_api::{MotionSeq, PointerMotion, Px};
+use tokio::sync::watch;
+use wire_weaver_client::{ConnectionState, KeepTrying, TotalsSender};
+use ww_niri_api::{Delta, Px};
 
 use crate::api::NiriClient;
 use crate::error::StartError;
@@ -38,26 +38,9 @@ impl MotionAddress {
     }
 }
 
-/// The moves added up so far, wrapping, and a wake for the sending task.
-#[derive(Default)]
-struct Totals {
-    dx: AtomicI32,
-    dy: AtomicI32,
-    changed: Notify,
-}
-
-impl Totals {
-    fn now(&self) -> (i32, i32) {
-        (
-            self.dx.load(Ordering::Relaxed),
-            self.dy.load(Ordering::Relaxed),
-        )
-    }
-}
-
 /// What every clone of a [MotionSender] shares; dropping the last one stops its task.
 struct Inner {
-    totals: Arc<Totals>,
+    totals: TotalsSender<Delta>,
     state: watch::Receiver<ConnectionState>,
     stop: watch::Sender<bool>,
 }
@@ -109,7 +92,7 @@ impl MotionSender {
             .cmd
             .connection_state()
             .expect("a connection that keeps trying has a state");
-        let totals = Arc::new(Totals::default());
+        let totals = TotalsSender::new();
         let (stop, _) = watch::channel(false);
         tokio::spawn(run(client, totals.clone(), state.clone(), stop.subscribe()));
         Ok(Self {
@@ -125,10 +108,10 @@ impl MotionSender {
     /// [PointerCalls::move_by](crate::PointerCalls::move_by) does. Never waits: the move is
     /// added to the totals, which go with the next datagram.
     pub fn move_by(&self, dx: i32, dy: i32) {
-        let totals = &self.inner.totals;
-        totals.dx.fetch_add(dx, Ordering::Relaxed);
-        totals.dy.fetch_add(dy, Ordering::Relaxed);
-        totals.changed.notify_one();
+        self.inner.totals.add(Delta {
+            dx: Px::new(dx),
+            dy: Px::new(dy),
+        });
     }
 
     /// Whether the UDP link is up: an app may move the pointer over the [Tv](crate::Tv) while
@@ -146,62 +129,34 @@ impl MotionSender {
     }
 }
 
-/// Sends the totals whenever they change, one datagram at a time: moves made while one is on
-/// its way add up into the next. After each connect, the totals as they were when the link came
-/// up go first: the TV takes a connection's first write as where its totals start.
+/// Opens the motion sink once the link is up and sends the totals through it until the
+/// [MotionSender] is dropped: every link starts a session whose first write is where the TV's
+/// totals start.
 async fn run(
     client: NiriClient,
-    totals: Arc<Totals>,
+    totals: TotalsSender<Delta>,
     mut state: watch::Receiver<ConnectionState>,
     mut stop: watch::Receiver<bool>,
 ) {
-    let mut seq = MotionSeq::new(0);
-    let mut sink = None;
-    // The totals when the link came up, the TV's baseline, until its first write goes.
-    let mut base = None;
-    // The totals the TV has: `None` until the first write of this connection.
-    let mut sent = None;
-    loop {
-        if *stop.borrow_and_update() {
-            return;
-        }
-        let connected = matches!(
-            *state.borrow_and_update(),
-            ConnectionState::Connected { .. }
-        );
-        if !connected {
-            (sink, base, sent) = (None, None, None);
-        } else {
-            let want = match sent {
-                None => *base.get_or_insert_with(|| totals.now()),
-                Some(_) => totals.now(),
-            };
-            if sent != Some(want) {
-                if sink.is_none() {
-                    sink = client.input().pointer().motion().await.ok();
-                }
-                if let Some(s) = &mut sink {
-                    seq = seq.next();
-                    let motion = PointerMotion {
-                        seq,
-                        dx_total: Px::new(want.0),
-                        dy_total: Px::new(want.1),
-                    };
-                    if s.send(motion).await.is_ok() {
-                        sent = Some(want);
-                        // More may have come while it was sent.
-                        continue;
-                    }
-                    // The link went: its state says so next.
-                    sink = None;
-                }
+    let sending = async {
+        let sink = loop {
+            let connected = state.wait_for(|s| matches!(s, ConnectionState::Connected { .. }));
+            if connected.await.is_err() {
+                return;
             }
-        }
-        tokio::select! {
-            changed = stop.changed() => if changed.is_err() { return },
-            changed = state.changed() => if changed.is_err() { return },
-            () = totals.changed.notified() => {}
-        }
+            if let Ok(sink) = client.input().pointer().motion().await {
+                break sink;
+            }
+            // The link went while the sink opened: its state says so next.
+            if state.changed().await.is_err() {
+                return;
+            }
+        };
+        totals.run(sink, state).await;
+    };
+    tokio::select! {
+        () = sending => {}
+        _ = stop.wait_for(|stopped| *stopped) => {}
     }
 }
 

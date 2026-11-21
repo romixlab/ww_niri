@@ -27,7 +27,3 @@ ww_stream = { workspace = true, features = ["std"] }
 
 [dev-dependencies]
 anyhow.workspace = true
-
-# The generated server names ww_stream; the sources never do.
-[package.metadata.cargo-machete]
-ignored = ["ww_stream"]
