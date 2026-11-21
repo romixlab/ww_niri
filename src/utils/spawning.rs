@@ -183,7 +183,6 @@ fn try_spawn_sync(
         process.env("DESKTOP_STARTUP_ID", token.as_str());
     }
 
-
     let (mut child, pid) = do_spawn(command, process)?;
 
     match child.wait() {

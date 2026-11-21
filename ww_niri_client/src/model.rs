@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use tokio::sync::{broadcast, mpsc, watch};
 use tokio::task::JoinHandle;
-use wire_weaver_client::observe::{on_change, ObserveEvent};
+use wire_weaver_client::observe::{ObserveEvent, on_change};
 use wire_weaver_client::{ConnectionEvent, StreamError};
 use ww_niri_api::{
     BrowserStateOwned, CoverEnd, EventOwned, PlaybackStateOwned, PlayerId, PlayerInfoOwned,

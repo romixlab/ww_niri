@@ -3,7 +3,7 @@
 use exact_units::Fixed;
 use ww_niri_api::{Button, Modifiers, PlayerId};
 
-use super::{Held, Lanes, LANE_PENDING_MAX};
+use super::{Held, LANE_PENDING_MAX, Lanes};
 use crate::command::{Command, Lane, PlaybackAction, PlaybackTarget};
 
 fn queued(lanes: &Lanes, lane: &Lane) -> Vec<Command> {
@@ -179,9 +179,11 @@ fn a_full_lane_refuses() {
             .push(Command::PressKeys("a".to_owned()), None)
             .unwrap();
     }
-    assert!(lanes
-        .push(Command::PressKeys("a".to_owned()), None)
-        .is_err());
+    assert!(
+        lanes
+            .push(Command::PressKeys("a".to_owned()), None)
+            .is_err()
+    );
     // Another lane still takes commands.
     lanes.push(Command::SetMuted(true), None).unwrap();
 }

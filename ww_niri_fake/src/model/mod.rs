@@ -524,8 +524,8 @@ impl Model {
         self.windows.iter().map(|w| self.window_owned(w)).collect()
     }
 
-    /// The screen came on the HDMI port, or went (TV off or unplugged): the output list changes, and every
-    /// window's output with it.
+    /// The screen came on the HDMI port, or went (TV off or unplugged): the output list changes,
+    /// and every window's output with it.
     pub(crate) fn set_screen_connected(&mut self, connected: bool) {
         if self.screen_connected == connected {
             return;

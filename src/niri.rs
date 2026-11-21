@@ -1188,7 +1188,9 @@ impl State {
     ) {
         let active_output = self.niri.layout.active_output().cloned();
 
-        self.niri.layout.activate_window_with_anim_config(window, config);
+        self.niri
+            .layout
+            .activate_window_with_anim_config(window, config);
 
         let new_active = self.niri.layout.active_output().cloned();
         if new_active != active_output {

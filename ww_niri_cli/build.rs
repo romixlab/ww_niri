@@ -1,7 +1,8 @@
-//! Sets `GIT_SHA` (short, `-dirty` from the index) and `BUILD_TIME` (the commit's own time, not the clock) for
-//! `wwn --version`. Both fall back to `unknown` without git. Worktree-safe: resolves the real `.git` paths with
-//! `git rev-parse` instead of assuming `.git/HEAD` is a directory, and takes `BUILD_TIME` from the commit so a
-//! rebuild of an unchanged commit reruns build.rs (harmless) without changing its output.
+//! Sets `GIT_SHA` (short, `-dirty` from the index) and `BUILD_TIME` (the commit's own time, not the
+//! clock) for `wwn --version`. Both fall back to `unknown` without git. Worktree-safe: resolves the
+//! real `.git` paths with `git rev-parse` instead of assuming `.git/HEAD` is a directory, and takes
+//! `BUILD_TIME` from the commit so a rebuild of an unchanged commit reruns build.rs (harmless)
+//! without changing its output.
 
 use std::process::Command;
 
@@ -20,7 +21,8 @@ fn main() {
     println!("cargo:rustc-env=BUILD_TIME={}", build_time());
 }
 
-/// `rerun-if-changed` on a path that does not exist makes cargo treat build.rs as stale on every build.
+/// `rerun-if-changed` on a path that does not exist makes cargo treat build.rs as stale on every
+/// build.
 fn watch_if_there(path: &str) {
     if std::path::Path::new(path).exists() {
         println!("cargo:rerun-if-changed={path}");
@@ -44,7 +46,8 @@ fn git_sha() -> String {
     }
 }
 
-/// "3 Oct 2026 18:20 UTC", without a date crate; from the commit's own time (`git log -1 --format=%ct`).
+/// "3 Oct 2026 18:20 UTC", without a date crate; from the commit's own time (`git log -1
+/// --format=%ct`).
 fn build_time() -> String {
     let Some(secs) = git(&["log", "-1", "--format=%ct"]).and_then(|s| s.parse::<i64>().ok()) else {
         return "unknown".into();

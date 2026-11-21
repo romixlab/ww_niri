@@ -348,8 +348,8 @@ impl FakeTv {
         self.shared.change(|m| m.set_sink(sink));
     }
 
-    /// The TV's screen came on the HDMI port, or went (TV off or unplugged): `outputs.list` is empty without
-    /// it, windows have no output, and `OutputsChanged` tells the client.
+    /// The TV's screen came on the HDMI port, or went (TV off or unplugged): `outputs.list` is
+    /// empty without it, windows have no output, and `OutputsChanged` tells the client.
     pub fn set_screen_connected(&self, connected: bool) {
         self.shared.change(|m| m.set_screen_connected(connected));
     }

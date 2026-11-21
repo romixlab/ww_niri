@@ -1882,7 +1882,10 @@ impl<W: LayoutElement> Workspace<W> {
         if self.floating.activate_window(window) {
             self.floating_is_active = FloatingActive::Yes;
             true
-        } else if self.scrolling.activate_window_with_anim_config(window, config) {
+        } else if self
+            .scrolling
+            .activate_window_with_anim_config(window, config)
+        {
             self.floating_is_active = FloatingActive::No;
             true
         } else {

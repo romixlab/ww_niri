@@ -7,10 +7,9 @@ use exact_units::Fixed;
 use ww_niri_api::PlayerId;
 use ww_niri_client::{PlaybackCalls, Tv, TvError};
 
-use crate::args;
 use crate::connect::json;
-use crate::output;
 use crate::registry::{BoxFuture, CommandDef};
+use crate::{args, output};
 
 #[derive(Args)]
 struct Id {

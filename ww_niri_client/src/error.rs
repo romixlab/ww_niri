@@ -2,8 +2,8 @@
 
 use std::sync::Arc;
 
-use wire_weaver_client::ww_error::CommonErrorOwned;
 use wire_weaver_client::CallError;
+use wire_weaver_client::ww_error::CommonErrorOwned;
 use ww_niri_api::{
     BrowserErrorOwned, CoverError, InputErrorOwned, LaunchErrorOwned, MediaErrorOwned, WindowError,
 };

@@ -432,7 +432,8 @@ mod tests {
     impl Responder for Fake {
         fn publish(&mut self, record: &ServiceRecord) -> Result<(), ww_dns_sd::Error> {
             let name = record.instance().as_str().to_owned();
-            self.0.push(Call::Publish(name, record.addresses().to_vec()));
+            self.0
+                .push(Call::Publish(name, record.addresses().to_vec()));
             Ok(())
         }
 
