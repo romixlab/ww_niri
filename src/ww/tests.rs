@@ -700,6 +700,34 @@ fn input_for_a_touchpad_and_a_remote() {
         assert_eq!(taken(), ["Motion { x: 1919.0, y: 67.0 }"]);
         assert_eq!(until(1919, 67).await.window, None);
 
+        // Motion writes: the first is where the totals start, a duplicate and a late one are
+        // dropped.
+        let mut motion = pointer.motion().await.unwrap();
+        for (seq, dx, dy) in [
+            (3, 0, 0),
+            (4, -19, 1),
+            (4, -19, 1),
+            (3, -500, 0),
+            (5, -119, 2),
+        ] {
+            motion
+                .send(ww_niri_api::PointerMotion {
+                    seq: ww_niri_api::MotionSeq::new(seq),
+                    dx_total: dx.into(),
+                    dy_total: dy.into(),
+                })
+                .await
+                .unwrap();
+        }
+        assert_eq!(until(1800, 69).await.window, None);
+        assert_eq!(
+            taken(),
+            [
+                "Motion { x: 1900.0, y: 68.0 }",
+                "Motion { x: 1800.0, y: 69.0 }"
+            ]
+        );
+
         // A quarter notch, with ctrl around it: a pinch.
         let ctrl = Modifiers {
             ctrl: true,

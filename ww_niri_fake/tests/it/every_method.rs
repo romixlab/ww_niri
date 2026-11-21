@@ -7,8 +7,8 @@ use exact_units::Fixed;
 use wire_weaver_client::CallError;
 use ww_niri_api::{
     BrowserErrorOwned, BrowserPhase, BrowserSlot, Button, InputErrorOwned, LaunchErrorOwned,
-    MediaErrorOwned, Modifiers, PlaybackStatus, PlayerSourceOwned, Point, Volume, WindowError,
-    WindowId,
+    MediaErrorOwned, Modifiers, MotionSeq, PlaybackStatus, PlayerSourceOwned, Point, PointerMotion,
+    Volume, WindowError, WindowId,
 };
 use ww_niri_fake::{ErrorKind, InputEntry, ReleasedBy, METHODS};
 
@@ -183,6 +183,28 @@ fn every_method_answers() {
             .unwrap();
         let at = pointer.read_position().read().await.unwrap();
         assert_eq!((at.x.get(), at.y.get()), (0, 1079));
+        // Motion: the first write is where the totals start, a duplicate and a late write are
+        // dropped, a lost one's distance comes with the next.
+        let mut motion = pointer.motion().await.unwrap();
+        for (seq, dx, dy) in [
+            (7, 100, 100),
+            (8, 110, 91),
+            (8, 110, 91),
+            (10, 111, 90),
+            (9, 0, 0),
+        ] {
+            motion
+                .send(PointerMotion {
+                    seq: MotionSeq::new(seq),
+                    dx_total: Fixed::new(dx),
+                    dy_total: Fixed::new(dy),
+                })
+                .await
+                .unwrap();
+        }
+        // Requests are handled in order: the writes are done once this answers.
+        let at = pointer.read_position().read().await.unwrap();
+        assert_eq!((at.x.get(), at.y.get()), (11, 1069));
         let ctrl = Modifiers {
             ctrl: true,
             ..Modifiers::default()

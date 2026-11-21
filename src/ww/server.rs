@@ -32,6 +32,8 @@ pub struct Server {
     pub input: Input,
     /// This connection's id, for the covers it holds.
     pub holder: u64,
+    /// Where the `input.pointer.motion` writes are.
+    motion: ww_niri_api::MotionTracker,
 }
 
 impl Server {
@@ -48,6 +50,7 @@ impl Server {
             player_ids: Vec::new(),
             events_open: false,
             holder: services.next_holder(),
+            motion: ww_niri_api::MotionTracker::default(),
         }
     }
 
@@ -807,6 +810,28 @@ impl Server {
         dy: ww_niri_api::Px,
     ) -> RpcResult<InputRes<'_>> {
         RpcResult::Ready(self.input.move_by(dx, dy).await.map_err(Into::into))
+    }
+
+    async fn write_input_pointer_motion(
+        &mut self,
+        _cx: &mut Context<'_, impl EventOut>,
+        motion: ww_niri_api::PointerMotion,
+    ) {
+        let Some((dx, dy)) = self.motion.track(motion) else {
+            return;
+        };
+        // A sink has no reply: an off-screen pointer is only logged.
+        if let Err(err) = self.input.move_by(dx, dy).await {
+            debug!("ww: motion from {} not applied: {err:?}", self.peer);
+        }
+    }
+
+    async fn sideband_input_pointer_motion(
+        &mut self,
+        _cx: &mut Context<'_, impl EventOut>,
+        _sideband: ww_client_server::StreamSideband,
+    ) -> Option<ww_client_server::StreamSideband> {
+        None
     }
 
     async fn input_pointer_click(

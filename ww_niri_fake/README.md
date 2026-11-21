@@ -11,7 +11,7 @@ tv.advance(Duration::from_secs(1)); // the slot's window maps: Running
 
 ## What the TV has
 
-- One output, `HDMI-A-1`, 1920x1080. The pointer stays on it: `move_by` stops at the edges, `move_to` off it answers `OffScreen`.
+- One output, `HDMI-A-1`, 1920x1080. The pointer stays on it: `move_by` and `motion` writes stop at the edges (a late or duplicate `motion` is dropped), `move_to` off it answers `OffScreen`.
 - A terminal (`kitty`, window 1) and a video player (`mpv`, window 2) side by side on the first workspace.
 - The video player's paused Media Player Remote Interfacing Specification (MPRIS) player.
 - Browser slots (2 by default) that go Stopped, Starting (`BrowserStarted` at once), Running when the window maps after the start delay. A page opened in a slot plays: the slot gets a playing player.

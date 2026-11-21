@@ -104,6 +104,7 @@ pub const METHODS: &[(&str, ErrorKind)] = &[
     ("input.pointer.position", ErrorKind::Property),
     ("input.pointer.move_to", ErrorKind::Input),
     ("input.pointer.move_by", ErrorKind::Input),
+    ("input.pointer.motion", ErrorKind::None),
     ("input.pointer.click", ErrorKind::Input),
     ("input.pointer.press", ErrorKind::Input),
     ("input.pointer.release", ErrorKind::Input),

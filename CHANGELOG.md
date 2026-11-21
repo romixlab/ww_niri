@@ -4,6 +4,10 @@ Changes of ww_niri on top of upstream niri. Upstream's own changes are in its re
 
 ## [Unreleased]
 
+### Added
+
+- Control API: `input.pointer.motion` sink moves the pointer by running totals, so a lost UDP datagram loses no distance (P2618#21nov-0944).
+
 ## [26.17.0] - 2026-11-20
 
 ### Added

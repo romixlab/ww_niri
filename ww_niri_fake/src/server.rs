@@ -30,6 +30,8 @@ pub(crate) struct Server {
     player_ids: Vec<UNib32>,
     /// The client opened the `events` stream.
     pub(crate) events_open: bool,
+    /// Where the `input.pointer.motion` writes are.
+    motion: ww_niri_api::MotionTracker,
 }
 
 /// The API error a [Fail] stands for, when it is of this error's kind.
@@ -80,6 +82,7 @@ impl Server {
             shared,
             player_ids: Vec::new(),
             events_open: false,
+            motion: ww_niri_api::MotionTracker::default(),
         }
     }
 
@@ -775,6 +778,33 @@ impl Server {
             format!("({dx}, {dy})"),
             |m| m.move_by(dx, dy),
         )
+    }
+
+    /// Every write is recorded; the tracker says how far each moves the pointer.
+    async fn write_input_pointer_motion(
+        &mut self,
+        _cx: &mut Context<'_, impl EventOut>,
+        motion: ww_niri_api::PointerMotion,
+    ) {
+        let (seq, dx, dy) = (
+            motion.seq.get(),
+            motion.dx_total.get(),
+            motion.dy_total.get(),
+        );
+        // A sink answers nothing, so an error asked for has nowhere to go.
+        let _no_fail = self.begin("input.pointer.motion", None, format!("({seq}, {dx}, {dy})"));
+        if let Some((dx, dy)) = self.motion.track(motion) {
+            // The fake's pointer stops at the edges: move_by never fails.
+            let _moved = self.with(|m| m.move_by(dx.get(), dy.get()));
+        }
+    }
+
+    async fn sideband_input_pointer_motion(
+        &mut self,
+        _cx: &mut Context<'_, impl EventOut>,
+        _sideband: ww_client_server::StreamSideband,
+    ) -> Option<ww_client_server::StreamSideband> {
+        None
     }
 
     async fn input_pointer_click(
