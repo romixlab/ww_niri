@@ -34,7 +34,7 @@ pub fn status_color(label: &str) -> anstyle::Style {
 
 /// "5 s", "200 ms": for a connect timeout in an error message.
 pub fn human_duration(d: Duration) -> String {
-    if d.as_millis() % 1000 == 0 {
+    if d.as_millis().is_multiple_of(1000) {
         format!("{} s", d.as_secs())
     } else {
         format!("{} ms", d.as_millis())

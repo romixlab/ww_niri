@@ -181,9 +181,9 @@ fn mute_reaches_the_sink() {
     let fake = fake();
     run(async {
         wwn(&fake, &["mute", "on"]).await.unwrap();
-        assert_eq!(fake.audio().1, true);
+        assert!(fake.audio().1);
         wwn(&fake, &["mute", "off"]).await.unwrap();
-        assert_eq!(fake.audio().1, false);
+        assert!(!fake.audio().1);
     });
 }
 
