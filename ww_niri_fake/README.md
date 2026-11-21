@@ -34,6 +34,8 @@ tv.advance(Duration::from_secs(1)); // the slot's window maps: Running
 | `resync` | Sends `Resync` on the `events` stream and refreshes every observer. |
 | `open_window`, `close_window`, `set_audio`, `set_sink` | Changes made on the TV itself. |
 
+`motion_path` serves the same API on a simulated UDP device, as ww_niri serves it over UDP beside the WebSocket: for `ww_niri_client`'s `MotionSender`. It takes one host at a time; the knobs act on it too, and events and observed changes go to the client of `path` only.
+
 Serving the fake over a real WebSocket is left out: ww_niri's own server tests cover that path.
 
 ## License

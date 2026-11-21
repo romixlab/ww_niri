@@ -24,6 +24,21 @@ let volume = tv.snapshot().audio.volume;
   - `Offline`: the give-up time of `KeepTrying` passed.
 - While offline every call fails at once with `TvError::Offline`; none is sent again by itself.
 
+## Pointer motion over UDP
+
+A touchpad's moves go over UDP with a `MotionSender`. Over a lossy Wi-Fi a lost move is skipped, while TCP would hold the later ones up. ww_niri serves UDP on the address and port of its WebSocket.
+
+```rust
+let addr = MotionAddress::beside("ws://192.168.1.95:7590/ww").expect("a ws URL with a port");
+let motion = MotionSender::start(addr, KeepTrying::default())?;
+motion.move_by(3, -1); // never waits
+```
+
+- Each datagram carries the sum of all moves so far, so the next datagram brings the distance of a lost one.
+- Moves made while one datagram is on its way add up into the next.
+- It connects in the background and again whenever the link goes. Moves made while offline, or as the link comes up, are not sent: `is_connected` and `watch_state` tell when to move over the `Tv` instead.
+- Clicks, keys and everything else stay on the `Tv`.
+
 ## The live model
 
 `Tv::snapshot` is one immutable `Snapshot`, replaced on every change. `Tv::watch_snapshot` and `Config::on_change` tell of each new one; an egui app passes `ctx.request_repaint`. It holds:

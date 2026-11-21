@@ -91,7 +91,7 @@ impl<E: ApiError> From<CallError<E>> for TvError {
     }
 }
 
-/// Why [Tv::start](crate::Tv::start) failed.
+/// Why [Tv::start](crate::Tv::start) or [MotionSender::start](crate::MotionSender::start) failed.
 #[derive(Debug, thiserror::Error)]
 pub enum StartError {
     /// [Config](crate::Config) names no address.
@@ -100,7 +100,8 @@ pub enum StartError {
     /// [Config::hold_limit](crate::Config::hold_limit) out of range.
     #[error("the hold limit must be 100 ms to 60 s")]
     HoldLimit,
-    /// The runtime thread of a [Tv](crate::Tv) started outside a tokio runtime could not be made.
+    /// The runtime thread of a [Tv](crate::Tv) or [MotionSender](crate::MotionSender) started
+    /// outside a tokio runtime could not be made.
     #[error("the TV's runtime: {0}")]
     Runtime(#[source] std::io::Error),
     /// wire_weaver refused the connection's settings.

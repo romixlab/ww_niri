@@ -1,9 +1,11 @@
 //! The device thread: a `ww_device::Server` on the in-process transport, serving one client at a
-//! time, re-registered after a dropped connection.
+//! time, re-registered after a dropped connection; and the motion path, the same API on a
+//! simulated UDP device, for a client's pointer motion.
 
 use std::sync::Arc;
 
 use wire_weaver_client::in_process::{self, TokioClock};
+use ww_device::udp::{udp_server, UdpBuffers, UdpConnection};
 use ww_device::LinkEvent;
 use ww_niri_api::EventOwned;
 
@@ -22,19 +24,38 @@ enum End {
     Stop,
 }
 
+/// The link's side of the API, the same on both paths.
+fn link_config() -> ww_device::LinkConfig<'static> {
+    ww_device::LinkConfig::new(
+        ww_niri_api::WW_NIRI_FULL_GID,
+        ww_niri_api::WW_NIRI_WIRE_VERSION,
+        api_impl::api_hash(),
+        api_impl::image_facts(),
+        ww_client_server::COMPACT_VERSION,
+    )
+}
+
+/// Waits until the TV is reachable; `false` when the fake is dropped first. `wake` is the
+/// path's own notify.
+async fn reachable(shared: &Shared, wake: &tokio::sync::Notify) -> bool {
+    loop {
+        let control = shared.control();
+        if control.stop {
+            return false;
+        }
+        if control.reachable {
+            return true;
+        }
+        // Unreachable: nothing is registered, so a client finds no device.
+        wake.notified().await;
+    }
+}
+
 /// Serves `path` until the fake is dropped.
 pub(crate) async fn run(shared: Arc<Shared>, path: String) {
     loop {
-        // Unreachable: nothing is registered, so a client finds no device.
-        loop {
-            let control = shared.control();
-            if control.stop {
-                return;
-            }
-            if control.reachable {
-                break;
-            }
-            shared.wake.notified().await;
+        if !reachable(&shared, &shared.wake).await {
+            return;
         }
         shared.update_control(|c| c.drop_link = false);
         let (tx, rx) = in_process::device(&path, MESSAGE_LEN_MAX);
@@ -49,15 +70,8 @@ async fn serve(shared: &Arc<Shared>, tx: in_process::DeviceTx, rx: in_process::D
     let mut scratch = vec![0u8; MESSAGE_LEN_MAX];
     let mut event_scratch = vec![0u8; MESSAGE_LEN_MAX];
     let mut observe_buf = vec![0u8; MESSAGE_LEN_MAX];
-    let config = ww_device::LinkConfig::new(
-        ww_niri_api::WW_NIRI_FULL_GID,
-        ww_niri_api::WW_NIRI_WIRE_VERSION,
-        api_impl::api_hash(),
-        api_impl::image_facts(),
-        ww_client_server::COMPACT_VERSION,
-    );
     let mut server = ww_device::Server::new(
-        config,
+        link_config(),
         tx,
         rx,
         TokioClock::new(),
@@ -129,5 +143,53 @@ async fn serve(shared: &Arc<Shared>, tx: in_process::DeviceTx, rx: in_process::D
         let _sent = backend
             .poll_properties(&mut server.sink(), (), now, &mut observe_buf)
             .await;
+    }
+}
+
+/// Serves the motion path until the fake is dropped: one host at a time, a new one takes it
+/// over, as a UDP port with one slot. Its calls and writes act on the model; the model's events
+/// and observed changes go to the client of the main path only.
+pub(crate) async fn run_motion(shared: Arc<Shared>, path: String) {
+    loop {
+        if !reachable(&shared, &shared.wake_motion).await {
+            return;
+        }
+        let connection = UdpConnection::new(in_process::udp_device(&path));
+        if let End::Stop = serve_motion(&shared, &connection).await {
+            return;
+        }
+    }
+}
+
+async fn serve_motion(
+    shared: &Arc<Shared>,
+    connection: &UdpConnection<in_process::UdpPort>,
+) -> End {
+    let mut buffers = Box::new(UdpBuffers::<MESSAGE_LEN_MAX>::new());
+    let mut server = udp_server(
+        link_config(),
+        connection,
+        0,
+        TokioClock::new(),
+        &mut buffers,
+    );
+    let mut backend = Server::new(shared.clone());
+    let drops = shared.control().drops;
+    loop {
+        tokio::select! {
+            ready = server.wait() => {
+                if let Some(LinkEvent::Down(_)) = server.handle(ready, &mut backend).await {
+                    backend = Server::new(shared.clone());
+                }
+            }
+            () = shared.wake_motion.notified() => {}
+        }
+        let control = shared.control();
+        if control.stop {
+            return End::Stop;
+        }
+        if control.drops != drops || !control.reachable {
+            return End::Dropped;
+        }
     }
 }

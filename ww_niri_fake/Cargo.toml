@@ -20,7 +20,8 @@ tokio = { workspace = true, features = ["rt", "sync", "time", "macros"] }
 wire_weaver = { workspace = true, features = ["std"] }
 wire_weaver_client = { workspace = true, features = ["in_process"] }
 ww_client_server = { workspace = true, features = ["std"] }
-ww_device.workspace = true
+# udp: the motion path, served as a UDP device
+ww_device = { workspace = true, features = ["udp"] }
 ww_niri_api.workspace = true
 ww_stream = { workspace = true, features = ["std"] }
 

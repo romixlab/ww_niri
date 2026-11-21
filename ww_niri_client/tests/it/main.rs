@@ -3,6 +3,7 @@
 mod commands;
 mod connection;
 mod model;
+mod motion;
 
 use std::future::Future;
 use std::time::Duration;

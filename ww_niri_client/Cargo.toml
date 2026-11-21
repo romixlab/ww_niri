@@ -20,8 +20,12 @@ anyhow.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["rt", "sync", "time", "macros"] }
 wire_weaver = { workspace = true, features = ["std"] }
-# ws: the TV over WebSocket; in_process: ww_niri_fake in tests and demo modes
-wire_weaver_client = { workspace = true, features = ["ws", "in_process"] }
+# ws: the TV over WebSocket; udp: pointer motion; in_process: ww_niri_fake in tests and demo modes
+wire_weaver_client = { workspace = true, features = [
+  "ws",
+  "udp",
+  "in_process",
+] }
 ww_niri_api.workspace = true
 
 [dev-dependencies]

@@ -80,6 +80,8 @@ impl Default for Options {
 pub(crate) struct Control {
     latency: Duration,
     drop_link: bool,
+    /// Connections dropped by [FakeTv::drop_connection] so far, for the motion path.
+    drops: u32,
     reachable: bool,
     stop: bool,
     links_up: u32,
@@ -93,6 +95,8 @@ pub(crate) struct Shared {
     clock: Clock,
     /// Wakes the device thread: the model or the control changed.
     wake: Notify,
+    /// Wakes the motion path: the control changed.
+    wake_motion: Notify,
     info: InfoOwned,
 }
 
@@ -127,6 +131,7 @@ impl Shared {
     pub(crate) fn update_control(&self, f: impl FnOnce(&mut Control)) {
         f(&mut lock(&self.control));
         self.wake.notify_one();
+        self.wake_motion.notify_one();
     }
 
     pub(crate) fn latency(&self) -> Duration {
@@ -139,6 +144,7 @@ impl Shared {
 pub struct FakeTv {
     shared: Arc<Shared>,
     path: String,
+    motion_path: String,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -165,16 +171,19 @@ impl FakeTv {
             control: Mutex::new(Control {
                 latency: Duration::ZERO,
                 drop_link: false,
+                drops: 0,
                 reachable: true,
                 stop: false,
                 links_up: 0,
             }),
             clock: Clock::new(options.clock),
             wake: Notify::new(),
+            wake_motion: Notify::new(),
             info: options.info,
         });
+        let motion_path = format!("{path}/motion");
         let thread = {
-            let (shared, path) = (shared.clone(), path.clone());
+            let (shared, path, motion_path) = (shared.clone(), path.clone(), motion_path.clone());
             std::thread::Builder::new()
                 .name("ww_niri_fake".to_owned())
                 .spawn(move || {
@@ -182,13 +191,19 @@ impl FakeTv {
                         .enable_time()
                         .build()
                         .expect("a current-thread runtime can be made")
-                        .block_on(device::run(shared, path));
+                        .block_on(async {
+                            tokio::join!(
+                                device::run(shared.clone(), path),
+                                device::run_motion(shared, motion_path),
+                            )
+                        });
                 })
                 .expect("the device thread can be spawned")
         };
         Self {
             shared,
             path,
+            motion_path,
             thread: Some(thread),
         }
     }
@@ -196,6 +211,13 @@ impl FakeTv {
     /// The in-process path to connect to: `ClientConfig::in_process_path`.
     pub fn path(&self) -> &str {
         &self.path
+    }
+
+    /// The same API on a simulated UDP device, as ww_niri serves it over UDP beside the
+    /// WebSocket: for a client's pointer motion. One host at a time; the knobs act on it as on
+    /// [FakeTv::path], and events and observed changes go to the client of `path` only.
+    pub fn motion_path(&self) -> &str {
+        &self.motion_path
     }
 
     // ---- time ----
@@ -227,7 +249,10 @@ impl FakeTv {
 
     /// Ends the client's connection, as a TV gone from Wi-Fi; a new one may come at once.
     pub fn drop_connection(&self) {
-        self.shared.update_control(|c| c.drop_link = true);
+        self.shared.update_control(|c| {
+            c.drop_link = true;
+            c.drops = c.drops.wrapping_add(1);
+        });
     }
 
     /// While unreachable the connection is dropped and no new one comes.

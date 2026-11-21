@@ -17,6 +17,7 @@ use crate::config::{Address, Config, HOLD_LIMIT_MAX, HOLD_LIMIT_MIN};
 use crate::error::{StartError, TvError};
 use crate::model::{self, CoverLifted, Shared};
 use crate::queue::{self, Failed, Request};
+use crate::runtime;
 use crate::snapshot::{ConnectionState, Snapshot};
 
 /// Commands on their way to the command task; [Tv::send] fails with [TvError::QueueFull] past it.
@@ -65,32 +66,10 @@ impl Tv {
         if !(HOLD_LIMIT_MIN..=HOLD_LIMIT_MAX).contains(&config.hold_limit) {
             return Err(StartError::HoldLimit);
         }
-        if tokio::runtime::Handle::try_current().is_ok() {
-            return Self::start_here(config);
-        }
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(StartError::Runtime)?;
-        let tv = {
-            let _entered = runtime.enter();
-            Self::start_here(config)?
-        };
-        let mut stop = tv.inner.stop.subscribe();
-        std::thread::Builder::new()
-            .name("ww_niri_client".to_owned())
-            .spawn(move || {
-                runtime.block_on(async move {
-                    // Ends when the last Tv is dropped; the runtime's tasks go with it.
-                    while !*stop.borrow_and_update() {
-                        if stop.changed().await.is_err() {
-                            return;
-                        }
-                    }
-                });
-            })
-            .map_err(StartError::Runtime)?;
-        Ok(tv)
+        runtime::start(
+            |tv: &Self| tv.inner.stop.subscribe(),
+            || Self::start_here(config),
+        )
     }
 
     fn start_here(config: Config) -> Result<Self, StartError> {
