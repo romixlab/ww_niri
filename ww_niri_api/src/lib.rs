@@ -9,7 +9,7 @@
 use ww_api::prelude::*;
 use ww_si::prefix::{Centi, Milli, One};
 use ww_si::units::{Hertz, Ratio};
-use ww_si::{Fixed, Micros, Millis, Range, Seq};
+use ww_si::{Fixed, Micros, Millis, Range};
 
 ww_si::unit! {
     /// A screen pixel, a counted base of its own.
@@ -273,12 +273,11 @@ pub trait Pointer {
     fn move_by(dx: Px, dy: Px) -> Result<(), InputError<'i>>;
 
     /// Moves the pointer as [Pointer::move_by] does, without a reply: for a touchpad over UDP,
-    /// where a lost move must not hold the later ones up. Each write carries how far the sender
-    /// moved in all, so a lost write loses no distance: the next one brings it. The pointer
-    /// moves by the change since the last write applied; a write whose `seq` is not after that
-    /// one's is late or a duplicate and is dropped. A connection's first write only sets where
-    /// its totals start.
-    sink!(motion: PointerMotion);
+    /// where a lost move must not hold the later ones up. Each write carries the running totals
+    /// of the sender's moves, so a lost write loses no distance: the next one brings it. The
+    /// pointer moves by the change since the last write applied; a session's first write only
+    /// sets where its totals start.
+    sink!(motion: Totals<Delta>);
 
     /// Presses and releases `button` `count` times (2 is a double click, at most 3), at `at` when
     /// given, else where the pointer is, with `modifiers` held around the clicks.
@@ -568,50 +567,31 @@ pub struct PointerPosition {
     pub window: Option<WindowPoint>,
 }
 
-ww_si::unit! {
-    /// A write to [Pointer::motion], a counted base of its own.
-    pub struct Motion = "motion", base;
-}
-
-/// The sequence number of a [Pointer::motion] write: one more for each write, wrapping.
-pub type MotionSeq = Seq<Motion, u16>;
-
-/// How far a sender moved the pointer in all, written to [Pointer::motion].
+/// A pointer move: how far right and down. [Pointer::motion] carries the running totals of them.
 #[derive_shrink_wrap(
     borrowed,
     owned(feature = "std"),
-    derive(Copy, Clone, Debug, PartialEq, Eq)
+    derive(Copy, Clone, Debug, Default, PartialEq, Eq),
+    final_structure
 )]
-pub struct PointerMotion {
-    pub seq: MotionSeq,
-    /// The sum of the sender's moves on this connection, wrapping at the ends of `i32`.
-    pub dx_total: Px,
-    pub dy_total: Px,
+pub struct Delta {
+    pub dx: Px,
+    pub dy: Px,
 }
 
-/// The receiving end of [Pointer::motion]: turns the totals of each write into a move.
-#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
-pub struct MotionTracker {
-    /// The last write applied.
-    last: Option<PointerMotion>,
-}
-
-impl MotionTracker {
-    /// The move `motion` asks for, from the last write applied. `None` for the first write,
-    /// which only sets where the totals start, and for a write whose `seq` is not after the
-    /// last one's: late or a duplicate.
-    pub fn track(&mut self, motion: PointerMotion) -> Option<(Px, Px)> {
-        let Some(last) = self.last else {
-            self.last = Some(motion);
-            return None;
-        };
-        if !motion.seq.is_after(last.seq) {
-            return None;
+impl Accumulate for Delta {
+    fn accumulate(self, change: Self) -> Self {
+        Self {
+            dx: self.dx.accumulate(change.dx),
+            dy: self.dy.accumulate(change.dy),
         }
-        self.last = Some(motion);
-        let dx = motion.dx_total.get().wrapping_sub(last.dx_total.get());
-        let dy = motion.dy_total.get().wrapping_sub(last.dy_total.get());
-        Some((Px::new(dx), Px::new(dy)))
+    }
+
+    fn since(self, earlier: Self) -> Self {
+        Self {
+            dx: self.dx.since(earlier.dx),
+            dy: self.dy.since(earlier.dy),
+        }
     }
 }
 
@@ -711,37 +691,20 @@ ww_api::api_error!(InputErrorOwned);
 
 #[cfg(test)]
 mod tests {
-    use super::{MotionSeq, MotionTracker, PointerMotion, Px};
+    use super::{Accumulate, Delta, Px};
 
-    fn motion(seq: u16, dx_total: i32, dy_total: i32) -> PointerMotion {
-        PointerMotion {
-            seq: MotionSeq::new(seq),
-            dx_total: Px::new(dx_total),
-            dy_total: Px::new(dy_total),
+    fn delta(dx: i32, dy: i32) -> Delta {
+        Delta {
+            dx: Px::new(dx),
+            dy: Px::new(dy),
         }
     }
 
-    fn track(tracker: &mut MotionTracker, m: PointerMotion) -> Option<(i32, i32)> {
-        tracker.track(m).map(|(dx, dy)| (dx.get(), dy.get()))
-    }
-
     #[test]
-    fn motion_tracker_moves_by_the_change_of_the_totals() {
-        let mut t = MotionTracker::default();
-        // The first write is where the totals start, whatever its numbers.
-        assert_eq!(track(&mut t, motion(65_534, 500, -20)), None);
-        assert_eq!(track(&mut t, motion(65_535, 510, -20)), Some((10, 0)));
-        assert_eq!(track(&mut t, motion(65_535, 510, -20)), None, "duplicate");
-        // Through the wrap of seq: 1 is after 65_535. Seq 0 was lost: its distance comes
-        // with 1.
-        assert_eq!(track(&mut t, motion(1, 530, -25)), Some((20, -5)));
-        assert_eq!(track(&mut t, motion(0, 520, -22)), None, "late");
-        // The totals wrap at the ends of i32.
-        let mut t = MotionTracker::default();
-        assert_eq!(track(&mut t, motion(7, i32::MAX - 1, i32::MIN)), None);
-        assert_eq!(
-            track(&mut t, motion(8, i32::MIN + 1, i32::MAX)),
-            Some((3, -1))
-        );
+    fn delta_adds_up_field_by_field_and_wraps() {
+        let start = delta(i32::MAX - 1, i32::MIN);
+        let total = start.accumulate(delta(3, -1));
+        assert_eq!(total, delta(i32::MIN + 1, i32::MAX));
+        assert_eq!(total.since(start), delta(3, -1));
     }
 }

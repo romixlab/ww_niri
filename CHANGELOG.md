@@ -12,6 +12,8 @@ Changes of ww_niri on top of upstream niri. Upstream's own changes are in its re
 ### Changed
 
 - The control API server serves full introspection data: clients stay compatible by shape, not version (P2618).
+- **Breaking:** control API: `input.pointer.motion` takes `Totals<Delta>`, a session per link (P2618).
+- `MotionSender` sends through wire_weaver's `TotalsSender`, repeating the last write after 50 ms without moves (P2618).
 
 ## [26.19.0] - 2026-11-21
 
