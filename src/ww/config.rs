@@ -11,7 +11,8 @@
 //!
 //! `lan:PORT` is the host's LAN address and `tailnet:PORT` its tailnet address, whatever they are
 //! now (see [`Interfaces`]); a literal address names itself. Each `lan:` listener is announced
-//! on the LAN over DNS-SD under the `advertise` name, the host name when it is left out.
+//! on the LAN over DNS-SD under the `advertise` name, the host name when it is left out. Each
+//! address takes the API over UDP on the same port too, for pointer motion over a lossy link.
 
 use std::fmt;
 use std::net::{IpAddr, SocketAddr};

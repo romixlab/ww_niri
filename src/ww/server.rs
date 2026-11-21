@@ -15,11 +15,29 @@ use super::{Audio, Browsers, Players, Services};
 
 type InputRes<'a> = Result<(), Error<'a, ww_niri_api::InputErrorOwned>>;
 
+/// Who a connection serves, for the log.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Peer {
+    WebSocket(SocketAddr),
+    /// `None` until the host's link is up.
+    Udp(Option<SocketAddr>),
+}
+
+impl std::fmt::Display for Peer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::WebSocket(addr) => write!(f, "{addr}"),
+            Self::Udp(Some(addr)) => write!(f, "udp {addr}"),
+            Self::Udp(None) => f.write_str("a udp host"),
+        }
+    }
+}
+
 pub struct Server {
     /// Observed properties: what the client observes and when it is due.
     pub observe: api_impl::ObserveState,
     pub run: Run,
-    pub peer: SocketAddr,
+    pub peer: Peer,
     pub hub: Rc<Hub>,
     pub browsers: Rc<Browsers>,
     pub players: Rc<Players>,
@@ -37,7 +55,7 @@ pub struct Server {
 }
 
 impl Server {
-    pub fn new(run: Run, peer: SocketAddr, services: Rc<Services>) -> Self {
+    pub fn new(run: Run, peer: Peer, services: Rc<Services>) -> Self {
         Self {
             observe: api_impl::ObserveState::new(Default::default()),
             input: Input::new(run.clone(), services.io.clone()),

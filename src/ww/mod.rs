@@ -1,4 +1,5 @@
-//! The WireWeaver control API server (`ww_niri_api` over WebSocket at `ws://ADDR/ww`).
+//! The WireWeaver control API server (`ww_niri_api` over WebSocket at `ws://ADDR/ww`, and over
+//! UDP on the same address and port).
 //!
 //! Everything runs on the compositor's calloop loop, like niri's IPC: the listener is a loop
 //! source, each connection a task on the loop's executor. `ww.kdl` says where to listen; without
@@ -37,6 +38,7 @@ mod server;
 mod socket;
 #[cfg(test)]
 mod tests;
+mod udp;
 mod uinput;
 
 pub use audio::Audio;
@@ -53,7 +55,8 @@ pub struct WwServer {
     path: Option<PathBuf>,
     props: Option<config::Props>,
     config: WwConfig,
-    listeners: Listeners<RegistrationToken>,
+    listeners: Listeners<Bound>,
+    scheduler: Scheduler<()>,
     advertising: advertise::Advertising,
     services: Rc<Services>,
     /// The keyboard and pointer of `input`, made on first use.
@@ -157,6 +160,7 @@ impl WwServer {
             props: None,
             config,
             listeners: Listeners::default(),
+            scheduler: scheduler.clone(),
             advertising: advertise::Advertising::default(),
             services,
             uinput: None,
@@ -229,11 +233,12 @@ impl WwServer {
         event_loop: &LoopHandle<'static, State>,
         wanted: &[SocketAddr],
     ) -> Vec<(SocketAddr, anyhow::Error)> {
+        let scheduler = &self.scheduler;
         self.listeners.sync(
             wanted,
-            |addr| listen(event_loop, addr),
-            // Open connections stay until they end; only the listener goes.
-            |_, token| event_loop.remove(token),
+            |addr| listen(event_loop, scheduler, addr),
+            // Open connections stay until they end; only the listeners go.
+            |_, bound| event_loop.remove(bound.tcp),
         )
     }
 
@@ -344,7 +349,7 @@ impl<T> Listeners<T> {
             }
             match bind(addr) {
                 Ok(bound) => {
-                    info!("ww: listening on ws://{addr}/ww");
+                    info!("ww: listening on ws://{addr}/ww and udp {addr}");
                     self.bound.push((addr, bound));
                 }
                 Err(err) => failed.push((addr, err)),
@@ -354,7 +359,25 @@ impl<T> Listeners<T> {
     }
 }
 
+/// The listeners of one address: WebSocket over TCP, and UDP on the same port.
+struct Bound {
+    tcp: RegistrationToken,
+    /// Dropped with this: stops taking UDP hosts.
+    _udp: udp::Listener,
+}
+
+/// Binds both listeners of `addr`, or neither.
 fn listen(
+    event_loop: &LoopHandle<'static, State>,
+    scheduler: &Scheduler<()>,
+    addr: SocketAddr,
+) -> anyhow::Result<Bound> {
+    let udp = udp::listen(event_loop, scheduler, addr)?;
+    let tcp = listen_tcp(event_loop, addr)?;
+    Ok(Bound { tcp, _udp: udp })
+}
+
+fn listen_tcp(
     event_loop: &LoopHandle<'static, State>,
     addr: SocketAddr,
 ) -> anyhow::Result<RegistrationToken> {

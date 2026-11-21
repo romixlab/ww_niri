@@ -11,18 +11,18 @@ use calloop::io::Async;
 use calloop::LoopHandle;
 use futures_util::future::{select, Either};
 use ww_device::ws::{WsConnection, WsRx, WsTx, WS_OVERHEAD};
-use ww_device::LinkEvent;
+use ww_device::{LinkEvent, MessageRx, MessageTx};
 use ww_niri_api::{EventOwned, WindowId};
 
 use super::clock::LoopClock;
 use super::host::{call, runner, Run, WwHost};
 use super::hub::Mark;
-use super::server::{api_impl, Server};
+use super::server::{api_impl, Peer, Server};
 use super::socket::StreamSocket;
 use crate::niri::State;
 
 /// Longest message either way: window and player lists of a busy session fit.
-const MAX_MESSAGE_LEN: usize = 32 * 1024;
+pub const MAX_MESSAGE_LEN: usize = 32 * 1024;
 
 pub fn spawn(state: &mut State, stream: TcpStream, peer: SocketAddr) {
     let _span = tracy_client::span!("ww::connection::spawn");
@@ -88,21 +88,36 @@ pub async fn serve<D: WwHost>(
     let mut scratch = vec![0u8; MAX_MESSAGE_LEN];
     let mut event_scratch = vec![0u8; MAX_MESSAGE_LEN];
 
-    let config = ww_device::LinkConfig::new(
-        ww_niri_api::WW_NIRI_FULL_GID,
-        ww_niri_api::WW_NIRI_WIRE_VERSION,
-        api_impl::api_hash(),
-        api_impl::image_facts(),
-        ww_client_server::COMPACT_VERSION,
-    );
-    let mut server = ww_device::Server::new(
-        config,
+    let server = ww_device::Server::new(
+        link_config(),
         WsTx::new(&conn, &mut tx_buf),
         WsRx::new(&conn, &mut rx_buf),
         LoopClock::new(handle.clone()),
         &mut scratch,
         &mut event_scratch,
     );
+    run(handle, server, Peer::WebSocket(peer), |_| ()).await;
+}
+
+/// The link's side of the API, the same on every medium.
+pub fn link_config() -> ww_device::LinkConfig<'static> {
+    ww_device::LinkConfig::new(
+        ww_niri_api::WW_NIRI_FULL_GID,
+        ww_niri_api::WW_NIRI_WIRE_VERSION,
+        api_impl::api_hash(),
+        api_impl::image_facts(),
+        ww_client_server::COMPACT_VERSION,
+    )
+}
+
+/// Serves the API on `server` until its link goes down: the handlers, the client's streams and
+/// observers, and what the client held released after. `on_up` runs when the link comes up.
+pub async fn run<D: WwHost, Tx: MessageTx, Rx: MessageRx>(
+    handle: LoopHandle<'static, D>,
+    mut server: ww_device::Server<'_, Tx, Rx, LoopClock<D>>,
+    peer: Peer,
+    on_up: impl Fn(&mut Server),
+) {
     let run = runner(handle);
     let Some(services) = call(&run, |host| host.services()).await else {
         return;
@@ -132,10 +147,13 @@ pub async fn serve<D: WwHost>(
         };
         match step {
             Either::Left(ready) => match server.handle(ready, &mut backend).await {
-                Some(LinkEvent::Up) => debug!("ww: link to {peer} is up"),
+                Some(LinkEvent::Up) => {
+                    on_up(&mut backend);
+                    debug!("ww: link to {} is up", backend.peer);
+                }
                 Some(LinkEvent::Down(reason)) => {
                     // A connection is served once: the client reconnects with a new one.
-                    debug!("ww: link to {peer} is down: {reason:?}");
+                    debug!("ww: link to {} is down: {reason:?}", backend.peer);
                     break;
                 }
                 None => {}
@@ -163,7 +181,7 @@ pub async fn serve<D: WwHost>(
     let _ = call(&run, move |host| host.uncover_held_by(holder)).await;
     // Nothing the client held down stays down.
     if let Err(err) = backend.input.release_all().await {
-        warn!("ww: error releasing what {peer} held: {err:?}");
+        warn!("ww: error releasing what {} held: {err:?}", backend.peer);
     }
 }
 

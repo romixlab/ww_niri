@@ -1,4 +1,4 @@
-//! The server over a real WebSocket: a calloop loop on a thread serves one connection against a
+//! The server over a real WebSocket or UDP: a calloop loop on a thread serves the client against a
 //! fake host, a generated client calls it.
 
 use std::cell::RefCell;
@@ -311,8 +311,19 @@ impl WwHost for FakeHost {
     }
 }
 
+/// Where a bench serves the API.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Medium {
+    /// One WebSocket connection.
+    WebSocket,
+    /// A UDP listener, taking any number of hosts.
+    Udp,
+}
+
 struct Bench {
+    /// `ws://ADDR/ww`, or the UDP listener's address.
     url: String,
+    medium: Medium,
     fake: Fake,
     stop: calloop::channel::Sender<()>,
     thread: std::thread::JoinHandle<()>,
@@ -331,8 +342,23 @@ fn bench_with(
     bus: Option<String>,
     audio: Option<Target>,
 ) -> Bench {
+    bench_on(Medium::WebSocket, windows, settings, bus, audio)
+}
+
+fn bench_on(
+    medium: Medium,
+    windows: Vec<WindowOwned>,
+    settings: Settings,
+    bus: Option<String>,
+    audio: Option<Target>,
+) -> Bench {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let url = format!("ws://{}/ww", listener.local_addr().unwrap());
+    let (url_tx, url_rx) = std::sync::mpsc::channel();
+    if medium == Medium::WebSocket {
+        url_tx
+            .send(format!("ws://{}/ww", listener.local_addr().unwrap()))
+            .unwrap();
+    }
     let (events_tx, events_rx) = async_channel::unbounded();
     let fake = Fake {
         calls: Arc::default(),
@@ -385,12 +411,24 @@ fn bench_with(
             })
             .unwrap();
 
-        let (stream, peer) = listener.accept().unwrap();
-        stream.set_nodelay(true).unwrap();
-        let stream = handle.adapt_io(stream).unwrap();
-        scheduler
-            .schedule(serve(handle.clone(), stream, peer))
-            .unwrap();
+        // Kept until the loop stops.
+        let mut _udp = None;
+        match medium {
+            Medium::WebSocket => {
+                let (stream, peer) = listener.accept().unwrap();
+                stream.set_nodelay(true).unwrap();
+                let stream = handle.adapt_io(stream).unwrap();
+                scheduler
+                    .schedule(serve(handle.clone(), stream, peer))
+                    .unwrap();
+            }
+            Medium::Udp => {
+                let udp = super::udp::listen(&handle, &scheduler, "127.0.0.1:0".parse().unwrap())
+                    .unwrap();
+                url_tx.send(udp.local_addr().to_string()).unwrap();
+                _udp = Some(udp);
+            }
+        }
 
         while !host.stop {
             event_loop.dispatch(None, &mut host).unwrap();
@@ -398,7 +436,8 @@ fn bench_with(
     });
 
     Bench {
-        url,
+        url: url_rx.recv().unwrap(),
+        medium,
         fake,
         stop: stop_tx,
         thread,
@@ -406,16 +445,24 @@ fn bench_with(
 }
 
 impl Bench {
+    /// A new client of the bench.
+    async fn connect(&self) -> NiriClient {
+        NiriClient::config(|c| match self.medium {
+            Medium::WebSocket => c.websocket_url(self.url.clone()),
+            Medium::Udp => c.udp_addr(self.url.clone()),
+        })
+        .connect()
+        .await
+        .unwrap()
+    }
+
     fn run(self, test: impl AsyncFnOnce(NiriClient, &Fake)) {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .unwrap();
         rt.block_on(async {
-            let client = NiriClient::config(|c| c.websocket_url(self.url.clone()))
-                .connect()
-                .await
-                .unwrap();
+            let client = self.connect().await;
             test(client, &self.fake).await;
         });
         self.stop.send(()).unwrap();
@@ -790,6 +837,77 @@ fn input_for_a_touchpad_and_a_remote() {
             InputErrorOwned::BadArgument
         );
         assert_eq!(taken(), Vec::<String>::new());
+    });
+}
+
+#[test]
+fn pointer_motion_over_udp_from_two_hosts() {
+    use wire_weaver_client::observe::on_change;
+    use ww_niri_api::{MotionSeq, PointerMotion, PointerPosition};
+
+    let bench = bench_on(Medium::Udp, Vec::new(), Settings::default(), None, None);
+    let addr = bench.url.clone();
+    bench.run(async |phone, _| {
+        let desktop = NiriClient::config(|c| c.udp_addr(addr.clone()))
+            .connect()
+            .await
+            .unwrap();
+        // A request and its reply over UDP.
+        assert!(!desktop.info().call().await.unwrap().niri_version.is_empty());
+
+        // The desktop watches the pointer: it stays when the phone goes.
+        let mut observed = desktop
+            .input()
+            .pointer()
+            .observe_position(on_change(Duration::ZERO))
+            .subscribe()
+            .await
+            .unwrap();
+        let mut until = async |x: i32, y: i32| {
+            tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    let position: PointerPosition = observed
+                        .recv()
+                        .await
+                        .unwrap_or_else(|e| panic!("({x}, {y}): {e:?}"))
+                        .value;
+                    if (position.x.get(), position.y.get()) == (x, y) {
+                        break;
+                    }
+                }
+            })
+            .await
+            .unwrap_or_else(|_| panic!("observers get ({x}, {y})"));
+        };
+        until(110, 70).await;
+
+        // Each host has its own sequence and totals, starting with its first write: the
+        // desktop's 1 is not late after the phone's 5.
+        let motion = |seq: u16, dx: i32, dy: i32| PointerMotion {
+            seq: MotionSeq::new(seq),
+            dx_total: dx.into(),
+            dy_total: dy.into(),
+        };
+        let mut from_phone = phone.input().pointer().motion().await.unwrap();
+        let mut from_desktop = desktop.input().pointer().motion().await.unwrap();
+        from_phone.send(motion(4, 0, 0)).await.unwrap();
+        from_desktop.send(motion(0, 50, 50)).await.unwrap();
+        from_phone.send(motion(5, 10, 0)).await.unwrap();
+        until(120, 70).await;
+        from_desktop.send(motion(1, 50, 60)).await.unwrap();
+        until(120, 80).await;
+        from_phone.send(motion(6, -10, -20)).await.unwrap();
+        until(100, 60).await;
+
+        // The phone goes: the desktop's link stays, and a new host gets a slot.
+        drop((from_phone, phone));
+        from_desktop.send(motion(2, 51, 61)).await.unwrap();
+        until(101, 61).await;
+        let again = NiriClient::config(|c| c.udp_addr(addr.clone()))
+            .connect()
+            .await
+            .unwrap();
+        assert!(!again.info().call().await.unwrap().niri_version.is_empty());
     });
 }
 
