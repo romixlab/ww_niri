@@ -6,6 +6,7 @@ Changes of ww_niri on top of upstream niri. Upstream's own changes are in its re
 
 ### Added
 
+- `justfile`: `test`, `lint`, `install` and `deploy` recipes; `deploy/binkeep.toml` keeps niri as a binkeep set. `deploy` never restarts niri (P2618#21nov-1625).
 - Control API: `input.pointer.motion` sink moves the pointer by running totals, so a lost UDP datagram loses no distance (P2618#21nov-0944).
 - Control API over UDP on each `listen` address and port, beside the WebSocket, several hosts at once (P2618#21nov-0944).
 - `ww_niri_client`: `MotionSender` moves the pointer over UDP without waiting, and `ww_niri_fake` serves it on `motion_path` (P2618#21nov-0944).

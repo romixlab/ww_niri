@@ -140,3 +140,10 @@ We also have a community Discord server: https://discord.gg/vT8Sfjy7sx
 [OpenTabletDriver]: https://opentabletdriver.net/
 [Dux Modular Shell]: https://duxlabs.dev/
 [Noctalia]: https://noctalia.dev/
+
+## Deploying niri on a PC (ww_niri)
+
+- `just deploy`: pulls `--ff-only` (refuses on local changes), builds `--profile deploy`, installs through binkeep (`deploy/binkeep.toml`), checks `niri --version` against HEAD.
+- It never restarts niri: niri is the session compositor, and a restart closes every window on screen.
+- The TV (alma-2tv) gets a new niri by `just deploy` there, then a session restart at a moment the person picks (log out and in, or reboot).
+- The PC's own binkeep list (`~/.config/binkeep/binkeep.toml`) needs the `niri` set from `deploy/binkeep.toml` once.

@@ -1,0 +1,6 @@
+# The niri binary this checkout installs: one set, so it rolls back alone. binkeep's list format: a PC's own list
+# (~/.config/binkeep/binkeep.toml) takes this set, and `just install` runs `binkeep install niri target/deploy`.
+
+[[set.niri.bin]]
+name = "niri"
+kind = "cli"
