@@ -9,11 +9,11 @@ default:
 
 # `just test`: the whole workspace. `just test --changed`: only the crates changed against main and their dependents.
 test *flags:
-    {{ if flags == "--changed" { "tpm test changed" } else { "cargo nextest run --workspace --locked " + flags } }}
+    {{ if flags == "--changed" { "tpm test changed -- cargo nextest run --workspace --locked" } else { "cargo nextest run --workspace --locked " + flags } }}
 
-# Format, clippy and spirit_level's lints (spl check)
+# Format (nightly rustfmt, as CI), clippy and spirit_level's lints (spl check)
 lint:
-    cargo fmt --all --check
+    cargo +nightly fmt --all --check
     cargo clippy --workspace --all-targets --locked -- -D warnings
     spl check --progress never
 
