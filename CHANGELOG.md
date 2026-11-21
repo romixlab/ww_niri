@@ -4,6 +4,8 @@ Changes of ww_niri on top of upstream niri. Upstream's own changes are in its re
 
 ## [Unreleased]
 
+## [26.18.0] - 2026-11-21
+
 ### Added
 
 - `justfile`: `test`, `lint`, `install` and `deploy` recipes; `deploy/binkeep.toml` keeps niri as a binkeep set. `deploy` never restarts niri (P2618#21nov-1625).
