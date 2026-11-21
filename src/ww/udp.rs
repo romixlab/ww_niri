@@ -18,6 +18,7 @@ use calloop::io::Async;
 use calloop::LoopHandle;
 use futures_util::future::{select, Either};
 use ww_device::udp::{udp_server, Readiness, StdUdpSocket, UdpBuffers, UdpPeers};
+use ww_device::ww_link::UDP_MAX_DATAGRAM_LEN;
 
 use super::clock::LoopClock;
 use super::connection::{link_config, run, MAX_MESSAGE_LEN};
@@ -96,9 +97,11 @@ async fn accept<D: WwHost>(
     peers: Rc<Peers>,
     stop: Receiver<()>,
 ) {
+    // What the listener receives into while no connection does.
+    let mut buf = Box::new([0u8; UDP_MAX_DATAGRAM_LEN]);
     loop {
-        let slot = match select(pin!(peers.accept()), pin!(stop.recv())).await {
-            Either::Left((Ok(slot), _)) => slot,
+        let slot = match select(pin!(peers.accept(&mut buf)), pin!(stop.recv())).await {
+            Either::Left((Ok((slot, _)), _)) => slot,
             Either::Left((Err(err), _)) => {
                 warn!("ww: udp listener stopped: {err:?}");
                 return;

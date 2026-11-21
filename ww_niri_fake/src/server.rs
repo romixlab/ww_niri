@@ -718,6 +718,7 @@ impl Server {
             ),
             GetResult::GetError(err) => GetResult::GetError(err),
             GetResult::Unimplemented => GetResult::Unimplemented,
+            GetResult::Failed(failure) => GetResult::Failed(failure),
         }
     }
 
@@ -753,6 +754,7 @@ impl Server {
             }),
             GetResult::GetError(err) => GetResult::GetError(err),
             GetResult::Unimplemented => GetResult::Unimplemented,
+            GetResult::Failed(failure) => GetResult::Failed(failure),
         }
     }
 
