@@ -4,6 +4,8 @@ Changes of ww_niri on top of upstream niri. Upstream's own changes are in its re
 
 ## [Unreleased]
 
+## [26.20.0] - 2026-11-22
+
 ### Added
 
 - `ww.kdl`: `browser N owner=... user-agent=...` gives a slot its person and the user agent its Firefox sends (P2618#21nov-1232b).
