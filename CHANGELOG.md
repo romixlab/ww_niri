@@ -4,6 +4,8 @@ Changes of ww_niri on top of upstream niri. Upstream's own changes are in its re
 
 ## [Unreleased]
 
+## [26.23.0] - 2026-11-22
+
 ### Changed
 
 - Control API: every method declares its `#[effect]`; wire_weaver moves to fc01c46a (API-58).

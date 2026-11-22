@@ -2612,7 +2612,7 @@ dependencies = [
 
 [[package]]
 name = "niri"
-version = "26.22.0"
+version = "26.23.0"
 dependencies = [
  "accesskit",
  "accesskit_unix",
@@ -2688,7 +2688,7 @@ dependencies = [
 
 [[package]]
 name = "niri-config"
-version = "26.22.0"
+version = "26.23.0"
 dependencies = [
  "bitflags 2.13.2",
  "csscolorparser",
@@ -2706,7 +2706,7 @@ dependencies = [
 
 [[package]]
 name = "niri-ipc"
-version = "26.22.0"
+version = "26.23.0"
 dependencies = [
  "clap",
  "schemars",
@@ -2716,7 +2716,7 @@ dependencies = [
 
 [[package]]
 name = "niri-visual-tests"
-version = "26.22.0"
+version = "26.23.0"
 dependencies = [
  "anyhow",
  "gtk4",
