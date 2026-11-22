@@ -6,9 +6,10 @@
 //! had.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
-use tokio::sync::watch;
-use wire_weaver_client::{ConnectionState, KeepTrying, TotalsSender};
+use tokio::sync::{Notify, broadcast, watch};
+use wire_weaver_client::{Commander, ConnectionEvent, ConnectionState, KeepTrying, TotalsSender};
 use ww_niri_api::{Delta, Px};
 
 use crate::api::NiriClient;
@@ -42,6 +43,12 @@ impl MotionAddress {
 struct Inner {
     totals: TotalsSender<Delta>,
     state: watch::Receiver<ConnectionState>,
+    /// A move came while offline: the link's next wait between attempts is cut short.
+    moved: Arc<AtomicBool>,
+    /// Tells [follow_waits] of `moved`.
+    hurry: Arc<Notify>,
+    /// The UDP link's connection, for its events.
+    cmd: Commander,
     stop: watch::Sender<bool>,
 }
 
@@ -53,7 +60,8 @@ impl Drop for Inner {
 
 /// Moves the TV's pointer over UDP: [MotionSender::move_by] never waits, and a lost datagram
 /// loses no distance. Connects in the background and again whenever the link goes; moves made
-/// while offline, or as the link comes up, are not sent.
+/// while offline, or as the link comes up, are not sent. A move while offline cuts the link's
+/// wait between attempts short: a hand on the touchpad wants the TV now.
 ///
 /// Clicks, keys and everything else stay on the [Tv](crate::Tv)'s WebSocket link.
 ///
@@ -94,11 +102,22 @@ impl MotionSender {
             .expect("a connection that keeps trying has a state");
         let totals = TotalsSender::new();
         let (stop, _) = watch::channel(false);
+        let (moved, hurry) = (Arc::new(AtomicBool::new(false)), Arc::new(Notify::new()));
+        tokio::spawn(follow_waits(
+            client.cmd.clone(),
+            moved.clone(),
+            hurry.clone(),
+            stop.subscribe(),
+        ));
+        let cmd = client.cmd.clone();
         tokio::spawn(run(client, totals.clone(), state.clone(), stop.subscribe()));
         Ok(Self {
             inner: Arc::new(Inner {
                 totals,
                 state,
+                moved,
+                hurry,
+                cmd,
                 stop,
             }),
         })
@@ -112,6 +131,9 @@ impl MotionSender {
             dx: Px::new(dx),
             dy: Px::new(dy),
         });
+        if !self.is_connected() && !self.inner.moved.swap(true, Ordering::Relaxed) {
+            self.inner.hurry.notify_one();
+        }
     }
 
     /// Whether the UDP link is up: an app may move the pointer over the [Tv](crate::Tv) while
@@ -126,6 +148,55 @@ impl MotionSender {
     /// Every change of the UDP link's state.
     pub fn watch_state(&self) -> watch::Receiver<ConnectionState> {
         self.inner.state.clone()
+    }
+
+    /// What happens to the UDP link from now on: attempts, their failures, connects.
+    pub fn connection_events(&self) -> broadcast::Receiver<ConnectionEvent> {
+        self.inner.cmd.connection_events()
+    }
+}
+
+/// Starts the next attempt of `cmd`'s link at once when it waits between attempts and a move
+/// came while offline (`moved`), until the [MotionSender] is dropped. An attempt under way is
+/// never hurried, which would restart it: a move during one cuts the wait after it short.
+async fn follow_waits(
+    cmd: Commander,
+    moved: Arc<AtomicBool>,
+    hurry: Arc<Notify>,
+    mut stop: watch::Receiver<bool>,
+) {
+    let mut events = cmd.connection_events();
+    let following = async {
+        let mut waiting = false;
+        loop {
+            let event = tokio::select! {
+                event = events.recv() => Some(event),
+                () = hurry.notified() => None,
+            };
+            match event {
+                None => {}
+                Some(Ok(ConnectionEvent::AttemptFailed { .. })) => waiting = true,
+                Some(Ok(ConnectionEvent::Disconnected { reconnecting, .. })) => {
+                    waiting = reconnecting;
+                }
+                Some(Ok(ConnectionEvent::Connecting { .. })) => waiting = false,
+                Some(Ok(_)) => {
+                    waiting = false;
+                    moved.store(false, Ordering::Relaxed);
+                }
+                // Missed events: the next one tells again.
+                Some(Err(broadcast::error::RecvError::Lagged(_))) => {}
+                Some(Err(broadcast::error::RecvError::Closed)) => return,
+            }
+            if waiting && moved.swap(false, Ordering::Relaxed) {
+                waiting = false;
+                cmd.retry_now().await;
+            }
+        }
+    };
+    tokio::select! {
+        () = following => {}
+        _ = stop.wait_for(|stopped| *stopped) => {}
     }
 }
 

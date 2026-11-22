@@ -2,10 +2,11 @@
 
 use std::time::Duration;
 
+use wire_weaver_client::ConnectionEvent;
 use ww_niri_client::{Backoff, KeepTrying, MotionAddress, MotionSender};
 use ww_niri_fake::FakeTv;
 
-use super::{fake, run, until_fake};
+use super::{fake, run, soon, until_fake};
 
 /// Connects to the fake's motion path, retrying fast.
 fn sender(fake: &FakeTv) -> MotionSender {
@@ -81,5 +82,41 @@ fn moves_add_up_and_a_new_link_starts_a_session_from_its_baseline() {
         motion.move_by(-10, 0);
         until_fake("a move on the new link", || at(&fake) == (980, 510)).await;
         assert_eq!(writes(&fake).last(), Some(&(second, 20, -30)));
+    });
+}
+
+#[test]
+fn a_move_while_the_link_waits_starts_the_next_attempt_at_once() {
+    let fake = fake();
+    run(async {
+        // Without a hurry the next attempt would come in an hour.
+        let hour = Duration::from_secs(3600);
+        let motion = MotionSender::start(
+            MotionAddress::InProcess(fake.motion_path().to_owned()),
+            KeepTrying {
+                backoff: Backoff {
+                    first: hour,
+                    max: hour,
+                },
+                give_up: None,
+            },
+        )
+        .unwrap();
+        until_fake("connected", || motion.is_connected()).await;
+
+        let mut events = motion.connection_events();
+        fake.set_reachable(false);
+        soon("an attempt failed", async {
+            loop {
+                let event = events.recv().await.unwrap();
+                if let ConnectionEvent::AttemptFailed { .. } = event {
+                    break;
+                }
+            }
+        })
+        .await;
+        fake.set_reachable(true);
+        motion.move_by(1, 0);
+        until_fake("connected again", || motion.is_connected()).await;
     });
 }

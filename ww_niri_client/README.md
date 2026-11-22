@@ -16,7 +16,7 @@ let volume = tv.snapshot().audio.volume;
 ## Connection
 
 - `Tv::start` returns at once and connects on wire_weaver's keep-trying connection; it connects again whenever the link goes.
-- Each attempt tries the configured addresses in order, and the first that answers wins.
+- Each attempt opens all the configured addresses at once, and the first that answers wins.
 - It runs on the caller's tokio runtime, or on a runtime thread of its own when there is none (an egui app, a sync CLI).
 - `Tv::state` and `Tv::watch_state` say where the connection is:
   - `Connecting`: the attempt, since when offline, and why;
@@ -26,7 +26,7 @@ let volume = tv.snapshot().audio.volume;
 
 ## Pointer motion over UDP
 
-A touchpad's moves go over UDP with a `MotionSender`. Over a lossy Wi-Fi a lost move is skipped, while TCP would hold the later ones up. ww_niri serves UDP on the address and port of its WebSocket.
+A touchpad's moves go over UDP with a `MotionSender`. Over a lossy Wi-Fi a lost move is skipped, while TCP would hold the later ones up. ww_niri serves UDP on the address and port of its WebSocket. A move while the link waits to reconnect starts the next attempt at once.
 
 ```rust
 let addr = MotionAddress::beside("ws://192.168.1.95:7590/ww").expect("a ws URL with a port");
