@@ -1020,7 +1020,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -1326,7 +1326,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -1701,7 +1701,7 @@ dependencies = [
  "gobject-sys",
  "libc",
  "system-deps",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -2099,7 +2099,7 @@ checksum = "3640c1c38b8e4e43584d8df18be5fc6b0aa314ce6ebf51b53313d4306cca8e46"
 dependencies = [
  "hermit-abi 0.5.3",
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -2114,7 +2114,7 @@ version = "1.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "82cb6a9f675da968c63b6208c641b9dca58fc0133ae53375736b1767b0cab8bd"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -2728,6 +2728,8 @@ dependencies = [
  "wayland-server",
  "wire_weaver",
  "wire_weaver_client",
+ "wire_weaver_server",
+ "ww_calloop",
  "ww_client_server",
  "ww_device",
  "ww_dns_sd",
@@ -2818,7 +2820,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -3724,7 +3726,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -4352,10 +4354,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix 1.1.6",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -5634,6 +5636,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "wire_weaver_server"
+version = "0.5.0"
+source = "git+https://github.com/vhrdtech/wire_weaver#2c1ce8f34c5f4a193891f5795a6256a934cce3a6"
+dependencies = [
+ "futures-channel",
+ "futures-util",
+ "libc",
+ "wire_weaver",
+ "ww_byte_stream",
+ "ww_client_server",
+ "ww_device",
+ "ww_self",
+]
+
+[[package]]
 name = "wit-bindgen"
 version = "0.57.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5649,6 +5666,30 @@ dependencies = [
  "wire_weaver_derive",
  "ww_error",
  "ww_version",
+]
+
+[[package]]
+name = "ww_byte_stream"
+version = "0.5.0"
+source = "git+https://github.com/vhrdtech/wire_weaver#2c1ce8f34c5f4a193891f5795a6256a934cce3a6"
+dependencies = [
+ "edge-http",
+ "edge-ws",
+ "futures-util",
+ "httparse",
+ "ww_device",
+]
+
+[[package]]
+name = "ww_calloop"
+version = "0.5.0"
+source = "git+https://github.com/vhrdtech/wire_weaver#2c1ce8f34c5f4a193891f5795a6256a934cce3a6"
+dependencies = [
+ "calloop",
+ "futures-util",
+ "wire_weaver",
+ "wire_weaver_server",
+ "ww_device",
 ]
 
 [[package]]

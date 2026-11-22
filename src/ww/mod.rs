@@ -1,23 +1,23 @@
 //! The WireWeaver control API server (`ww_niri_api` over WebSocket at `ws://ADDR/ww`, and over
 //! UDP on the same address and port).
 //!
-//! Everything runs on the compositor's calloop loop, like niri's IPC: the listener is a loop
-//! source, each connection a task on the loop's executor. `ww.kdl` says where to listen; without
+//! Everything runs on the compositor's calloop loop, like niri's IPC: `wire_weaver_server` serves
+//! each address's listeners as one task on the loop's executor (see [`serve`]), its connections
+//! inside it. `ww.kdl` says where to listen; without
 //! it nothing listens. The file is checked for changes every second and applied when it parses.
 //! Each `listen` address that can't be bound yet is tried again at each check, and `lan:PORT` and
 //! `tailnet:PORT` are resolved again: a changed address closes its listener and binds the new
 //! one, while open connections stay until they end. Each bound `lan:PORT` listener is announced on
 //! the LAN over DNS-SD (see [`advertise`]).
 
-use std::net::{SocketAddr, TcpListener};
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::Duration;
 
 use calloop::futures::Scheduler;
-use calloop::generic::Generic;
 use calloop::timer::{TimeoutAction, Timer};
-use calloop::{Interest, LoopHandle, Mode, PostAction, RegistrationToken};
+use calloop::{LoopHandle, RegistrationToken};
 
 use crate::niri::State;
 
@@ -25,20 +25,18 @@ mod advertise;
 mod audio;
 mod bidi;
 mod browsers;
-mod clock;
 mod config;
-mod connection;
 pub(crate) mod cover;
+mod follow;
 mod host;
 mod hub;
 pub(crate) mod input;
 mod interfaces;
 mod players;
+mod serve;
 mod server;
-mod socket;
 #[cfg(test)]
 mod tests;
-mod udp;
 mod uinput;
 
 pub use audio::Audio;
@@ -55,7 +53,7 @@ pub struct WwServer {
     path: Option<PathBuf>,
     props: Option<config::Props>,
     config: WwConfig,
-    listeners: Listeners<Bound>,
+    listeners: Listeners<serve::Bound>,
     scheduler: Scheduler<()>,
     advertising: advertise::Advertising,
     services: Rc<Services>,
@@ -233,12 +231,12 @@ impl WwServer {
         event_loop: &LoopHandle<'static, State>,
         wanted: &[SocketAddr],
     ) -> Vec<(SocketAddr, anyhow::Error)> {
-        let scheduler = &self.scheduler;
+        let (scheduler, services) = (&self.scheduler, &self.services);
         self.listeners.sync(
             wanted,
-            |addr| listen(event_loop, scheduler, addr),
+            |addr| serve::bind(event_loop, scheduler, services, addr),
             // Open connections stay until they end; only the listeners go.
-            |_, bound| event_loop.remove(bound.tcp),
+            |_, bound| bound.stop(),
         )
     }
 
@@ -357,45 +355,6 @@ impl<T> Listeners<T> {
         }
         failed
     }
-}
-
-/// The listeners of one address: WebSocket over TCP, and UDP on the same port.
-struct Bound {
-    tcp: RegistrationToken,
-    /// Dropped with this: stops taking UDP hosts.
-    _udp: udp::Listener,
-}
-
-/// Binds both listeners of `addr`, or neither.
-fn listen(
-    event_loop: &LoopHandle<'static, State>,
-    scheduler: &Scheduler<()>,
-    addr: SocketAddr,
-) -> anyhow::Result<Bound> {
-    let udp = udp::listen(event_loop, scheduler, addr)?;
-    let tcp = listen_tcp(event_loop, addr)?;
-    Ok(Bound { tcp, _udp: udp })
-}
-
-fn listen_tcp(
-    event_loop: &LoopHandle<'static, State>,
-    addr: SocketAddr,
-) -> anyhow::Result<RegistrationToken> {
-    let listener = TcpListener::bind(addr)?;
-    listener.set_nonblocking(true)?;
-
-    let source = Generic::new(listener, Interest::READ, Mode::Level);
-    let token = event_loop
-        .insert_source(source, |_, listener, state| {
-            match listener.accept() {
-                Ok((stream, peer)) => connection::spawn(state, stream, peer),
-                Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => (),
-                Err(err) => warn!("ww: error accepting a connection: {err:?}"),
-            }
-            Ok(PostAction::Continue)
-        })
-        .map_err(|err| anyhow::anyhow!("{err}"))?;
-    Ok(token)
 }
 
 #[cfg(test)]
