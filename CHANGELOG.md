@@ -4,6 +4,14 @@ Changes of ww_niri on top of upstream niri. Upstream's own changes are in its re
 
 ## [Unreleased]
 
+### Added
+
+- `ww_niri_fake`: `restart_reporting_hash` restarts its servers under another API hash (P2618#21nov-2322).
+
+### Changed
+
+- Takes wire_weaver 3faea4f58: a reconnecting client relearns the API revisions (P2618#21nov-2322).
+
 ## [26.21.0] - 2026-11-22
 
 ### Changed

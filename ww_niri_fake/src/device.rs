@@ -22,8 +22,8 @@ pub(crate) const MESSAGE_LEN_MAX: usize = 32 * 1024;
 /// Hosts the motion path serves at once, as ww_niri's UDP listener.
 const MOTION_PEERS: usize = 8;
 
-/// The link's side of the API, the same on both paths; [Shared::api_hash] overrides `api_hash()`.
-fn link_config(shared: &Shared) -> ww_device::LinkConfig<'static> {
+/// The link's side of the API, the same on both paths; [Control::api_hash] overrides `api_hash()`.
+fn link_config(control: &Control) -> ww_device::LinkConfig<'static> {
     let mut config = ww_device::LinkConfig::new(
         ww_niri_api::WW_NIRI_FULL_GID,
         ww_niri_api::WW_NIRI_WIRE_VERSION,
@@ -31,7 +31,7 @@ fn link_config(shared: &Shared) -> ww_device::LinkConfig<'static> {
         api_impl::image_facts(),
         ww_client_server::COMPACT_VERSION,
     );
-    if let Some(hash) = shared.api_hash {
+    if let Some(hash) = control.api_hash {
         config.api_hash = hash;
     }
     config
@@ -46,46 +46,66 @@ pub(crate) fn bound_path(base: &str, binds: u32) -> String {
     }
 }
 
-/// Serves both paths until the fake is dropped.
+/// Serves both paths until the fake is dropped, again after each restart.
 pub(crate) async fn run(shared: Arc<Shared>, path: String, motion_path: String) {
     let server = wire_weaver_server::Server::new(TokioClock::new());
-    let main = Paths::new(&shared, 0, path, |path| {
-        InProcessListener::new(path, MESSAGE_LEN_MAX)
-    });
-    let motion = Paths::new(&shared, 1, motion_path, |path| {
-        UdpListener::<_, MOTION_PEERS>::new(in_process::udp_device(path), MESSAGE_LEN_MAX)
-    });
     let make_main = |_: &Connection| {
         shared.links_up.fetch_add(1, Ordering::Relaxed);
         Server::new(shared.clone())
     };
     let make_motion = |_: &Connection| Server::new(shared.clone());
-    let (main, motion, ()) = tokio::join!(
-        server.serve(link_config(&shared), main, make_main, stopped(&shared)),
-        server.serve(link_config(&shared), motion, make_motion, stopped(&shared)),
-        tick(&shared),
-    );
-    if let Err(never) = main {
-        match never {}
+    loop {
+        let control = shared.control();
+        if control.stop {
+            return;
+        }
+        let main = Paths::new(&shared, 0, path.clone(), |path| {
+            InProcessListener::new(path, MESSAGE_LEN_MAX)
+        });
+        let motion = Paths::new(&shared, 1, motion_path.clone(), |path| {
+            UdpListener::<_, MOTION_PEERS>::new(in_process::udp_device(path), MESSAGE_LEN_MAX)
+        });
+        let (main, motion, ()) = tokio::join!(
+            server.serve(
+                link_config(&control),
+                main,
+                make_main,
+                stopped(&shared, control.restarts)
+            ),
+            server.serve(
+                link_config(&control),
+                motion,
+                make_motion,
+                stopped(&shared, control.restarts)
+            ),
+            tick(&shared, control.restarts),
+        );
+        if let Err(never) = main {
+            match never {}
+        }
+        // The simulated socket fails only once its path is unregistered: nothing is served there
+        // any more either way.
+        let _motion_ended = motion;
     }
-    // The simulated socket fails only once its path is unregistered: nothing is served there
-    // any more either way.
-    let _motion_ended = motion;
 }
 
-/// Completes once the fake is dropped.
-async fn stopped(shared: &Shared) {
+/// Completes once the fake is dropped, or restarted after `restarts` restarts.
+async fn stopped(shared: &Shared, restarts: u32) {
     let mut control = shared.control.subscribe();
     // The sender lives as long as `shared`.
-    let _stopped = control.wait_for(|c| c.stop).await;
+    let _stopped = control.wait_for(|c| c.stop || c.restarts != restarts).await;
 }
 
-/// Brings the model up to the clock at each of its deadlines, until the fake is dropped.
-async fn tick(shared: &Shared) {
+/// Brings the model up to the clock at each of its deadlines, until the fake is dropped or
+/// restarted after `restarts` restarts.
+async fn tick(shared: &Shared, restarts: u32) {
     let mut control = shared.control.subscribe();
     loop {
-        if control.borrow_and_update().stop {
-            return;
+        {
+            let c = control.borrow_and_update();
+            if c.stop || c.restarts != restarts {
+                return;
+            }
         }
         let deadline = shared.catch_up();
         tokio::select! {

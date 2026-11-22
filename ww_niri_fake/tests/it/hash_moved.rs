@@ -25,3 +25,22 @@ fn a_hash_that_only_the_version_moved_still_works() {
         assert_eq!(info.hostname, "fake-tv");
     });
 }
+
+#[test]
+fn a_restart_reports_the_new_hash_to_the_next_link() {
+    let tv = FakeTv::start(Options {
+        clock: ClockMode::Manual,
+        ..Options::default()
+    });
+    let hash = ApiHashPair {
+        no_docs: ApiHash::new(&[1, 2, 3, 4]),
+        with_docs: ApiHash::new(&[1, 2, 3, 4]),
+    };
+    run(async {
+        let first = connect(&tv).await.unwrap();
+        assert_eq!(first.info().call().await.unwrap().hostname, "fake-tv");
+        tv.restart_reporting_hash(Some(hash));
+        let second = connect(&tv).await.unwrap();
+        assert_eq!(second.info().call().await.unwrap().hostname, "fake-tv");
+    });
+}
