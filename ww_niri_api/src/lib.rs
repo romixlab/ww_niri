@@ -19,6 +19,7 @@ ww_si::unit! {
 #[ww_api_root]
 pub trait WwNiri {
     /// niri version, ww_niri version, hostname.
+    #[effect(read)]
     fn info() -> Info<'i>;
 
     ww_impl!(windows: Windows);
@@ -39,7 +40,9 @@ pub trait WwNiri {
 }
 
 #[ww_trait]
+#[effect(edit)]
 pub trait Windows {
+    #[effect(read)]
     fn list() -> RefVec<'i, Window<'i>>;
 
     /// Brings the window on screen: switches to its workspace and output, scrolls to its column
@@ -56,6 +59,7 @@ pub trait Windows {
     fn focus(id: WindowId) -> Result<(), WindowError>;
 
     /// Asks the app to close the window; the app may refuse or ask first.
+    #[effect(destructive)]
     fn close(id: WindowId) -> Result<(), WindowError>;
 
     fn set_fullscreen(id: WindowId, on: bool) -> Result<(), WindowError>;
@@ -68,6 +72,7 @@ pub trait Windows {
 }
 
 #[ww_trait]
+#[effect(read)]
 pub trait Outputs {
     fn list() -> RefVec<'i, Output<'i>>;
 }
@@ -76,19 +81,23 @@ pub trait Outputs {
 pub trait Apps {
     /// Runs `argv` as the compositor's user, as niri's `spawn` does: no shell, `argv[0]` looked
     /// up in PATH. Any command is allowed.
+    #[effect(job)]
     fn launch(argv: RefVec<'i, &'i str>) -> Result<Launched, LaunchError<'i>>;
 }
 
 /// One Firefox slot with its own persistent profile: `start`, then `open` as often as wanted,
 /// then `stop`.
 #[ww_trait]
+#[effect(edit)]
 pub trait Browser {
     /// Launches the slot's Firefox (kiosk, its profile, `about:blank`) and returns when it can be
     /// driven.
+    #[effect(job)]
     fn start(#[default = true] fullscreen: bool) -> Result<(), BrowserError<'i>>;
 
     /// Loads `url` (http or https) in the slot's tab and returns when the navigation is
     /// committed.
+    #[effect(outbound)]
     fn open(url: &'i str) -> Result<(), BrowserError<'i>>;
 
     /// Ends the slot's Firefox; its profile stays.
@@ -108,6 +117,7 @@ pub trait Browser {
 }
 
 #[ww_trait]
+#[effect(read)]
 pub trait Media {
     /// Every MPRIS player on the session bus, whoever started it; indexed by [PlayerId].
     ww_impl!(players[]: Player);
@@ -125,6 +135,7 @@ pub trait Player {
 
 /// Shared by `browsers[i].playback` and `media.players[j].playback`.
 #[ww_trait]
+#[effect(edit)]
 pub trait Playback {
     /// Status, track, position and capabilities.
     property!(ro+observe state: PlaybackState<'i>);
@@ -144,6 +155,7 @@ pub trait Playback {
 }
 
 #[ww_trait]
+#[effect(edit)]
 pub trait Audio {
     /// The default sink's volume, up to 150 %.
     property!(rw+observe volume: Volume);
@@ -233,6 +245,7 @@ pub trait Input {
 }
 
 #[ww_trait]
+#[effect(edit)]
 pub trait Pointer {
     /// Where the pointer is, and the window under it with the point in its own coordinates.
     /// Observers hear when either changes, whatever moved the pointer or the window.
@@ -287,6 +300,7 @@ pub trait Pointer {
 
 /// One layer above the windows where each connection owns its items (docs/ww/Overlay.md).
 #[ww_trait]
+#[effect(edit)]
 pub trait Overlay {
     /// Puts up this connection's item `key`, or changes it: content, place, priority and end.
     /// The same key of another connection is another item. Answers the item's id, kept by a
@@ -302,10 +316,12 @@ pub trait Overlay {
     fn dismiss(id: ItemId) -> Result<(), OverlayError>;
 
     /// Every item, front to back, with `own` set on this connection's.
+    #[effect(read)]
     fn list() -> RefVec<'i, ItemInfo<'i>>;
 }
 
 #[ww_trait]
+#[effect(edit)]
 pub trait Keyboard {
     /// Types the text with key presses of the configured keymap; nothing is typed when a
     /// character is on no key. A character the active layout lacks is typed on another layout
