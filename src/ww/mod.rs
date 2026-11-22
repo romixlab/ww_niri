@@ -2,13 +2,13 @@
 //! UDP on the same address and port).
 //!
 //! Everything runs on the compositor's calloop loop, like niri's IPC: `wire_weaver_server` serves
-//! each address's listeners as one task on the loop's executor (see [`serve`]), its connections
+//! each address's listeners as one task on the loop's executor (see `serve.rs`), its connections
 //! inside it. `ww.kdl` says where to listen; without
 //! it nothing listens. The file is checked for changes every second and applied when it parses.
 //! Each `listen` address that can't be bound yet is tried again at each check, and `lan:PORT` and
 //! `tailnet:PORT` are resolved again: a changed address closes its listener and binds the new
 //! one, while open connections stay until they end. Each bound `lan:PORT` listener is announced on
-//! the LAN over DNS-SD (see [`advertise`]).
+//! the LAN over DNS-SD (see `advertise.rs`).
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
