@@ -7,7 +7,8 @@ use std::rc::Rc;
 use async_channel::Receiver;
 use calloop::LoopHandle;
 use ww_niri_api::{
-    CoverError, InputErrorOwned, OutputOwned, PointerPosition, Transition, WindowOwned,
+    InputErrorOwned, ItemId, ItemInfoOwned, ItemOwned, OutputOwned, OverlayError, PointerPosition,
+    Transition, WindowOwned,
 };
 
 use super::input::{Key, Op, TextKeys};
@@ -30,18 +31,24 @@ pub trait WwHost: 'static {
     fn hide_window(&mut self, id: u64) -> bool;
     fn set_fullscreen(&mut self, id: u64, on: bool) -> bool;
 
-    /// Covers the window for connection `holder`, as `windows.cover`.
-    fn cover(
+    /// Puts up connection `owner`'s overlay item `key` on `target` until `until`, as
+    /// `overlay.put`; the item is checked.
+    fn overlay_put(
         &mut self,
-        id: u64,
-        holder: u64,
-        look: super::cover::Look,
-        mute: bool,
-    ) -> Result<(), CoverError>;
-    /// Lifts the window's cover.
-    fn uncover(&mut self, id: u64) -> Result<(), CoverError>;
-    /// Lifts the covers connection `holder` holds: it ended.
-    fn uncover_held_by(&mut self, holder: u64);
+        owner: u64,
+        key: String,
+        target: super::overlay::Target,
+        item: ItemOwned,
+        until: Option<std::time::Instant>,
+    ) -> Result<ItemId, OverlayError>;
+    /// Lifts `owner`'s item `key`.
+    fn overlay_lift(&mut self, owner: u64, key: String) -> Result<(), OverlayError>;
+    /// Lifts a dismissible item, whoever owns it.
+    fn overlay_dismiss(&mut self, id: ItemId) -> Result<(), OverlayError>;
+    /// Lifts the items connection `owner` owns: it ended.
+    fn overlay_lift_owned_by(&mut self, owner: u64);
+    /// Every item, as `owner` sees them.
+    fn overlay_list(&mut self, owner: u64) -> Vec<ItemInfoOwned>;
 
     /// What every connection shares.
     fn services(&mut self) -> Rc<super::Services>;
@@ -113,8 +120,8 @@ mod niri_state {
     use smithay::desktop::Window;
     use smithay::output::Output;
     use ww_niri_api::{
-        CoverError, InputErrorOwned, OutputOwned, PointerPosition, Transition, WindowId,
-        WindowOwned, WorkspaceId,
+        InputErrorOwned, ItemId, ItemInfoOwned, ItemOwned, OutputOwned, OverlayError,
+        PointerPosition, Transition, WindowId, WindowOwned, WorkspaceId,
     };
 
     use super::{Key, Op, TextKeys, WwHost};
@@ -256,22 +263,31 @@ mod niri_state {
             true
         }
 
-        fn cover(
+        fn overlay_put(
             &mut self,
-            id: u64,
-            holder: u64,
-            look: crate::ww::cover::Look,
-            mute: bool,
-        ) -> Result<(), CoverError> {
-            self.ww_cover(id, holder, look, mute)
+            owner: u64,
+            key: String,
+            target: crate::ww::overlay::Target,
+            item: ItemOwned,
+            until: Option<std::time::Instant>,
+        ) -> Result<ItemId, OverlayError> {
+            self.ww_overlay_put(owner, &key, target, item, until)
         }
 
-        fn uncover(&mut self, id: u64) -> Result<(), CoverError> {
-            self.ww_uncover(id)
+        fn overlay_lift(&mut self, owner: u64, key: String) -> Result<(), OverlayError> {
+            self.ww_overlay_lift(owner, &key)
         }
 
-        fn uncover_held_by(&mut self, holder: u64) {
-            self.ww_uncover_held_by(holder);
+        fn overlay_dismiss(&mut self, id: ItemId) -> Result<(), OverlayError> {
+            self.ww_overlay_dismiss(id)
+        }
+
+        fn overlay_lift_owned_by(&mut self, owner: u64) {
+            self.ww_overlay_lift_owned_by(owner);
+        }
+
+        fn overlay_list(&mut self, owner: u64) -> Vec<ItemInfoOwned> {
+            self.ww_overlay_list(owner)
         }
 
         fn services(&mut self) -> std::rc::Rc<crate::ww::Services> {

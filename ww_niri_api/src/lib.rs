@@ -30,6 +30,8 @@ pub trait WwNiri {
     ww_impl!(audio: Audio);
     /// Pointer and keyboard, injected through kernel uinput devices as real devices.
     ww_impl!(input: Input);
+    /// Items each client puts above the windows: covers, texts, a clock, notices.
+    ww_impl!(overlay: Overlay);
 
     /// Windows, outputs, browsers and players coming and going, in order. After
     /// [Event::Resync] the client lists again.
@@ -57,25 +59,6 @@ pub trait Windows {
     fn close(id: WindowId) -> Result<(), WindowError>;
 
     fn set_fullscreen(id: WindowId, on: bool) -> Result<(), WindowError>;
-
-    /// Covers the window with a blur of what it shows, dimmed, and `card` on top, for `lasts`
-    /// (1 ms to 15 min). The cover is held by this connection: it lifts at the end of `lasts`, on
-    /// [Windows::uncover], or when the connection ends, whichever comes first; then
-    /// [Event::CoverLifted] says why. Covering a covered window replaces its card and end, and
-    /// this connection holds it from then on. Popups of the window are hidden while covered.
-    ///
-    /// With `mute` the default sink is muted while the cover holds, under the same lease: when
-    /// the last muting cover lifts, the sink gets back the mute it had before the first. Without
-    /// an audio server or a default sink the cover still holds, unmuted.
-    fn cover(
-        id: WindowId,
-        card: Card<'i>,
-        lasts: Millis<u32>,
-        #[default = false] mute: bool,
-    ) -> Result<(), CoverError>;
-
-    /// Lifts the window's cover, whoever set it.
-    fn uncover(id: WindowId) -> Result<(), CoverError>;
 
     /// Hides the window: it leaves its workspace and keeps running, mapped, but niri never
     /// draws or focuses it, in no workspace, overview or switch, until [Windows::show]. Listed
@@ -116,16 +99,6 @@ pub trait Browser {
         transition: Option<Transition>,
         fullscreen: Option<bool>,
     ) -> Result<(), BrowserError<'i>>;
-
-    /// Covers the slot's window, as [Windows::cover]; `NoSuchWindow` while it has none.
-    fn cover(
-        card: Card<'i>,
-        lasts: Millis<u32>,
-        #[default = false] mute: bool,
-    ) -> Result<(), CoverError>;
-
-    /// Lifts the cover of the slot's window, as [Windows::uncover].
-    fn uncover() -> Result<(), CoverError>;
 
     /// Phase, URL, window and current player of the slot.
     property!(ro+observe state: BrowserState<'i>);
@@ -312,6 +285,26 @@ pub trait Pointer {
     ) -> Result<(), InputError<'i>>;
 }
 
+/// One layer above the windows where each connection owns its items (docs/ww/Overlay.md).
+#[ww_trait]
+pub trait Overlay {
+    /// Puts up this connection's item `key`, or changes it: content, place, priority and end.
+    /// The same key of another connection is another item. Answers the item's id, kept by a
+    /// change. The item lifts at the end of `lasts`, on [Overlay::lift], on [Overlay::dismiss]
+    /// when dismissible, when its window closes, or when this connection ends; then
+    /// [Event::OverlayEnded] says why.
+    fn put(key: &'i str, item: Item<'i>) -> Result<ItemId, OverlayError>;
+
+    /// Lifts this connection's item `key`.
+    fn lift(key: &'i str) -> Result<(), OverlayError>;
+
+    /// Lifts an item put up as `dismissible`, whoever owns it: a person's "show it".
+    fn dismiss(id: ItemId) -> Result<(), OverlayError>;
+
+    /// Every item, front to back, with `own` set on this connection's.
+    fn list() -> RefVec<'i, ItemInfo<'i>>;
+}
+
 #[ww_trait]
 pub trait Keyboard {
     /// Types the text with key presses of the configured keymap; nothing is typed when a
@@ -331,13 +324,13 @@ pub trait Keyboard {
     fn key_up(key: &'i str) -> Result<(), InputError<'i>>;
 }
 
-/// The card of a cover, centred on the window, line by line from the top.
+/// The card of a cover, centred on its surface, line by line from the top.
 #[derive_shrink_wrap(owned(feature = "std"), derive(Clone, Debug, PartialEq, Eq))]
 pub struct Card<'i> {
     /// The large first line, like "Реклама".
     pub title: &'i str,
     /// The text before the countdown, like "Передача вернётся через": the line ends with the
-    /// time left as `m:ss`. `None`: no countdown line.
+    /// time left to the item's end as `m:ss`. `None`, or an item without an end: no countdown.
     pub countdown: Option<&'i str>,
     /// A large clock, `HH:MM` in the compositor's local time.
     pub clock: bool,
@@ -350,48 +343,211 @@ pub const OWNER_LEN_MAX: usize = 64;
 /// Longest user agent of a browser slot, in bytes.
 pub const USER_AGENT_LEN_MAX: usize = 512;
 
-/// Longest `lasts` of a cover.
-pub const COVER_LASTS_MAX: core::time::Duration = core::time::Duration::from_secs(15 * 60);
-/// Longest text of a card line, in bytes.
-pub const CARD_TEXT_LEN_MAX: usize = 200;
+/// An overlay item's id: given by its first [Overlay::put], never reused while the compositor
+/// runs.
+#[derive_shrink_wrap(
+    borrowed,
+    owned(feature = "std"),
+    derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)
+)]
+pub struct ItemId(pub u64);
+
+/// What an overlay item is, where, and for how long.
+#[derive_shrink_wrap(owned(feature = "std"), derive(Clone, Debug, PartialEq, Eq))]
+pub struct Item<'i> {
+    pub place: Place<'i>,
+    pub content: Content<'i>,
+    pub backdrop: Backdrop,
+    /// Higher is drawn on top; equal ones by id, the later on top. By convention 0-63 ambient
+    /// (a clock), 64-127 notices, 128-191 covers, 192-255 status of what plays.
+    pub priority: u8,
+    /// 1 ms to 15 min. `None`: until lifted, dismissed or the connection ends.
+    pub lasts: Option<Millis<u32>>,
+    /// The default sink is muted while the item is up; when the last muting item lifts, the
+    /// sink gets back the mute it had before the first.
+    pub mute: bool,
+    /// Any connection may [Overlay::dismiss] it.
+    pub dismissible: bool,
+}
+
+/// A surface and where on it.
+#[derive_shrink_wrap(owned(feature = "std"), derive(Clone, Debug, PartialEq, Eq))]
+pub struct Place<'i> {
+    pub on: Surface<'i>,
+    pub at: At,
+}
+
+/// What an overlay item is drawn on.
+#[derive_shrink_wrap(owned(feature = "std"), derive(Clone, Debug, PartialEq, Eq), ww_repr = unib32)]
+pub enum Surface<'i> {
+    /// The window: the item moves, scales and hides with it.
+    Window(WindowId),
+    /// The window of a browser slot, found at each [Overlay::put].
+    Slot(BrowserSlot),
+    /// An output by connector name; `None` is the focused one.
+    Output(Option<&'i str>),
+}
+
+/// Where on its surface an item sits.
+#[derive_shrink_wrap(
+    borrowed,
+    owned(feature = "std"),
+    derive(Copy, Clone, Debug, PartialEq, Eq),
+    ww_repr = unib32
+)]
+pub enum At {
+    /// The whole surface, the content centred on it.
+    Fill,
+    /// The item's point named `anchor` at the surface's same point, moved by `dx` and `dy`;
+    /// the item is as large as its content.
+    Anchor { anchor: Anchor, dx: Px, dy: Px },
+}
+
+/// A corner, the middle of an edge, or the centre.
+#[derive_shrink_wrap(borrowed, owned(feature = "std"), derive(Copy, Clone, Debug, PartialEq, Eq), ww_repr = unib32)]
+pub enum Anchor {
+    TopLeft,
+    Top,
+    TopRight,
+    Left,
+    Center,
+    Right,
+    BottomLeft,
+    Bottom,
+    BottomRight,
+}
+
+/// What an overlay item draws over its backdrop.
+#[derive_shrink_wrap(owned(feature = "std"), derive(Clone, Debug, PartialEq, Eq), ww_repr = unib32)]
+pub enum Content<'i> {
+    /// A cover's card; only at [At::Fill].
+    Card(Card<'i>),
+    /// Lines of text.
+    Text { text: &'i str, size: TextSize },
+    /// `HH:MM` in the compositor's local time.
+    Clock { size: TextSize },
+    /// A bold title and a smaller body.
+    Notice {
+        title: &'i str,
+        body: Option<&'i str>,
+    },
+}
+
+/// A text's size, laid out for a surface 1080 px high and scaled to the real one.
+#[derive_shrink_wrap(borrowed, owned(feature = "std"), derive(Copy, Clone, Debug, PartialEq, Eq), ww_repr = unib32)]
+pub enum TextSize {
+    Small,
+    Medium,
+    Large,
+}
+
+/// What an item has under its content: a box around an anchored item's content, the whole
+/// surface at [At::Fill]. At [At::Fill] on a window with `blur`, the window is not drawn, only
+/// its blurred copy, and its popups are hidden.
+#[derive_shrink_wrap(
+    borrowed,
+    owned(feature = "std"),
+    derive(Copy, Clone, Debug, Default, PartialEq, Eq)
+)]
+pub struct Backdrop {
+    /// Passes of the blur, 0 (none) to [BLUR_MAX].
+    pub blur: u8,
+    /// Percent of a warm dark over the blur, 0 to 100.
+    pub dim: u8,
+}
+
+/// An item as [Overlay::list] shows it.
+#[derive_shrink_wrap(owned(feature = "std"), derive(Clone, Debug, PartialEq, Eq))]
+pub struct ItemInfo<'i> {
+    pub id: ItemId,
+    /// The owner's key.
+    pub key: &'i str,
+    /// This connection owns it.
+    pub own: bool,
+    pub item: Item<'i>,
+}
+
+/// Why an overlay item lifted.
+#[derive_shrink_wrap(borrowed, owned(feature = "std"), derive(Copy, Clone, Debug, PartialEq, Eq), ww_repr = unib32)]
+pub enum ItemEnd {
+    /// Its `lasts` passed.
+    Deadline,
+    /// Its owner's [Overlay::lift].
+    Lifted,
+    /// [Overlay::dismiss].
+    Dismissed,
+    /// The owner's connection ended.
+    Disconnected,
+    /// Its window closed.
+    TargetGone,
+}
+
+/// Longest `lasts` of an overlay item.
+pub const ITEM_LASTS_MAX: core::time::Duration = core::time::Duration::from_secs(15 * 60);
+/// Longest text of an overlay item, and longest line of a card, in bytes.
+pub const ITEM_TEXT_LEN_MAX: usize = 500;
+/// Longest key of an overlay item, in bytes.
+pub const ITEM_KEY_LEN_MAX: usize = 64;
+/// Most passes of a backdrop's blur.
+pub const BLUR_MAX: u8 = 4;
+/// Most items one connection has up at once.
+pub const ITEMS_PER_OWNER_MAX: usize = 16;
+/// Most items up at once.
+pub const ITEMS_MAX: usize = 128;
 
 #[cfg(feature = "std")]
-impl CardOwned {
-    /// Checks the card and a cover's `lasts` against [COVER_LASTS_MAX] and
-    /// [CARD_TEXT_LEN_MAX]; answers how long the cover lasts.
+impl ItemOwned {
+    /// Checks the item and its `key` against the limits; answers how long it lasts.
     ///
     /// # Errors
     ///
-    /// `BadArgument` for `lasts` of 0 or past the limit, or a line past its limit.
-    pub fn check_cover(&self, lasts: Millis<u32>) -> Result<core::time::Duration, CoverError> {
-        let lasts = core::time::Duration::from_millis(u64::from(lasts.get()));
-        let texts = [
-            Some(self.title.as_str()),
-            self.countdown.as_deref(),
-            self.footer.as_deref(),
-        ];
-        let too_long = texts
-            .into_iter()
-            .flatten()
-            .any(|text| text.len() > CARD_TEXT_LEN_MAX);
-        if lasts.is_zero() || lasts > COVER_LASTS_MAX || too_long {
-            return Err(CoverError::BadArgument);
+    /// `BadArgument` for a content or place this side does not know, an empty or long key, a
+    /// `lasts` of 0 or past [ITEM_LASTS_MAX], a blur past [BLUR_MAX], a dim past 100, a text past
+    /// [ITEM_TEXT_LEN_MAX] or a card not at [At::Fill].
+    pub fn check(&self, key: &str) -> Result<Option<core::time::Duration>, OverlayError> {
+        let lasts = self
+            .lasts
+            .map(|l| core::time::Duration::from_millis(u64::from(l.get())));
+        let texts: [Option<&str>; 4] = match &self.content {
+            ContentOwned::Card(card) => [
+                Some(card.title.as_str()),
+                card.countdown.as_deref(),
+                card.footer.as_deref(),
+                None,
+            ],
+            ContentOwned::Text { text, .. } => [Some(text.as_str()), None, None, None],
+            ContentOwned::Clock { .. } => [None; 4],
+            ContentOwned::Notice { title, body } => {
+                [Some(title.as_str()), body.as_deref(), None, None]
+            }
+            // From a newer client: this side can't draw it.
+            ContentOwned::Unknown(_) => return Err(OverlayError::BadArgument),
+        };
+        let unknown_place = matches!(self.place.on, SurfaceOwned::Unknown(_))
+            || matches!(
+                self.place.at,
+                At::Unknown(_)
+                    | At::Anchor {
+                        anchor: Anchor::Unknown(_),
+                        ..
+                    }
+            );
+        let bad = unknown_place
+            || key.is_empty()
+            || key.len() > ITEM_KEY_LEN_MAX
+            || lasts.is_some_and(|l| l.is_zero() || l > ITEM_LASTS_MAX)
+            || self.backdrop.blur > BLUR_MAX
+            || self.backdrop.dim > 100
+            || texts
+                .into_iter()
+                .flatten()
+                .any(|t| t.len() > ITEM_TEXT_LEN_MAX)
+            || (matches!(self.content, ContentOwned::Card(_)) && self.place.at != At::Fill);
+        if bad {
+            return Err(OverlayError::BadArgument);
         }
         Ok(lasts)
     }
-}
-
-/// Why a cover lifted.
-#[derive_shrink_wrap(borrowed, owned(feature = "std"), derive(Copy, Clone, Debug, PartialEq, Eq), ww_repr = unib32)]
-pub enum CoverEnd {
-    /// Its `lasts` passed.
-    Deadline,
-    /// [Windows::uncover] or [Browser::uncover].
-    Uncovered,
-    /// The connection that held it ended.
-    Disconnected,
-    /// The window closed.
-    WindowClosed,
 }
 
 /// An eased move, for [Windows::show].
@@ -523,10 +679,10 @@ pub enum Event<'i> {
     },
     PlayerAppeared(PlayerInfo<'i>),
     PlayerGone(PlayerId),
-    /// A window's cover lifted; not sent when a new cover replaced it.
-    CoverLifted {
-        window: WindowId,
-        why: CoverEnd,
+    /// An overlay item lifted; not sent when a `put` changed it.
+    OverlayEnded {
+        id: ItemId,
+        why: ItemEnd,
     },
     /// The client fell behind and missed events: list everything again.
     Resync,
@@ -640,11 +796,15 @@ pub enum WindowError {
 }
 
 #[derive_shrink_wrap(borrowed, owned(feature = "std"), derive(Copy, Clone, Debug, PartialEq, Eq), ww_repr = unib32)]
-pub enum CoverError {
+pub enum OverlayError {
     NoSuchWindow,
-    /// [Windows::uncover] of a window without a cover.
-    NotCovered,
-    /// `lasts` out of range, or a card text longer than 200 bytes.
+    /// No item of this connection by that key, or none by that id.
+    NoSuchItem,
+    /// [Overlay::dismiss] of an item not put up as dismissible.
+    NotDismissible,
+    /// The connection has [ITEMS_PER_OWNER_MAX] items up, or the layer [ITEMS_MAX].
+    TooMany,
+    /// See [ItemOwned::check].
     BadArgument,
 }
 
@@ -675,7 +835,7 @@ pub enum MediaError<'i> {
 }
 
 ww_api::api_error!(WindowError);
-ww_api::api_error!(CoverError);
+ww_api::api_error!(OverlayError);
 ww_api::api_error!(LaunchError<'i>);
 ww_api::api_error!(BrowserError<'i>);
 ww_api::api_error!(MediaError<'i>);

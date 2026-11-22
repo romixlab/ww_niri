@@ -8,8 +8,8 @@ use wire_weaver::ww_api::{Totals, TotalsSession};
 use wire_weaver_client::CallError;
 use ww_niri_api::{
     BrowserErrorOwned, BrowserPhase, BrowserSlot, Button, Delta, InputErrorOwned, LaunchErrorOwned,
-    MediaErrorOwned, Modifiers, PlaybackStatus, PlayerSourceOwned, Point, Volume, WindowError,
-    WindowId,
+    MediaErrorOwned, Modifiers, PlaybackStatus, PlayerSourceOwned, Point, SurfaceOwned, Volume,
+    WindowError, WindowId,
 };
 use ww_niri_fake::{ErrorKind, InputEntry, ReleasedBy, METHODS};
 
@@ -51,11 +51,17 @@ fn every_method_answers() {
             Err(CallError::Device(WindowError::NoSuchWindow))
         ));
 
-        w.cover(WindowId(2), super::covers::card(), Fixed::new(1000), true)
+        let overlay = client.overlay();
+        let item = super::overlay::cover(SurfaceOwned::Window(WindowId(2)), 1000, true);
+        let id = overlay.put("ad".to_owned(), item).call().await.unwrap();
+        assert_eq!(overlay.list().call().await.unwrap()[0].id, id);
+        overlay.dismiss(id).call().await.unwrap();
+        overlay
+            .put("exit".to_owned(), super::overlay::text(2))
             .call()
             .await
             .unwrap();
-        w.uncover(WindowId(2)).call().await.unwrap();
+        overlay.lift("exit".to_owned()).call().await.unwrap();
         w.hide(WindowId(2)).call().await.unwrap();
         w.show(WindowId(2), None, None).call().await.unwrap();
 
@@ -92,11 +98,9 @@ fn every_method_answers() {
         assert_eq!(state.url.as_deref(), Some("https://example.org/watch"));
         assert!(state.window.is_some() && state.player.is_some());
         slot.show(None, Some(false)).call().await.unwrap();
-        slot.cover(super::covers::card(), Fixed::new(1000), false)
-            .call()
-            .await
-            .unwrap();
-        slot.uncover().call().await.unwrap();
+        let item = super::overlay::cover(SurfaceOwned::Slot(BrowserSlot(0)), 1000, false);
+        overlay.put("slot".to_owned(), item).call().await.unwrap();
+        overlay.lift("slot".to_owned()).call().await.unwrap();
 
         let playback = slot.playback();
         assert_eq!(

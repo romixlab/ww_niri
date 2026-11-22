@@ -191,130 +191,109 @@ fn a_point_in_a_window() {
     });
 }
 
-#[test]
-fn covers_reach_the_tv_and_lift_with_the_connection() {
-    use ww_niri_api::{CardOwned, CoverEnd, CoverError, WindowId};
-    use ww_niri_client::CoverLifted;
+/// An ad cover over `on` for `lasts_ms`.
+fn ad_cover(on: ww_niri_api::SurfaceOwned, lasts_ms: u32, mute: bool) -> ww_niri_api::ItemOwned {
+    use ww_niri_api::{At, Backdrop, CardOwned, ContentOwned, ItemOwned, PlaceOwned};
 
-    let fake = fake();
-    run(async {
-        let tv = connect(&fake).await;
-        let mut lifted = tv.cover_lifted();
-        let mut next_lifted = async || {
-            super::soon("a cover lifts", lifted.recv())
-                .await
-                .expect("no lifted cover missed")
-        };
-        let card = CardOwned {
+    ItemOwned {
+        place: PlaceOwned { on, at: At::Fill },
+        content: ContentOwned::Card(CardOwned {
             title: "Реклама".to_owned(),
             countdown: Some("Передача вернётся через".to_owned()),
             clock: true,
             footer: None,
-        };
-        let window = tv.window(WindowId(2));
-        window
-            .cover(card.clone(), Duration::from_secs(130), true)
-            .await
-            .unwrap();
-        assert_eq!(fake.covers()[0].window, WindowId(2));
-        assert!(fake.covers()[0].mute);
-        until_fake("the sink is muted", || fake.audio().1).await;
-        assert!(matches!(
-            tv.slot(0)
-                .cover(card.clone(), Duration::from_secs(1), false)
-                .await,
-            Err(TvError::Cover(CoverError::NoSuchWindow))
-        ));
-        assert!(matches!(
-            window
-                .cover(card.clone(), Duration::from_secs(u64::from(u32::MAX)), true)
-                .await,
-            Err(TvError::BadArgument {
-                what: "cover lasts"
-            })
-        ));
-        window.uncover().await.unwrap();
-        assert!(fake.covers().is_empty());
-        assert!(!fake.audio().1);
-        assert_eq!(
-            next_lifted().await,
-            CoverLifted {
-                window: WindowId(2),
-                why: CoverEnd::Uncovered
-            }
-        );
-
-        // Its end.
-        window
-            .cover(card.clone(), Duration::from_secs(5), false)
-            .await
-            .unwrap();
-        fake.advance(Duration::from_secs(5));
-        assert_eq!(
-            next_lifted().await,
-            CoverLifted {
-                window: WindowId(2),
-                why: CoverEnd::Deadline
-            }
-        );
-
-        // A reconnect lifts it, and the client tells: it renews what should stay.
-        window
-            .cover(card, Duration::from_secs(130), true)
-            .await
-            .unwrap();
-        fake.drop_connection();
-        until_fake("the cover lifts", || fake.covers().is_empty()).await;
-        assert_eq!(
-            next_lifted().await,
-            CoverLifted {
-                window: WindowId(2),
-                why: CoverEnd::Disconnected
-            }
-        );
-        assert!(!fake.audio().1);
-        super::connected(&tv).await;
-        assert!(lifted.try_recv().is_err());
-    });
+        }),
+        backdrop: Backdrop { blur: 2, dim: 65 },
+        priority: 150,
+        lasts: Some(Fixed::new(lasts_ms)),
+        mute,
+        dismissible: true,
+    }
 }
 
 #[test]
-fn a_slot_cover_lifts_with_its_window() {
-    use ww_niri_api::{CardOwned, CoverEnd};
-    use ww_niri_client::CoverLifted;
+fn overlay_items_reach_the_tv_and_lift_with_the_connection() {
+    use ww_niri_api::{BrowserSlot, ItemEnd, OverlayError, SurfaceOwned, WindowId};
+    use ww_niri_client::OverlayEnded;
 
     let fake = fake();
     run(async {
         let tv = connect(&fake).await;
-        let mut lifted = tv.cover_lifted();
-        tv.slot(0).start(true).await.unwrap();
-        fake.advance(Duration::from_millis(500));
-        let snapshot = super::until(&tv, "the slot's window", |s| {
-            s.slots[0]
-                .state
-                .as_ref()
-                .is_some_and(|s| s.window.is_some())
-        })
-        .await;
-        let window = snapshot.slots[0].state.as_ref().unwrap().window.unwrap();
-        let card = CardOwned {
-            title: "Реклама".to_owned(),
-            countdown: None,
-            clock: false,
-            footer: None,
+        let mut ended = tv.overlay_ended();
+        let mut next_ended = async || {
+            super::soon("an item lifts", ended.recv())
+                .await
+                .expect("no ended item missed")
         };
-        tv.slot(0)
-            .cover(card, Duration::from_secs(60), false)
+        let window = SurfaceOwned::Window(WindowId(2));
+        let overlay = tv.overlay();
+        let key = || "ad".to_owned();
+        overlay
+            .put(key(), ad_cover(window.clone(), 130_000, true))
+            .await
+            .unwrap();
+        let item = fake.overlay()[0].clone();
+        assert_eq!(item.window, Some(WindowId(2)));
+        assert!(item.item.mute);
+        until_fake("the sink is muted", || fake.audio().1).await;
+        assert!(matches!(
+            overlay
+                .put(
+                    key(),
+                    ad_cover(SurfaceOwned::Slot(BrowserSlot(0)), 1000, false)
+                )
+                .await,
+            Err(TvError::Overlay(OverlayError::NoSuchWindow))
+        ));
+        overlay.lift(key()).await.unwrap();
+        assert!(fake.overlay().is_empty());
+        assert!(!fake.audio().1);
+        assert_eq!(
+            next_ended().await,
+            OverlayEnded {
+                id: item.id,
+                key: Some(key()),
+                why: ItemEnd::Lifted
+            }
+        );
+
+        // Its end.
+        overlay
+            .put(key(), ad_cover(window.clone(), 5_000, false))
+            .await
+            .unwrap();
+        fake.advance(Duration::from_secs(5));
+        assert_eq!(next_ended().await.why, ItemEnd::Deadline);
+
+        // Another client's item comes without a key.
+        let other = connect(&fake).await;
+        other
+            .overlay()
+            .put(key(), ad_cover(window.clone(), 60_000, false))
+            .await
+            .unwrap();
+        let theirs = fake.overlay()[0].id;
+        overlay.dismiss(theirs).await.unwrap();
+        assert_eq!(
+            next_ended().await,
+            OverlayEnded {
+                id: theirs,
+                key: None,
+                why: ItemEnd::Dismissed
+            }
+        );
+
+        // A reconnect lifts it, and the client tells: it puts up again what should stay.
+        overlay
+            .put(key(), ad_cover(window, 130_000, true))
             .await
             .unwrap();
         fake.drop_connection();
-        let got = super::soon("a cover lifts", lifted.recv()).await.unwrap();
-        assert_eq!(
-            got,
-            CoverLifted {
-                window,
-                why: CoverEnd::Disconnected
-            }
-        );
+        until_fake("the item lifts", || fake.overlay().is_empty()).await;
+        let got = next_ended().await;
+        assert_eq!((got.key, got.why), (Some(key()), ItemEnd::Disconnected));
+        assert!(!fake.audio().1);
+        super::connected(&tv).await;
+        assert!(ended.try_recv().is_err());
     });
 }

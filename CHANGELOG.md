@@ -4,6 +4,17 @@ Changes of ww_niri on top of upstream niri. Upstream's own changes are in its re
 
 ## [Unreleased]
 
+### Added
+
+- Control API `overlay`: items each client owns by key, stacked by priority, on windows, slots or outputs (P2618).
+- Overlay kinds: blurred cover with a card, text, clock and notice, with configurable blur, dim and anchor (P2618).
+- `ww_niri_client`: `tv.overlay()` puts, lifts and dismisses items; `Tv::overlay_ended` tells each end (P2618).
+- `ww_niri_fake`: the overlay with the same rules; `FakeTv::overlay` lists the items (P2618).
+
+### Removed
+
+- **Breaking:** control API: `windows.cover`, `windows.uncover`, `browsers[].cover`, `browsers[].uncover` and `CoverLifted`; use `overlay` (P2618).
+
 ## [26.21.1] - 2026-11-22
 
 ### Added

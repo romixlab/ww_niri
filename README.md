@@ -141,6 +141,10 @@ We also have a community Discord server: https://discord.gg/vT8Sfjy7sx
 [Dux Modular Shell]: https://duxlabs.dev/
 [Noctalia]: https://noctalia.dev/
 
+## The overlay layer (ww_niri)
+
+Control API clients put items on one layer above the windows: covers, texts, a clock, notices, each owned by its client and stacked by priority. See [docs/ww/Overlay.md](docs/ww/Overlay.md).
+
 ## Deploying niri on a PC (ww_niri)
 
 - `just deploy`: pulls `--ff-only` (refuses on local changes), builds `--profile deploy`, installs through binkeep (`deploy/binkeep.toml`), checks `niri --version` against HEAD.

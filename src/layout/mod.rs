@@ -329,10 +329,10 @@ pub trait LayoutElement {
 
     fn rules(&self) -> &ResolvedWindowRules;
 
-    /// What the element draws instead of itself while a control API client covers it.
+    /// The control API's overlay items on the element, front to back.
     #[cfg(feature = "ww")]
-    fn cover(&self) -> Option<&std::rc::Rc<crate::ww::cover::Look>> {
-        None
+    fn overlay(&self) -> &[std::rc::Rc<crate::ww::overlay::Look>] {
+        &[]
     }
 
     /// Runs periodic clean-up tasks.

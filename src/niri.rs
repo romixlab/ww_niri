@@ -166,6 +166,7 @@ use crate::protocols::gamma_control::GammaControlManagerState;
 use crate::protocols::mutter_x11_interop::MutterX11InteropManagerState;
 use crate::protocols::output_management::OutputManagementManagerState;
 use crate::protocols::screencopy::{Screencopy, ScreencopyManagerState};
+use crate::render_helpers::background_effect::BackgroundEffectElement;
 use crate::render_helpers::blur::BlurOptions;
 use crate::render_helpers::debug::push_opaque_regions;
 use crate::render_helpers::primary_gpu_texture::PrimaryGpuTextureRenderElement;
@@ -892,6 +893,8 @@ impl State {
         self.refresh_pointer_contents();
         #[cfg(feature = "ww")]
         self.ww_refresh_pointer();
+        #[cfg(feature = "ww")]
+        self.ww_overlay_refresh();
         foreign_toplevel::refresh(self);
         ext_workspace::refresh(self);
         self.refresh_image_copy_capture();
@@ -4778,6 +4781,24 @@ impl Niri {
         self.window_mru_ui
             .render_output(self, output, ctx.r(), &mut |elem| push(elem.into()));
 
+        // Then, the control API's overlay items on the output.
+        #[cfg(feature = "ww")]
+        {
+            use crate::ww::overlay::render::OverlayElement;
+
+            let focused = self.layout.active_output() == Some(output);
+            self.ww.render_output(
+                ctx.as_gles().renderer,
+                output,
+                focused,
+                &mut |elem| match elem {
+                    OverlayElement::Texture(elem) => push(elem.into()),
+                    OverlayElement::SolidColor(elem) => push(elem.into()),
+                    OverlayElement::Blur(elem) => push(BackgroundEffectElement::from(elem).into()),
+                },
+            );
+        }
+
         // Don't draw the focus ring on the workspaces while interactively moving above those
         // workspaces, since the interactively-moved window already has a focus ring.
         let focus_ring = !self.layout.interactive_move_is_moving_above_output(output);
@@ -7588,6 +7609,7 @@ niri_render_elements! {
         WindowMruUi = WindowMruUiRenderElement<R>,
         ExitConfirmDialog = ExitConfirmDialogRenderElement,
         Texture = PrimaryGpuTextureRenderElement,
+        BackgroundEffect = BackgroundEffectElement,
         // Used for the CPU-rendered panels.
         RelocatedMemoryBuffer = RelocateRenderElement<MemoryRenderBufferRenderElement<R>>,
     }

@@ -6,9 +6,9 @@
 //! When the server goes away the task connects again every few seconds. The `pulseaudio` crate
 //! gives the messages; the socket is the loop's.
 //!
-//! Covers hold a mute ([Audio::hold_mute]): the sink is muted when the first muting cover starts
-//! and gets its earlier mute back when the last one lifts. Changes in between, a user's unmute
-//! too, stay.
+//! Overlay items hold a mute ([Audio::hold_mute]): the sink is muted when the first muting item
+//! goes up and gets its earlier mute back when the last one lifts. Changes in between, a user's
+//! unmute too, stay.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -298,7 +298,7 @@ pub struct Audio {
     client: RefCell<Option<Rc<Client>>>,
     sink: RefCell<Option<SinkState>>,
     watchers: RefCell<Vec<Sender<()>>>,
-    /// While covers hold the mute: the sink's mute before they did.
+    /// While overlay items hold the mute: the sink's mute before they did.
     mute_held: Cell<Option<bool>>,
     /// The mute the mute task sets next.
     mute_next: Cell<Option<bool>>,
@@ -324,7 +324,7 @@ impl Audio {
         match (on, self.mute_held.get()) {
             (true, None) => {
                 let Some(sink) = self.sink() else {
-                    warn!("ww: no default sink to mute under a cover");
+                    warn!("ww: no default sink to mute under an overlay item");
                     return;
                 };
                 self.mute_held.set(Some(sink.muted));
@@ -349,7 +349,7 @@ impl Audio {
         while self.mute_wake.1.recv().await.is_ok() {
             if let Some(muted) = self.mute_next.take() {
                 if let Err(err) = self.set_muted(muted).await {
-                    warn!("ww: error setting the cover's mute {muted}: {err}");
+                    warn!("ww: error setting the overlay's mute {muted}: {err}");
                 }
             }
         }

@@ -106,9 +106,9 @@ pub struct Tile<W: LayoutElement> {
     /// Extra damage for clipped surface corner radius changes.
     rounded_corner_damage: RoundedCornerDamage,
 
-    /// Draws the window's cover while a control API client covers it.
+    /// Draws the control API's overlay items on the window.
     #[cfg(feature = "ww")]
-    cover: crate::ww::cover::render::CoverRender,
+    overlay: crate::ww::overlay::render::OverlayRender,
 
     /// The view size for the tile's workspace.
     ///
@@ -220,7 +220,7 @@ impl<W: LayoutElement> Tile<W> {
             unmap_snapshot: None,
             rounded_corner_damage: Default::default(),
             #[cfg(feature = "ww")]
-            cover: Default::default(),
+            overlay: Default::default(),
             view_size,
             scale,
             clock,
@@ -1124,9 +1124,51 @@ impl<W: LayoutElement> Tile<W> {
             .geometry_corner_radius()
             .scaled_by(1. - expanded_progress as f32);
 
-        // A covered window shows only its cover: no popups, no resize.
+        // The overlay's items go on top. A covered window shows only its blurred copy under
+        // them: no popups, no resize.
+        let mut pushed_resize = false;
         #[cfg(feature = "ww")]
-        let covered = self.window.cover().is_some();
+        let covered = !self.window.overlay().is_empty() && {
+            use crate::ww::overlay::render::{Area, OverlayElement};
+
+            let ctx = ctx.as_gles();
+            let target = ctx.target;
+            let area = Area {
+                loc: window_render_loc,
+                size: animated_window_size,
+                scale,
+                alpha: win_alpha,
+            };
+            let mut window = |renderer: &mut GlesRenderer, scale| {
+                let mut elements = Vec::new();
+                let ctx = RenderCtx {
+                    renderer,
+                    target,
+                    xray: None,
+                };
+                self.window
+                    .render_normal(ctx, Point::from((0., 0.)), scale, 1., &mut |elem| {
+                        elements.push(elem)
+                    });
+                elements
+            };
+            let drawn = self.overlay.render(
+                ctx.renderer,
+                self.window.overlay(),
+                area,
+                Some(&mut window),
+                &mut |elem| match elem {
+                    OverlayElement::Texture(elem) => push(elem.into()),
+                    OverlayElement::SolidColor(elem) => push(elem.into()),
+                    OverlayElement::Blur(elem) => push(BackgroundEffectElement::from(elem).into()),
+                },
+            );
+            if drawn.covered {
+                self.window.set_offscreen_data(drawn.data);
+                pushed_resize = true;
+            }
+            drawn.covered
+        };
         #[cfg(not(feature = "ww"))]
         let covered = false;
 
@@ -1143,41 +1185,6 @@ impl<W: LayoutElement> Tile<W> {
         }
 
         // If we're resizing, try to render a shader, or a fallback.
-        let mut pushed_resize = false;
-        #[cfg(feature = "ww")]
-        if let Some(look) = self.window.cover() {
-            use crate::ww::cover::render::CoverElement;
-
-            let ctx = ctx.as_gles();
-            let target = ctx.target;
-            let data = self.cover.render(
-                ctx.renderer,
-                look,
-                window_render_loc,
-                animated_window_size,
-                scale,
-                win_alpha,
-                |renderer, scale| {
-                    let mut elements = Vec::new();
-                    let ctx = RenderCtx {
-                        renderer,
-                        target,
-                        xray: None,
-                    };
-                    self.window
-                        .render_normal(ctx, Point::from((0., 0.)), scale, 1., &mut |elem| {
-                            elements.push(elem)
-                        });
-                    elements
-                },
-                &mut |elem| match elem {
-                    CoverElement::Texture(elem) => push(elem.into()),
-                    CoverElement::SolidColor(elem) => push(elem.into()),
-                },
-            );
-            self.window.set_offscreen_data(data);
-            pushed_resize = true;
-        }
         if let Some(resize) = self.resize_animation.as_ref().filter(|_| !covered) {
             if ResizeRenderElement::has_shader(ctx.renderer) {
                 let mut ctx = ctx.as_gles();

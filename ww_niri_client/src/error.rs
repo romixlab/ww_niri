@@ -5,7 +5,8 @@ use std::sync::Arc;
 use wire_weaver_client::CallError;
 use wire_weaver_client::ww_error::CommonErrorOwned;
 use ww_niri_api::{
-    BrowserErrorOwned, CoverError, InputErrorOwned, LaunchErrorOwned, MediaErrorOwned, WindowError,
+    BrowserErrorOwned, InputErrorOwned, LaunchErrorOwned, MediaErrorOwned, OverlayError,
+    WindowError,
 };
 
 /// Why a call failed: the TV is offline, the API answered with its own error, or the link did.
@@ -16,8 +17,8 @@ pub enum TvError {
     Offline,
     #[error("window: {0:?}")]
     Window(WindowError),
-    #[error("cover: {0:?}")]
-    Cover(CoverError),
+    #[error("overlay: {0:?}")]
+    Overlay(OverlayError),
     #[error("launch: {0:?}")]
     Launch(LaunchErrorOwned),
     #[error("browser slot: {0:?}")]
@@ -72,7 +73,7 @@ macro_rules! api_error {
 
 api_error!(
     WindowError => Window,
-    CoverError => Cover,
+    OverlayError => Overlay,
     LaunchErrorOwned => Launch,
     BrowserErrorOwned => Browser,
     MediaErrorOwned => Media,

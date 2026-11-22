@@ -26,12 +26,12 @@ mod audio;
 mod bidi;
 mod browsers;
 mod config;
-pub(crate) mod cover;
 mod follow;
 mod host;
 mod hub;
 pub(crate) mod input;
 mod interfaces;
+pub(crate) mod overlay;
 mod players;
 mod serve;
 mod server;
@@ -66,10 +66,13 @@ pub struct WwServer {
     pub pointer_seen: Option<input::Seen>,
     /// Layouts to switch to, one per layout marker injected and not yet read.
     pub layout_switches: std::collections::VecDeque<u32>,
-    /// The windows covered, and who holds each cover.
-    pub covers: cover::Covers,
-    /// Wakes at the next end or countdown second of the covers.
-    pub cover_timer: Option<RegistrationToken>,
+    /// The overlay's items, and who owns each.
+    pub overlay: overlay::Overlay,
+    /// Wakes at the next end, countdown second or clock minute of the items.
+    pub overlay_timer: Option<RegistrationToken>,
+    /// What each output keeps to draw its items, by connector name.
+    overlay_render:
+        std::cell::RefCell<std::collections::HashMap<String, overlay::render::OverlayRender>>,
 }
 
 /// What every connection shares: the ww side's events, the browser slots, the players and the
@@ -81,7 +84,7 @@ pub struct Services {
     pub audio: Rc<Audio>,
     /// Timeouts for the handlers, as injected drags take steps.
     pub io: Rc<browsers::LoopIo>,
-    /// The last connection id handed out, for who holds a cover.
+    /// The last connection id handed out, for what each holds and owns.
     holders: std::cell::Cell<u64>,
 }
 
@@ -165,8 +168,9 @@ impl WwServer {
             pointer_sent: None,
             layout_switches: std::collections::VecDeque::new(),
             pointer_seen: None,
-            covers: cover::Covers::default(),
-            cover_timer: None,
+            overlay: overlay::Overlay::default(),
+            overlay_timer: None,
+            overlay_render: Default::default(),
         };
         ww.reload(event_loop);
 
@@ -187,6 +191,34 @@ impl WwServer {
 
     pub fn services(&self) -> Rc<Services> {
         self.services.clone()
+    }
+
+    /// Draws the overlay's items on `output`, front to back; `focused`: it is the focused one.
+    pub fn render_output(
+        &self,
+        renderer: &mut smithay::backend::renderer::gles::GlesRenderer,
+        output: &smithay::output::Output,
+        focused: bool,
+        push: &mut dyn FnMut(overlay::render::OverlayElement),
+    ) {
+        let name = output.name();
+        let looks = self.overlay.on_output(&name, focused);
+        let mut renders = self.overlay_render.borrow_mut();
+        if looks.is_empty() {
+            renders.remove(&name);
+            return;
+        }
+        let size = crate::utils::output_size(output);
+        let area = overlay::render::Area {
+            loc: smithay::utils::Point::from((0., 0.)),
+            size,
+            scale: smithay::utils::Scale::from(output.current_scale().fractional_scale()),
+            alpha: 1.,
+        };
+        renders
+            .entry(name)
+            .or_default()
+            .render(renderer, &looks, area, None, push);
     }
 
     fn check_config(&mut self, event_loop: &LoopHandle<'static, State>) {

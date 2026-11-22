@@ -1,15 +1,14 @@
-//! Links of several clients at once: what a client held ends with its link, and the listeners
-//! move to another path while open links go on.
+//! Links of several clients at once: what a client held and its overlay items end with its
+//! link, and the listeners move to another path while open links go on.
 
-use exact_units::Fixed;
-use ww_niri_api::{Button, WindowId};
-use ww_niri_fake::{Cover, InputEntry, ReleasedBy};
+use ww_niri_api::{Button, SurfaceOwned, WindowId};
+use ww_niri_fake::{InputEntry, OverlayItem, ReleasedBy};
 
-use super::covers::card;
+use super::overlay::cover;
 use super::{connect, fake, run, soon};
 
-fn windows_covered(covers: &[Cover]) -> Vec<WindowId> {
-    covers.iter().map(|c| c.window).collect()
+fn windows_covered(items: &[OverlayItem]) -> Vec<Option<WindowId>> {
+    items.iter().map(|i| i.window).collect()
 }
 
 #[test]
@@ -27,9 +26,8 @@ fn a_link_that_ends_releases_only_what_its_client_held() {
             .await
             .unwrap();
         let cover = |client: &super::NiriClient, id| {
-            client
-                .windows()
-                .cover(WindowId(id), card(), Fixed::new(10_000), false)
+            let item = cover(SurfaceOwned::Window(WindowId(id)), 10_000, false);
+            client.overlay().put("ad".to_owned(), item)
         };
         cover(&a, 1).call().await.unwrap();
         cover(&b, 2).call().await.unwrap();
@@ -37,7 +35,7 @@ fn a_link_that_ends_releases_only_what_its_client_held() {
 
         drop(a);
         soon("the key comes up with its link", async {
-            while windows_covered(&tv.covers()) != [WindowId(2)] {
+            while windows_covered(&tv.overlay()) != [Some(WindowId(2))] {
                 tokio::task::yield_now().await;
             }
         })
@@ -54,7 +52,7 @@ fn a_link_that_ends_releases_only_what_its_client_held() {
         b.info().call().await.unwrap();
         drop(b);
         soon("the button comes up with the last link", async {
-            while !tv.covers().is_empty() {
+            while !tv.overlay().is_empty() {
                 tokio::task::yield_now().await;
             }
         })
