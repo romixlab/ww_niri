@@ -21,7 +21,10 @@ lint:
 install:
     cargo build --profile deploy --locked -p niri
     test -x target/deploy/niri
-    binkeep install niri {{justfile_directory()}}/target/deploy
+    # binkeep refuses a group-writable binary or folder (umask 0002 gives 775), so stage both at 755
+    rm -rf ~/.cache/ww_niri-deploy && mkdir -m 755 -p ~/.cache/ww_niri-deploy
+    install -m 755 target/deploy/niri ~/.cache/ww_niri-deploy/niri
+    binkeep install niri ~/.cache/ww_niri-deploy
 
 # Refuses on local changes. Does NOT restart niri: it is the session compositor and a restart closes every window.
 # The new niri runs after the next session restart (README.md, "Deploying niri on a PC").
