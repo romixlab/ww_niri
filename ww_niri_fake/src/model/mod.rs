@@ -56,6 +56,15 @@ pub(crate) enum Out {
     Mark(Mark),
 }
 
+/// A button or key held down, until its hold limit, by a connection.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Held<T> {
+    pub(crate) what: T,
+    pub(crate) until_us: u64,
+    /// The connection that pressed it or renewed its hold last.
+    pub(crate) holder: u64,
+}
+
 /// Why a held button or key came up.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum ReleasedBy {
@@ -253,8 +262,8 @@ pub(crate) struct Model {
     pub muted: bool,
     pub sink: Option<Sink>,
     pointer: (i32, i32),
-    held_buttons: Vec<(Button, u64)>,
-    held_keys: Vec<(String, u64)>,
+    held_buttons: Vec<Held<Button>>,
+    held_keys: Vec<Held<String>>,
     /// Covered windows by id.
     covers: BTreeMap<u64, Cover>,
     /// While a cover mutes the sink: its mute before.
@@ -370,18 +379,18 @@ impl Model {
         }
         self.lift_due_covers();
         let (expired, held): (Vec<_>, Vec<_>) =
-            (self.held_buttons.drain(..)).partition(|(_, at)| *at <= now);
+            (self.held_buttons.drain(..)).partition(|h| h.until_us <= now);
         self.held_buttons = held;
-        for (button, _) in expired {
+        for Held { what: button, .. } in expired {
             self.log(InputEntry::Release {
                 button,
                 by: ReleasedBy::HoldLimit,
             });
         }
         let (expired, held): (Vec<_>, Vec<_>) =
-            (self.held_keys.drain(..)).partition(|(_, at)| *at <= now);
+            (self.held_keys.drain(..)).partition(|h| h.until_us <= now);
         self.held_keys = held;
-        for (key, _) in expired {
+        for Held { what: key, .. } in expired {
             self.log(InputEntry::KeyUp {
                 key,
                 by: ReleasedBy::HoldLimit,
@@ -393,8 +402,8 @@ impl Model {
     pub(crate) fn next_deadline(&self) -> Option<u64> {
         let maps = self.slots.iter().filter_map(|s| s.maps_at_us);
         let ends = self.players.values().filter_map(Player::ends_at);
-        let held = (self.held_buttons.iter().map(|(_, at)| *at))
-            .chain(self.held_keys.iter().map(|(_, at)| *at));
+        let held = (self.held_buttons.iter().map(|h| h.until_us))
+            .chain(self.held_keys.iter().map(|h| h.until_us));
         maps.chain(ends)
             .chain(held)
             .chain(self.next_cover_end())

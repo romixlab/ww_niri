@@ -35,9 +35,11 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 tracy-client = { version = "0.18.5", default-features = false }
 # ww: the control API's fake server and its clients
 exact_units = { git = "https://github.com/romixlab/exact_units", default-features = false }
+futures-util = { version = "0.3", default-features = false }
 tokio = { version = "1", default-features = false }
 wire_weaver = { git = "https://github.com/vhrdtech/wire_weaver", default-features = false }
 wire_weaver_client = { git = "https://github.com/vhrdtech/wire_weaver", default-features = false }
+wire_weaver_server = { git = "https://github.com/vhrdtech/wire_weaver", default-features = false }
 ww_client_server = { git = "https://github.com/vhrdtech/wire_weaver", default-features = false }
 ww_device = { git = "https://github.com/vhrdtech/wire_weaver", default-features = false }
 ww_niri_api = { path = "ww_niri_api" }

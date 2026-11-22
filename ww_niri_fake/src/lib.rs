@@ -1,9 +1,9 @@
 //! An in-memory TV serving ww_niri's control API (`ww_niri_api`) in-process, for the tests of
 //! clients and apps and for their demo modes.
 //!
-//! [FakeTv::start] runs the generated server on `ww_device::Server` in a thread of its own and
-//! registers it with `wire_weaver_client::in_process`; a generated client connects to
-//! [FakeTv::path] without a socket:
+//! [FakeTv::start] serves the generated server on `wire_weaver_server`, as ww_niri does, in a
+//! thread of its own, and registers it with `wire_weaver_client::in_process`; generated clients
+//! connect to [FakeTv::path] without a socket, any number at once:
 //!
 //! ```ignore
 //! let tv = FakeTv::start(Options { clock: ClockMode::Manual, ..Options::default() });
@@ -18,8 +18,9 @@
 //! text, buttons and wheel turns injected.
 //!
 //! For tests it records every call ([FakeTv::calls]), answers with errors on demand
-//! ([FakeTv::fail_next]), adds latency, drops the connection, stays unreachable and sends a
-//! `Resync`.
+//! ([FakeTv::fail_next]), adds latency, drops the connections, stays unreachable, moves to
+//! another path ([FakeTv::rebind]) and sends a `Resync`. When a connection ends, what it held
+//! comes up and its covers lift, as on the real server.
 
 mod clock;
 mod device;
@@ -28,18 +29,19 @@ mod model;
 mod record;
 mod server;
 
-use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
 use clock::Clock;
 pub use clock::ClockMode;
 pub use model::{Cover, InputEntry, ReleasedBy, Sink};
-use model::{Model, Setup};
+use model::{Model, Out, Setup};
 use record::Record;
 pub use record::{Call, ErrorKind, Fail, FailError, METHODS};
-use tokio::sync::Notify;
+use tokio::sync::{watch, Notify};
+use wire_weaver_server::Fanout;
 use ww_niri_api::{InfoOwned, PointerPosition, WindowError, WindowId, WindowOwned};
 
 /// How the fake TV starts.
@@ -85,28 +87,47 @@ impl Default for Options {
     }
 }
 
-/// What the test set for the connection.
+/// What the test set for the connections.
 #[derive(Copy, Clone, Debug)]
 pub(crate) struct Control {
     latency: Duration,
-    drop_link: bool,
-    /// Connections dropped by [FakeTv::drop_connection] so far, for the motion path.
+    /// [FakeTv::drop_connection]s so far: each ends the connections open at the time.
     drops: u32,
     reachable: bool,
+    /// [FakeTv::rebind]s so far: which path the listeners are at.
+    binds: u32,
     stop: bool,
-    links_up: u32,
 }
+
+/// Changes on the TV that every connection hears of.
+#[derive(Clone, Debug)]
+pub(crate) enum News {
+    Out(Out),
+    /// Changes were lost: the client lists again.
+    Resync,
+}
+
+/// Changes a connection may fall behind on before it gets a `Resync`.
+const NEWS_QUEUE_MAX: usize = 256;
 
 /// State the device thread and the [FakeTv] handle share.
 pub(crate) struct Shared {
     model: Mutex<Model>,
     record: Mutex<Record>,
-    control: Mutex<Control>,
+    control: watch::Sender<Control>,
     clock: Clock,
-    /// Wakes the device thread: the model or the control changed.
+    /// Wakes the ticker: the model changed, its next deadline may have too.
     wake: Notify,
-    /// Wakes the motion path: the control changed.
-    wake_motion: Notify,
+    /// The model's changes, to every connection.
+    pub(crate) news: Fanout<News>,
+    /// The last connection id handed out, for what each holds.
+    holders: AtomicU64,
+    /// Links that came up on the main path.
+    links_up: AtomicU32,
+    /// The rebinds each path's listener follows, main and motion; `None` while unregistered.
+    bound: Mutex<[Option<u32>; 2]>,
+    /// Signals a change of `bound`.
+    bound_changed: Condvar,
     info: InfoOwned,
     /// [Options::api_hash].
     pub(crate) api_hash: Option<wire_weaver::ww_version::ApiHashPair<'static>>,
@@ -118,18 +139,52 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 impl Shared {
-    /// Runs `f` on the model, brought up to the clock's time.
+    /// Runs `f` on the model, brought up to the clock's time; what changed goes to every
+    /// connection, and the ticker waits for the model's next deadline.
     pub(crate) fn with<R>(&self, f: impl FnOnce(&mut Model) -> R) -> R {
-        let mut model = lock(&self.model);
-        model.tick(self.clock.now_us());
-        f(&mut model)
-    }
-
-    /// Runs `f` on the model and has the device thread send what changed.
-    pub(crate) fn change<R>(&self, f: impl FnOnce(&mut Model) -> R) -> R {
-        let r = self.with(f);
+        let r = self.apply(f);
         self.wake.notify_one();
         r
+    }
+
+    /// Brings the model up to the clock; answers its next deadline.
+    pub(crate) fn catch_up(&self) -> Option<u64> {
+        self.apply(|m| m.next_deadline())
+    }
+
+    fn apply<R>(&self, f: impl FnOnce(&mut Model) -> R) -> R {
+        let mut model = lock(&self.model);
+        model.tick(self.clock.now_us());
+        let r = f(&mut model);
+        let (outs, behind) = model.drain();
+        if behind {
+            self.news.send(News::Resync);
+        }
+        for out in outs {
+            self.news.send(News::Out(out));
+        }
+        r
+    }
+
+    /// Path `index` (0 main, 1 motion) is now registered after `binds` rebinds, or not at all.
+    pub(crate) fn set_bound(&self, index: usize, binds: Option<u32>) {
+        lock(&self.bound)[index] = binds;
+        self.bound_changed.notify_all();
+    }
+
+    /// Waits until both listeners follow the control: registered at the path of its rebinds
+    /// while reachable, unregistered while not.
+    pub(crate) fn wait_listening(&self) {
+        let control = self.control();
+        let wanted = [control.reachable.then_some(control.binds); 2];
+        let bound = lock(&self.bound);
+        let listening = self.bound_changed.wait_while(bound, |b| *b != wanted);
+        drop(listening.expect("the fake's locks are not poisoned"));
+    }
+
+    /// A new connection's id, never handed out before.
+    pub(crate) fn next_holder(&self) -> u64 {
+        self.holders.fetch_add(1, Ordering::Relaxed) + 1
     }
 
     pub(crate) fn record(&self) -> MutexGuard<'_, Record> {
@@ -137,13 +192,11 @@ impl Shared {
     }
 
     pub(crate) fn control(&self) -> Control {
-        *lock(&self.control)
+        *self.control.borrow()
     }
 
     pub(crate) fn update_control(&self, f: impl FnOnce(&mut Control)) {
-        f(&mut lock(&self.control));
-        self.wake.notify_one();
-        self.wake_motion.notify_one();
+        self.control.send_modify(f);
     }
 
     pub(crate) fn latency(&self) -> Duration {
@@ -155,6 +208,8 @@ impl Shared {
 // spirit-level: allow(test-support-gated) apps run it in their demo mode, not only in tests
 pub struct FakeTv {
     shared: Arc<Shared>,
+    /// The paths of the first bind, which [FakeTv::rebind] moves from.
+    base: (String, String),
     path: String,
     motion_path: String,
     thread: Option<JoinHandle<()>>,
@@ -181,17 +236,20 @@ impl FakeTv {
         let shared = Arc::new(Shared {
             model: Mutex::new(Model::new(&setup)),
             record: Mutex::new(Record::default()),
-            control: Mutex::new(Control {
+            control: watch::Sender::new(Control {
                 latency: Duration::ZERO,
-                drop_link: false,
                 drops: 0,
                 reachable: true,
+                binds: 0,
                 stop: false,
-                links_up: 0,
             }),
             clock: Clock::new(options.clock),
             wake: Notify::new(),
-            wake_motion: Notify::new(),
+            news: Fanout::new(NEWS_QUEUE_MAX),
+            holders: AtomicU64::new(0),
+            links_up: AtomicU32::new(0),
+            bound: Mutex::new([None; 2]),
+            bound_changed: Condvar::new(),
             info: options.info,
             api_hash: options.api_hash,
         });
@@ -205,17 +263,13 @@ impl FakeTv {
                         .enable_time()
                         .build()
                         .expect("a current-thread runtime can be made")
-                        .block_on(async {
-                            tokio::join!(
-                                device::run(shared.clone(), path),
-                                device::run_motion(shared, motion_path),
-                            )
-                        });
+                        .block_on(device::run(shared, path, motion_path));
                 })
                 .expect("the device thread can be spawned")
         };
         Self {
             shared,
+            base: (path.clone(), motion_path.clone()),
             path,
             motion_path,
             thread: Some(thread),
@@ -228,8 +282,8 @@ impl FakeTv {
     }
 
     /// The same API on a simulated UDP device, as ww_niri serves it over UDP beside the
-    /// WebSocket: for a client's pointer motion. One host at a time; the knobs act on it as on
-    /// [FakeTv::path], and events and observed changes go to the client of `path` only.
+    /// WebSocket: for a client's pointer motion. Up to 8 hosts at once; the knobs act on it as
+    /// on [FakeTv::path].
     pub fn motion_path(&self) -> &str {
         &self.motion_path
     }
@@ -251,7 +305,7 @@ impl FakeTv {
             self.shared.clock.advance(by),
             "only a manual clock is advanced"
         );
-        self.shared.change(|_| ());
+        self.shared.with(|_| ());
     }
 
     // ---- knobs ----
@@ -261,23 +315,39 @@ impl FakeTv {
         self.shared.update_control(|c| c.latency = latency);
     }
 
-    /// Ends the client's connection, as a TV gone from Wi-Fi; a new one may come at once.
+    /// Ends the open connections, as a TV gone from Wi-Fi; new ones may come at once.
     pub fn drop_connection(&self) {
-        self.shared.update_control(|c| {
-            c.drop_link = true;
-            c.drops = c.drops.wrapping_add(1);
-        });
+        self.shared
+            .update_control(|c| c.drops = c.drops.wrapping_add(1));
     }
 
-    /// While unreachable the connection is dropped and no new one comes.
+    /// Stops listening at [FakeTv::path] and [FakeTv::motion_path] and listens at new ones, as
+    /// ww_niri does when its address changes: open connections go on, new clients find nobody
+    /// at the old paths. Returns once both listen at their new paths (while unreachable, once
+    /// reachable again they do); answers the new [FakeTv::path].
+    pub fn rebind(&mut self) -> &str {
+        let mut binds = 0;
+        self.shared.update_control(|c| {
+            c.binds += 1;
+            binds = c.binds;
+        });
+        self.shared.wait_listening();
+        self.path = device::bound_path(&self.base.0, binds);
+        self.motion_path = device::bound_path(&self.base.1, binds);
+        &self.path
+    }
+
+    /// While unreachable the connections are dropped and no new one comes. Returns once the
+    /// paths are unregistered, or registered again.
     pub fn set_reachable(&self, reachable: bool) {
         self.shared.update_control(|c| c.reachable = reachable);
+        self.shared.wait_listening();
     }
 
     /// Sends a `Resync` on the `events` stream and refreshes every observer, as after missed
     /// events.
     pub fn resync(&self) {
-        self.shared.change(Model::resync);
+        self.shared.with(Model::resync);
     }
 
     /// The next call of `method` (a path of [METHODS], `browsers.open`, whatever the index)
@@ -291,9 +361,9 @@ impl FakeTv {
         self.shared.record().fail_next(method, fail)
     }
 
-    /// How many times a client's link came up.
+    /// How many times a client's link came up on [FakeTv::path].
     pub fn links_up(&self) -> u32 {
-        self.shared.control().links_up
+        self.shared.links_up.load(Ordering::Relaxed)
     }
 
     // ---- what happened ----
@@ -340,7 +410,7 @@ impl FakeTv {
 
     /// Opens a window on a workspace of its own and shows it, as an app started on the TV would.
     pub fn open_window(&self, app_id: &str, title: &str) -> WindowId {
-        WindowId(self.shared.change(|m| m.open_window(app_id, title)))
+        WindowId(self.shared.with(|m| m.open_window(app_id, title)))
     }
 
     /// The app closes the window, as if by itself.
@@ -349,23 +419,23 @@ impl FakeTv {
     ///
     /// `NoSuchWindow` when there is none with this id.
     pub fn close_window(&self, id: WindowId) -> Result<(), WindowError> {
-        self.shared.change(|m| m.close_window(id.0))
+        self.shared.with(|m| m.close_window(id.0))
     }
 
     /// Volume (percent, 0 to 150) and mute changed on the TV.
     pub fn set_audio(&self, volume: u16, muted: bool) {
-        self.shared.change(|m| m.set_audio(volume, muted));
+        self.shared.with(|m| m.set_audio(volume, muted));
     }
 
     /// The default sink changed, or went (`None`).
     pub fn set_sink(&self, sink: Option<Sink>) {
-        self.shared.change(|m| m.set_sink(sink));
+        self.shared.with(|m| m.set_sink(sink));
     }
 
     /// The TV's screen came on the HDMI port, or went (TV off or unplugged): `outputs.list` is
     /// empty without it, windows have no output, and `OutputsChanged` tells the client.
     pub fn set_screen_connected(&self, connected: bool) {
-        self.shared.change(|m| m.set_screen_connected(connected));
+        self.shared.with(|m| m.set_screen_connected(connected));
     }
 }
 

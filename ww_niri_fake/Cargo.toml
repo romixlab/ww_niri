@@ -16,12 +16,14 @@ exact_units = { workspace = true, features = [
   "time",
   "dimensionless",
 ] }
+futures-util = { workspace = true, features = ["std"] }
 tokio = { workspace = true, features = ["rt", "sync", "time", "macros"] }
 wire_weaver = { workspace = true, features = ["std"] }
 wire_weaver_client = { workspace = true, features = ["in_process"] }
+# the host server ww_niri runs: many connections, an end step for each, the UDP listener
+wire_weaver_server = { workspace = true, features = ["in_process", "udp"] }
 ww_client_server = { workspace = true, features = ["std"] }
-# udp: the motion path, served as a UDP device
-ww_device = { workspace = true, features = ["udp"] }
+ww_device.workspace = true
 ww_niri_api.workspace = true
 ww_stream = { workspace = true, features = ["std"] }
 

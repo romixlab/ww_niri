@@ -5559,6 +5559,7 @@ dependencies = [
  "wire_weaver",
  "wire_weaver_evolution",
  "ww_client_server",
+ "ww_date_time",
  "ww_device",
  "ww_error",
  "ww_framer",
@@ -5575,6 +5576,7 @@ dependencies = [
  "ww_tap",
  "ww_tape",
  "ww_tape_fs",
+ "ww_timebase",
  "ww_version",
 ]
 
@@ -5644,6 +5646,7 @@ dependencies = [
  "futures-util",
  "libc",
  "wire_weaver",
+ "wire_weaver_client",
  "ww_byte_stream",
  "ww_client_server",
  "ww_device",
@@ -5709,6 +5712,15 @@ version = "0.5.0"
 source = "git+https://github.com/vhrdtech/ww_base#ce6476e90b55cd4bd35a43b7923dcb7d4ed2fb49"
 dependencies = [
  "crc",
+]
+
+[[package]]
+name = "ww_date_time"
+version = "0.1.0"
+source = "git+https://github.com/vhrdtech/ww_base#ce6476e90b55cd4bd35a43b7923dcb7d4ed2fb49"
+dependencies = [
+ "exact_units",
+ "shrink_wrap",
 ]
 
 [[package]]
@@ -5854,9 +5866,11 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "exact_units",
+ "futures-util",
  "tokio",
  "wire_weaver",
  "wire_weaver_client",
+ "wire_weaver_server",
  "ww_client_server",
  "ww_device",
  "ww_niri_api",
@@ -5997,6 +6011,16 @@ dependencies = [
  "exact_units",
  "ww_tape",
  "ww_tape_codecs",
+]
+
+[[package]]
+name = "ww_timebase"
+version = "0.1.0"
+source = "git+https://github.com/vhrdtech/wire_weaver#2c1ce8f34c5f4a193891f5795a6256a934cce3a6"
+dependencies = [
+ "ww_api",
+ "ww_date_time",
+ "ww_si",
 ]
 
 [[package]]

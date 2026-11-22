@@ -5,7 +5,9 @@ use std::sync::Arc;
 use exact_units::prefix::{Micro, Milli};
 use exact_units::units::Second;
 use exact_units::{Fixed, Unbounded};
+use futures_util::FutureExt as _;
 use wire_weaver::prelude::*;
+use wire_weaver_server::{Lagged, Subscription};
 use ww_client_server::ResourceIndex;
 use ww_niri_api::{
     BrowserErrorOwned, BrowserStateOwned, Button, CardOwned, CoverError, Delta, InfoOwned,
@@ -15,9 +17,9 @@ use ww_niri_api::{
 };
 use ww_stream::totals::TotalsRx;
 
-use crate::model::{Action, Mark, Model};
+use crate::model::{Action, Mark, Model, Out};
 use crate::record::{Call, Fail};
-use crate::Shared;
+use crate::{News, Shared};
 
 type Res<'a, E> = RpcResult<Result<(), Error<'a, E>>>;
 type Micros<T> = Fixed<Second, Micro, T, Unbounded>;
@@ -27,6 +29,14 @@ pub(crate) struct Server {
     /// Observed properties: what the client observes and when it is due.
     pub(crate) observe: api_impl::ObserveState,
     shared: Arc<Shared>,
+    /// This connection, for what it holds.
+    holder: u64,
+    /// What changed on the TV since this connection last heard.
+    news: Subscription<News>,
+    /// News taken in and waiting for the next poll.
+    due: Vec<News>,
+    /// What observed properties are serialized into.
+    observe_buf: Vec<u8>,
     /// The live players as `valid_indices` last answered them.
     player_ids: Vec<UNib32>,
     /// The client opened the `events` stream.
@@ -80,10 +90,32 @@ impl Server {
     pub(crate) fn new(shared: Arc<Shared>) -> Self {
         Self {
             observe: api_impl::ObserveState::new(Default::default()),
+            holder: shared.next_holder(),
+            news: shared.news.subscribe(),
+            due: Vec::new(),
+            observe_buf: vec![0; crate::device::MESSAGE_LEN_MAX],
             shared,
             player_ids: Vec::new(),
             events_open: false,
             motion: TotalsRx::new(),
+        }
+    }
+
+    /// Keeps news for the next poll.
+    fn take(&mut self, news: Option<Result<News, Lagged>>) {
+        match news {
+            Some(Ok(news)) => self.due.push(news),
+            Some(Err(Lagged(_))) => self.due.push(News::Resync),
+            // The fanout lives as long as the fake.
+            None => (),
+        }
+    }
+
+    /// Waits out the latency a test set.
+    async fn lag(&self) {
+        let latency = self.shared.latency();
+        if !latency.is_zero() {
+            tokio::time::sleep(latency).await;
         }
     }
 
@@ -301,8 +333,9 @@ impl Server {
         mute: bool,
     ) -> Res<'_, CoverError> {
         let args = format!("({id:?}, {card:?}, {}ms, mute {mute})", lasts.get());
+        let holder = self.holder;
         self.op("windows.cover", None, args, |m| {
-            m.cover(id.0, card, lasts, mute)
+            m.cover(holder, id.0, card, lasts, mute)
         })
     }
 
@@ -414,9 +447,10 @@ impl Server {
         mute: bool,
     ) -> Res<'_, CoverError> {
         let args = format!("({card:?}, {}ms, mute {mute})", lasts.get());
+        let holder = self.holder;
         self.op("browsers.cover", Some(index(chain)), args, |m| {
             let window = m.slot_window(slot(chain))?;
-            m.cover(window, card, lasts, mute)
+            m.cover(holder, window, card, lasts, mute)
         })
     }
 
@@ -846,7 +880,10 @@ impl Server {
     ) -> Res<'_, InputErrorOwned> {
         let hold = hold.map(exact_units::Fixed::get);
         let args = format!("({button:?}, {hold:?})");
-        self.op("input.pointer.press", None, args, |m| m.press(button, hold))
+        let holder = self.holder;
+        self.op("input.pointer.press", None, args, |m| {
+            m.press(holder, button, hold)
+        })
     }
 
     async fn input_pointer_release(
@@ -922,8 +959,9 @@ impl Server {
     ) -> Res<'_, InputErrorOwned> {
         let hold = hold.map(exact_units::Fixed::get);
         let args = format!("({key:?}, {hold:?})");
+        let holder = self.holder;
         self.op("input.keyboard.key_down", None, args, |m| {
-            m.key_down(&key, hold)
+            m.key_down(holder, &key, hold)
         })
     }
 
@@ -954,15 +992,103 @@ impl WireWeaverAsyncApiBackend for Server {
         data: &[u8],
         scratch: &'a mut [u8],
     ) -> Result<&'a [u8], ShrinkWrapError> {
-        let latency = self.shared.latency();
-        if !latency.is_zero() {
-            tokio::time::sleep(latency).await;
-        }
+        self.lag().await;
         self.process_request_bytes(data, scratch, out, medium).await
     }
 
     fn version(&self) -> FullVersion<'_> {
         ww_niri_api::WW_NIRI_FULL_GID
+    }
+}
+
+impl WireWeaverSharedApiBackend for Server {
+    async fn process_exclusive_bytes<'a>(
+        &mut self,
+        origin: &CallContext,
+        out: &mut EventWriter<'_, impl MessageSink>,
+        medium: (),
+        data: &[u8],
+        scratch: &'a mut [u8],
+    ) -> Result<&'a [u8], ShrinkWrapError> {
+        self.lag().await;
+        self.process_request_from(origin, data, scratch, out, medium)
+            .await
+    }
+
+    fn is_shared(data: &[u8]) -> bool {
+        Self::is_shared(data)
+    }
+
+    async fn process_shared_bytes<'a>(
+        &self,
+        origin: &CallContext,
+        out: &mut EventWriter<'_, impl MessageSink>,
+        medium: (),
+        data: &[u8],
+        scratch: &'a mut [u8],
+    ) -> Result<&'a [u8], ShrinkWrapError> {
+        self.lag().await;
+        self.process_shared_from(origin, data, scratch, out, medium)
+            .await
+    }
+}
+
+impl wire_weaver_server::Backend for Server {
+    /// Cancel-safe: the subscription keeps what was not taken.
+    async fn wait(&mut self) {
+        if self.due.is_empty() {
+            match self.news.recv().await {
+                // The fanout lives as long as the fake.
+                None => std::future::pending().await,
+                news => self.take(news),
+            }
+        }
+    }
+
+    fn next_wake(&mut self, now: ww_device::Instant) -> Option<ww_device::Instant> {
+        self.observe
+            .next_wake(now.as_micros())
+            .map(ww_device::Instant::from_micros)
+    }
+
+    async fn poll(
+        &mut self,
+        out: &mut EventWriter<'_, impl MessageSink>,
+        medium: (),
+        now: ww_device::Instant,
+    ) {
+        // What one change of the model brought goes out together, as the window that opens and
+        // its focus.
+        while let Some(news) = self.news.recv().now_or_never() {
+            self.take(news);
+        }
+        let mut events = Vec::new();
+        for news in std::mem::take(&mut self.due) {
+            match news {
+                News::Out(Out::Event(event)) => events.push(event),
+                News::Out(Out::Mark(mark)) => self.mark(mark),
+                News::Resync => {
+                    events.push(ww_niri_api::EventOwned::Resync);
+                    self.mark_all();
+                }
+            }
+        }
+        if self.events_open {
+            for event in &events {
+                let _ = api_impl::stream_data_ser().events_send(event, out).await;
+            }
+        }
+        let mut buf = std::mem::take(&mut self.observe_buf);
+        let _ = self
+            .poll_properties(out, medium, now.as_micros(), &mut buf)
+            .await;
+        self.observe_buf = buf;
+    }
+
+    /// The link went: nothing this connection held stays down, its covers lift.
+    async fn end(&mut self) {
+        let holder = self.holder;
+        self.shared.with(|m| m.release_held_by(holder));
     }
 }
 
