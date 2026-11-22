@@ -194,9 +194,9 @@ pub struct Mapped {
     /// Most recent monotonic time when the window had the focus.
     focus_timestamp: Option<Duration>,
 
-    /// What the window draws instead of itself while a control API client covers it.
+    /// The control API's overlay items on the window, front to back.
     #[cfg(feature = "ww")]
-    cover: Option<std::rc::Rc<crate::ww::cover::Look>>,
+    overlay: Vec<std::rc::Rc<crate::ww::overlay::Look>>,
 }
 
 niri_render_elements! {
@@ -317,7 +317,7 @@ impl Mapped {
             uncommitted_maximized: Vec::new(),
             focus_timestamp: None,
             #[cfg(feature = "ww")]
-            cover: None,
+            overlay: Vec::new(),
         };
 
         rv.is_maximized = rv.sizing_mode().is_maximized();
@@ -326,10 +326,10 @@ impl Mapped {
         rv
     }
 
-    /// Covers the window with `look`, or lifts its cover.
+    /// Gives the window its overlay items to draw, front to back.
     #[cfg(feature = "ww")]
-    pub fn set_cover(&mut self, look: Option<std::rc::Rc<crate::ww::cover::Look>>) {
-        self.cover = look;
+    pub fn set_overlay(&mut self, looks: Vec<std::rc::Rc<crate::ww::overlay::Look>>) {
+        self.overlay = looks;
     }
 
     pub fn toplevel(&self) -> &ToplevelSurface {
@@ -1371,8 +1371,8 @@ impl LayoutElement for Mapped {
     }
 
     #[cfg(feature = "ww")]
-    fn cover(&self) -> Option<&std::rc::Rc<crate::ww::cover::Look>> {
-        self.cover.as_ref()
+    fn overlay(&self) -> &[std::rc::Rc<crate::ww::overlay::Look>] {
+        &self.overlay
     }
 
     fn rules(&self) -> &ResolvedWindowRules {

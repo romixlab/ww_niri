@@ -235,7 +235,7 @@ impl Model {
 
     /// Connection `holder` ended: what it held comes up, its covers lift.
     pub(crate) fn release_held_by(&mut self, holder: u64) {
-        self.lift_covers_held_by(holder);
+        self.lift_items_owned_by(holder);
         let (released, held) = (self.held_buttons.drain(..)).partition(|h| h.holder == holder);
         self.held_buttons = held;
         for Held { what: button, .. } in released {

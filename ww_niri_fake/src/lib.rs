@@ -20,7 +20,7 @@
 //! For tests it records every call ([FakeTv::calls]), answers with errors on demand
 //! ([FakeTv::fail_next]), adds latency, drops the connections, stays unreachable, moves to
 //! another path ([FakeTv::rebind]) and sends a `Resync`. When a connection ends, what it held
-//! comes up and its covers lift, as on the real server.
+//! comes up and its overlay items lift, as on the real server.
 
 mod clock;
 mod device;
@@ -36,7 +36,7 @@ use std::time::Duration;
 
 use clock::Clock;
 pub use clock::ClockMode;
-pub use model::{Cover, InputEntry, ReleasedBy, Sink};
+pub use model::{InputEntry, OverlayItem, ReleasedBy, Sink};
 use model::{Model, Out, Setup};
 use record::Record;
 pub use record::{Call, ErrorKind, Fail, FailError, METHODS};
@@ -392,9 +392,9 @@ impl FakeTv {
         self.shared.with(|m| m.windows())
     }
 
-    /// The covered windows, by id.
-    pub fn covers(&self) -> Vec<Cover> {
-        self.shared.with(|m| m.covers())
+    /// The overlay's items, front to back.
+    pub fn overlay(&self) -> Vec<OverlayItem> {
+        self.shared.with(|m| m.overlay())
     }
 
     pub fn pointer(&self) -> PointerPosition {

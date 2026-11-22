@@ -12,10 +12,10 @@ use ww_niri_api::{
     WorkspaceId,
 };
 
-mod cover;
 mod input;
+mod overlay;
 
-pub use cover::Cover;
+pub use overlay::OverlayItem;
 
 /// The output's size in logical pixels.
 pub(crate) const OUTPUT_WIDTH_PX: i32 = 1920;
@@ -264,9 +264,11 @@ pub(crate) struct Model {
     pointer: (i32, i32),
     held_buttons: Vec<Held<Button>>,
     held_keys: Vec<Held<String>>,
-    /// Covered windows by id.
-    covers: BTreeMap<u64, Cover>,
-    /// While a cover mutes the sink: its mute before.
+    /// The overlay's items by id.
+    overlay: BTreeMap<u64, OverlayItem>,
+    /// The last overlay item id handed out.
+    next_item_id: u64,
+    /// While an item mutes the sink: its mute before.
     mute_held: Option<bool>,
     input_log: VecDeque<InputEntry>,
     outbox: Vec<Out>,
@@ -306,7 +308,8 @@ impl Model {
             pointer: (OUTPUT_WIDTH_PX / 2, OUTPUT_HEIGHT_PX / 2),
             held_buttons: Vec::new(),
             held_keys: Vec::new(),
-            covers: BTreeMap::new(),
+            overlay: BTreeMap::new(),
+            next_item_id: 0,
             mute_held: None,
             input_log: VecDeque::new(),
             outbox: Vec::new(),
@@ -377,7 +380,7 @@ impl Model {
             }
             self.mark_player(id);
         }
-        self.lift_due_covers();
+        self.lift_due_items();
         let (expired, held): (Vec<_>, Vec<_>) =
             (self.held_buttons.drain(..)).partition(|h| h.until_us <= now);
         self.held_buttons = held;
@@ -406,7 +409,7 @@ impl Model {
             .chain(self.held_keys.iter().map(|h| h.until_us));
         maps.chain(ends)
             .chain(held)
-            .chain(self.next_cover_end())
+            .chain(self.next_item_end())
             .min()
     }
 
@@ -646,7 +649,7 @@ impl Model {
         let pos =
             (self.windows.iter().position(|w| w.id == id)).ok_or(WindowError::NoSuchWindow)?;
         let w = self.windows.remove(pos);
-        self.lift(id, ww_niri_api::CoverEnd::WindowClosed);
+        self.lift_items_on(id);
         self.event(EventOwned::WindowClosed(WindowId(id)));
         if self.focused == Some(id) {
             self.set_focus(self.focus_after(id));

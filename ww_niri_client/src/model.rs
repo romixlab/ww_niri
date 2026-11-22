@@ -1,7 +1,7 @@
 //! The model task: follows the connection, and on each link lists the TV, opens the observers and
 //! the `events` stream, and publishes a [Snapshot] after every change.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
@@ -12,8 +12,8 @@ use tokio::task::JoinHandle;
 use wire_weaver_client::observe::{ObserveEvent, on_change};
 use wire_weaver_client::{ConnectionEvent, StreamError};
 use ww_niri_api::{
-    BrowserStateOwned, CoverEnd, EventOwned, PlaybackStateOwned, PlayerId, PlayerInfoOwned,
-    PointerPosition, SinkOwned, WindowId,
+    BrowserStateOwned, EventOwned, ItemEnd, ItemId, PlaybackStateOwned, PlayerId, PlayerInfoOwned,
+    PointerPosition, SinkOwned,
 };
 
 use crate::api::NiriClient;
@@ -27,14 +27,16 @@ const UPDATES_MAX: usize = 256;
 const RELIST_DELAY: Duration = Duration::from_millis(250);
 /// Browser slots the model follows; ww.kdl's `browsers` is far below.
 const SLOTS_MAX: usize = 32;
-/// Lifted covers kept for a slow [Tv::cover_lifted](crate::Tv::cover_lifted) reader.
-const COVER_LIFTED_MAX: usize = 64;
+/// Ended overlay items kept for a slow [Tv::overlay_ended](crate::Tv::overlay_ended) reader.
+const OVERLAY_ENDED_MAX: usize = 64;
 
-/// A cover that lifted on the TV, from [Tv::cover_lifted](crate::Tv::cover_lifted).
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub struct CoverLifted {
-    pub window: WindowId,
-    pub why: CoverEnd,
+/// An overlay item that lifted on the TV, from [Tv::overlay_ended](crate::Tv::overlay_ended).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OverlayEnded {
+    pub id: ItemId,
+    /// The key of one of this client's items; `None` for another client's.
+    pub key: Option<String>,
+    pub why: ItemEnd,
 }
 
 /// What the [Tv](crate::Tv) handles read, and the model task writes.
@@ -42,9 +44,9 @@ pub(crate) struct Shared {
     pub(crate) snapshot: watch::Sender<Arc<Snapshot>>,
     pub(crate) state: watch::Sender<ConnectionState>,
     pub(crate) on_change: Option<OnChange>,
-    pub(crate) cover_lifted: broadcast::Sender<CoverLifted>,
-    /// The windows this client's connection holds a cover on, as far as it knows.
-    held_covers: Mutex<BTreeSet<u64>>,
+    pub(crate) overlay_ended: broadcast::Sender<OverlayEnded>,
+    /// This client's overlay items, by id, with their keys, as far as it knows.
+    own_items: Mutex<BTreeMap<ItemId, String>>,
 }
 
 impl Shared {
@@ -57,48 +59,37 @@ impl Shared {
                 last_error: None,
             }),
             on_change,
-            cover_lifted: broadcast::channel(COVER_LIFTED_MAX).0,
-            held_covers: Mutex::new(BTreeSet::new()),
+            overlay_ended: broadcast::channel(OVERLAY_ENDED_MAX).0,
+            own_items: Mutex::new(BTreeMap::new()),
         }
     }
 
-    /// The set stays whole whatever panics: every change is one insert, remove or take.
-    fn held_covers(&self) -> std::sync::MutexGuard<'_, BTreeSet<u64>> {
-        self.held_covers
+    /// The map stays whole whatever panics: every change is one insert, remove or take.
+    fn own_items(&self) -> std::sync::MutexGuard<'_, BTreeMap<ItemId, String>> {
+        self.own_items
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// A cover of this client's connection holds on `window`.
-    pub(crate) fn hold_cover(&self, window: WindowId) {
-        self.held_covers().insert(window.0);
+    /// This client's put of item `key` answered `id`.
+    pub(crate) fn own_item(&self, id: ItemId, key: &str) {
+        self.own_items().insert(id, key.to_owned());
     }
 
-    /// The window of browser slot `slot`, as the last snapshot has it.
-    pub(crate) fn slot_window(&self, slot: u8) -> Option<WindowId> {
-        let snapshot = self.snapshot.borrow();
-        let state = snapshot
-            .slots
-            .iter()
-            .find(|s| s.index == slot)?
-            .state
-            .as_ref()?;
-        state.window
-    }
-
-    fn cover_lifted(&self, lifted: CoverLifted) {
-        self.held_covers().remove(&lifted.window.0);
+    fn overlay_ended(&self, id: ItemId, why: ItemEnd) {
+        let key = self.own_items().remove(&id);
         // Nobody listens: dropped.
-        drop(self.cover_lifted.send(lifted));
+        drop(self.overlay_ended.send(OverlayEnded { id, key, why }));
     }
 
-    /// The link went: the TV lifted the covers this client held.
-    fn covers_lost(&self) {
-        let windows = std::mem::take(&mut *self.held_covers());
-        for window in windows {
-            drop(self.cover_lifted.send(CoverLifted {
-                window: WindowId(window),
-                why: CoverEnd::Disconnected,
+    /// The link went: the TV lifted this client's items.
+    fn items_lost(&self) {
+        let items = std::mem::take(&mut *self.own_items());
+        for (id, key) in items {
+            drop(self.overlay_ended.send(OverlayEnded {
+                id,
+                key: Some(key),
+                why: ItemEnd::Disconnected,
             }));
         }
     }
@@ -376,10 +367,8 @@ impl Session<'_> {
             EventOwned::Resync => return Err(End::Resync),
             // The slots' observers follow their phases.
             EventOwned::BrowserStarted(_) | EventOwned::BrowserStopped { .. } => {}
-            // Covers belong to the connection that set them, not to the snapshot.
-            EventOwned::CoverLifted { window, why } => {
-                self.shared.cover_lifted(CoverLifted { window, why });
-            }
+            // Overlay items belong to the connection that put them up, not to the snapshot.
+            EventOwned::OverlayEnded { id, why } => self.shared.overlay_ended(id, why),
             EventOwned::Unknown(_) => {}
         }
         Ok(())
@@ -497,7 +486,7 @@ pub(crate) async fn run(client: NiriClient, shared: Arc<Shared>, mut stop: watch
                 }
                 Ok(ConnectionEvent::Connected { address, .. }) => {
                     // Held on a link that went before this task heard of it.
-                    shared.covers_lost();
+                    shared.items_lost();
                     running = Some(start(address, Duration::ZERO));
                 }
                 // Lagged: what happened is unknown, so start over from where the link is.
@@ -505,7 +494,7 @@ pub(crate) async fn run(client: NiriClient, shared: Arc<Shared>, mut stop: watch
                 | Err(broadcast::error::RecvError::Lagged(_)) => running = restart(Duration::ZERO),
                 Ok(ConnectionEvent::Disconnected { reason, .. }) => {
                     running = None;
-                    shared.covers_lost();
+                    shared.items_lost();
                     offline_since = Some(Instant::now());
                     last_error = Some(reason.to_string());
                     shared.set_state(ConnectionState::Connecting {

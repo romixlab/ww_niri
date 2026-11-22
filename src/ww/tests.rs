@@ -12,8 +12,9 @@ use async_channel::{Receiver, Sender};
 use wire_weaver::ww_api::{Totals, TotalsSession};
 use wire_weaver_client::{CallError, ClientConfig, Commander, WwClient};
 use ww_niri_api::{
-    CardOwned, CoverEnd, CoverError, EventOwned, InputErrorOwned, LaunchErrorOwned,
-    MediaErrorOwned, OutputOwned, Transition, WindowError, WindowId, WindowOwned, WorkspaceId,
+    At, Backdrop, CardOwned, ContentOwned, EventOwned, InputErrorOwned, ItemEnd, ItemId,
+    ItemInfoOwned, ItemOwned, LaunchErrorOwned, MediaErrorOwned, OutputOwned, OverlayError,
+    PlaceOwned, SurfaceOwned, Transition, WindowError, WindowId, WindowOwned, WorkspaceId,
 };
 
 use super::audio::Target;
@@ -63,7 +64,7 @@ struct FakeHost {
     fake: Fake,
     hub: Rc<RefCell<Hub>>,
     services: Option<Rc<Services>>,
-    covers: super::cover::Covers,
+    overlay: super::overlay::Overlay,
     stop: bool,
 }
 
@@ -110,9 +111,16 @@ impl FakeHost {
         self.windows().iter().any(|w| w.id.0 == id)
     }
 
-    /// As the compositor: the sink stays muted while a cover asks for it.
-    fn hold_mute(&mut self) {
-        let mutes = self.covers.mutes();
+    fn record(&mut self, call: String) {
+        self.fake.calls.lock().unwrap().push(call);
+    }
+
+    /// As the compositor: the clients hear of the ends, and the sink stays muted while an
+    /// item asks for it.
+    fn ended(&mut self, ids: &[u64], why: ItemEnd) {
+        let hub = self.services().hub.clone();
+        super::overlay::ended(&hub, ids, why);
+        let mutes = self.overlay.mutes();
         self.services().audio.hold_mute(mutes);
     }
 }
@@ -150,52 +158,61 @@ impl WwHost for FakeHost {
         self.op(format!("fullscreen {id} {on}"), id)
     }
 
-    fn cover(
+    fn overlay_put(
         &mut self,
-        id: u64,
-        holder: u64,
-        look: super::cover::Look,
-        mute: bool,
-    ) -> Result<(), CoverError> {
-        let lasts = look
-            .until
-            .saturating_duration_since(std::time::Instant::now());
+        owner: u64,
+        key: String,
+        target: super::overlay::Target,
+        item: ItemOwned,
+        until: Option<std::time::Instant>,
+    ) -> Result<ItemId, OverlayError> {
         // Whole seconds: the call's own latency stays out of the record.
-        let secs = lasts.as_secs_f64().round();
-        let muting = if mute { " muting" } else { "" };
-        if !self.op(format!("cover {id} by {holder} for {secs}s{muting}"), id) {
-            return Err(CoverError::NoSuchWindow);
+        let secs = until.map(|u| {
+            (u.saturating_duration_since(std::time::Instant::now()))
+                .as_secs_f64()
+                .round()
+        });
+        let muting = if item.mute { " muting" } else { "" };
+        self.record(format!(
+            "put {key} on {target:?} by {owner} for {secs:?}s{muting}"
+        ));
+        if let super::overlay::Target::Window(id) = target {
+            if self.window(id).is_none() {
+                return Err(OverlayError::NoSuchWindow);
+            }
         }
-        self.covers.set(id, holder, look, mute);
-        self.hold_mute();
+        let id = self.overlay.put(owner, &key, target, item, until)?;
+        self.ended(&[], ItemEnd::Lifted);
+        Ok(ItemId(id))
+    }
+
+    fn overlay_lift(&mut self, owner: u64, key: String) -> Result<(), OverlayError> {
+        self.record(format!("lift {key} by {owner}"));
+        let id = self
+            .overlay
+            .lift(owner, &key)
+            .ok_or(OverlayError::NoSuchItem)?;
+        self.ended(&[id], ItemEnd::Lifted);
         Ok(())
     }
 
-    fn uncover(&mut self, id: u64) -> Result<(), CoverError> {
-        self.fake
-            .calls
-            .lock()
-            .unwrap()
-            .push(format!("uncover {id}"));
-        if !self.covers.lift(id) {
-            return Err(CoverError::NotCovered);
-        }
-        let hub = self.services().hub.clone();
-        super::cover::lifted(&hub, id, CoverEnd::Uncovered);
-        self.hold_mute();
+    fn overlay_dismiss(&mut self, id: ItemId) -> Result<(), OverlayError> {
+        self.record(format!("dismiss {}", id.0));
+        self.overlay.dismiss(id.0)?;
+        self.ended(&[id.0], ItemEnd::Dismissed);
         Ok(())
     }
 
-    fn uncover_held_by(&mut self, holder: u64) {
-        let lifted = self.covers.lift_held_by(holder);
+    fn overlay_lift_owned_by(&mut self, owner: u64) {
+        let lifted = self.overlay.lift_owned_by(owner);
         if !lifted.is_empty() {
-            self.fake
-                .calls
-                .lock()
-                .unwrap()
-                .push(format!("uncover held by {holder}: {lifted:?}"));
+            self.record(format!("lift owned by {owner}: {lifted:?}"));
         }
-        self.hold_mute();
+        self.ended(&lifted, ItemEnd::Disconnected);
+    }
+
+    fn overlay_list(&mut self, owner: u64) -> Vec<ItemInfoOwned> {
+        self.overlay.list(owner)
     }
 
     fn services(&mut self) -> Rc<Services> {
@@ -415,7 +432,7 @@ fn bench_on(
             fake: host_fake,
             hub: hub.clone(),
             services: Some(services),
-            covers: super::cover::Covers::default(),
+            overlay: super::overlay::Overlay::default(),
             stop: false,
         };
         scheduler
@@ -1047,104 +1064,137 @@ fn ad_card() -> CardOwned {
     }
 }
 
-#[test]
-fn cover_and_uncover() {
-    use exact_units::Millis;
+/// The ad cover over `window` for `lasts_ms`.
+fn ad_cover(window: u64, lasts_ms: u32, mute: bool) -> ItemOwned {
+    ItemOwned {
+        place: PlaceOwned {
+            on: SurfaceOwned::Window(WindowId(window)),
+            at: At::Fill,
+        },
+        content: ContentOwned::Card(ad_card()),
+        backdrop: Backdrop { blur: 2, dim: 65 },
+        priority: 150,
+        lasts: Some(exact_units::Millis::new(lasts_ms)),
+        mute,
+        dismissible: true,
+    }
+}
 
+#[test]
+fn overlay_put_lift_dismiss_and_the_connection_end() {
     bench(vec![window(1, "firefox")]).run(async |client, fake| {
         let mut events = client.events().call().await.unwrap();
-        let windows = client.windows();
-        windows
-            .cover(WindowId(1), ad_card(), Millis::new(130_000), false)
+        let mut next = async || {
+            tokio::time::timeout(Duration::from_secs(5), events.recv())
+                .await
+                .expect("an event")
+                .unwrap()
+        };
+        let overlay = client.overlay();
+        let ad = overlay
+            .put("ad".to_owned(), ad_cover(1, 130_000, false))
             .call()
             .await
             .unwrap();
-        // Renewed with a corrected end.
-        windows
-            .cover(WindowId(1), ad_card(), Millis::new(125_000), false)
+        // Renewed with a corrected end: the same item.
+        let again = overlay
+            .put("ad".to_owned(), ad_cover(1, 125_000, false))
             .call()
             .await
             .unwrap();
+        assert_eq!(ad, again);
 
         let err = |res| device_err(res);
         assert_eq!(
-            err(windows
-                .cover(WindowId(99), ad_card(), Millis::new(1000), false)
+            err(overlay
+                .put("ad".to_owned(), ad_cover(99, 1000, false))
                 .call()
                 .await),
-            CoverError::NoSuchWindow
+            OverlayError::NoSuchWindow
         );
         assert_eq!(
-            err(windows
-                .cover(WindowId(1), ad_card(), Millis::new(0), false)
+            err(overlay
+                .put("ad".to_owned(), ad_cover(1, 0, false))
                 .call()
                 .await),
-            CoverError::BadArgument
+            OverlayError::BadArgument
         );
+        let mut long = ad_cover(1, 1000, false);
+        long.content = ContentOwned::Card(CardOwned {
+            title: "x".repeat(501),
+            ..ad_card()
+        });
         assert_eq!(
-            err(windows
-                .cover(WindowId(1), ad_card(), Millis::new(16 * 60 * 1000), false)
-                .call()
-                .await),
-            CoverError::BadArgument
+            err(overlay.put("ad".to_owned(), long).call().await),
+            OverlayError::BadArgument
         );
-        let mut long = ad_card();
-        long.title = "x".repeat(201);
+        let listed = overlay.list().call().await.unwrap();
         assert_eq!(
-            err(windows
-                .cover(WindowId(1), long, Millis::new(1000), false)
-                .call()
-                .await),
-            CoverError::BadArgument
+            listed
+                .iter()
+                .map(|i| (i.id, i.key.as_str(), i.own))
+                .collect::<Vec<_>>(),
+            [(ad, "ad", true)]
         );
 
-        windows.uncover(WindowId(1)).call().await.unwrap();
+        overlay.lift("ad".to_owned()).call().await.unwrap();
         assert_eq!(
-            err(windows.uncover(WindowId(1)).call().await),
-            CoverError::NotCovered
+            device_err(overlay.lift("ad".to_owned()).call().await),
+            OverlayError::NoSuchItem
         );
-        let event = tokio::time::timeout(Duration::from_secs(5), events.recv())
-            .await
-            .expect("an event")
-            .unwrap();
         assert_eq!(
-            event,
-            EventOwned::CoverLifted {
-                window: WindowId(1),
-                why: CoverEnd::Uncovered
+            next().await,
+            EventOwned::OverlayEnded {
+                id: ad,
+                why: ItemEnd::Lifted
             }
         );
 
-        // Held by this connection: its end lifts it.
-        windows
-            .cover(WindowId(1), ad_card(), Millis::new(60_000), false)
+        let shown = overlay
+            .put("ad".to_owned(), ad_cover(1, 60_000, false))
+            .call()
+            .await
+            .unwrap();
+        overlay.dismiss(shown).call().await.unwrap();
+        assert_eq!(
+            next().await,
+            EventOwned::OverlayEnded {
+                id: shown,
+                why: ItemEnd::Dismissed
+            }
+        );
+
+        // Owned by this connection: its end lifts it.
+        overlay
+            .put("ad".to_owned(), ad_cover(1, 60_000, false))
             .call()
             .await
             .unwrap();
         drop(events);
         drop(client);
         let calls = calls_until(fake, |calls| {
-            calls.iter().any(|c| c.starts_with("uncover held by"))
+            calls.iter().any(|c| c.starts_with("lift owned by"))
         })
         .await;
         assert_eq!(
             calls,
             [
-                "cover 1 by 1 for 130s",
-                "cover 1 by 1 for 125s",
-                "cover 99 by 1 for 1s",
-                "uncover 1",
-                "uncover 1",
-                "cover 1 by 1 for 60s",
-                "uncover held by 1: [1]",
+                "put ad on Window(1) by 1 for Some(130.0)s",
+                "put ad on Window(1) by 1 for Some(125.0)s",
+                "put ad on Window(99) by 1 for Some(1.0)s",
+                "lift ad by 1",
+                "lift ad by 1",
+                "put ad on Window(1) by 1 for Some(60.0)s",
+                &format!("dismiss {}", shown.0),
+                "put ad on Window(1) by 1 for Some(60.0)s",
+                &format!("lift owned by 1: [{}]", shown.0 + 1),
             ]
         );
     });
 }
 
 #[test]
-fn muting_cover_holds_the_mute() {
-    use exact_units::Millis;
+fn a_muting_item_holds_the_mute() {
     use wire_weaver_client::observe::on_change;
 
     let dir = Scratch::new("cover-mute");
@@ -1173,10 +1223,10 @@ fn muting_cover_holds_the_mute() {
             }
             until_muted(&mut mutes, false).await;
 
-            let cover = |id, mute| {
+            let cover = |id: u64, mute| {
                 client
-                    .windows()
-                    .cover(WindowId(id), ad_card(), Millis::new(60_000), mute)
+                    .overlay()
+                    .put(format!("ad {id}"), ad_cover(id, 60_000, mute))
             };
             // A cover without mute leaves the sink as it is.
             cover(2, false).call().await.unwrap();
@@ -1187,13 +1237,18 @@ fn muting_cover_holds_the_mute() {
             until_muted(&mut mutes, false).await;
             cover(1, true).call().await.unwrap();
             cover(2, true).call().await.unwrap();
-            client.windows().uncover(WindowId(1)).call().await.unwrap();
+            client
+                .overlay()
+                .lift("ad 1".to_owned())
+                .call()
+                .await
+                .unwrap();
 
-            // The connection ends: its covers lift and the sink gets its mute from before.
+            // The connection ends: its items lift and the sink gets its mute from before.
             drop(mutes);
             drop(client);
             calls_until(fake, |calls| {
-                calls.iter().any(|c| c.starts_with("uncover held by"))
+                calls.iter().any(|c| c.starts_with("lift owned by"))
             })
             .await;
             tokio::time::timeout(Duration::from_secs(5), async {
@@ -2741,12 +2796,12 @@ fn live_input() {
 }
 
 /// `WW_NIRI_LIVE_COVER=VIDEO_URL`: play the video in browser slot 1, cover it for 20 s and wait
-/// for the deadline, cover it muted from a second connection that then goes (the sink is muted
-/// meanwhile and gets its mute back), cover and uncover; a screenshot on the TV
-/// (`/tmp/ww-cover-*.png`) before, while covered and after.
+/// for the deadline; cover it muted from a second connection that puts a text over it and a
+/// clock in the output's corner, then goes (the sink is muted meanwhile and gets its mute back);
+/// cover and dismiss. A screenshot on the TV (`/tmp/ww-overlay-*.png`) at each step.
 #[test]
 fn live_cover() {
-    use exact_units::Millis;
+    use ww_niri_api::{Anchor, BrowserSlot, Px, TextSize};
 
     let (Some(url), Some(video)) = (
         std::env::var_os("WW_NIRI_URL"),
@@ -2772,7 +2827,7 @@ fn live_cover() {
         let client = connect().await;
         let mut events = client.events().call().await.unwrap();
         let screenshot = async |name: &str| {
-            let path = format!("/tmp/ww-cover-{name}.png");
+            let path = format!("/tmp/ww-overlay-{name}.png");
             let argv = [&niri, "msg", "action", "screenshot-screen", "--path", &path];
             let argv = argv.map(|s| s.to_string()).to_vec();
             client.apps().launch(argv).call().await.unwrap();
@@ -2787,35 +2842,40 @@ fn live_cover() {
         tv.show(None, Some(true)).call().await.unwrap();
         let _ = tv.playback().play().call().await;
         tokio::time::sleep(Duration::from_secs(3)).await;
-        let window = tv.read_state().read().await.unwrap().window.unwrap();
         screenshot("0-video").await;
 
-        let mut lifted = async |why: CoverEnd, within: Duration| {
+        let mut ended = async |id: ItemId, why: ItemEnd, within: Duration| {
             tokio::time::timeout(within, async {
                 loop {
-                    if let EventOwned::CoverLifted {
-                        window: w,
-                        why: got,
-                    } = events.recv().await.unwrap()
+                    if let EventOwned::OverlayEnded { id: got, why: end } =
+                        events.recv().await.unwrap()
                     {
-                        assert_eq!((w, got), (window, why));
-                        break;
+                        if got == id {
+                            assert_eq!(end, why);
+                            break;
+                        }
                     }
                 }
             })
             .await
-            .unwrap_or_else(|_| panic!("the cover lifts: {why:?}"));
-            eprintln!("lifted: {why:?}");
+            .unwrap_or_else(|_| panic!("the item ends: {why:?}"));
+            eprintln!("ended: {why:?}");
+        };
+        let slot_cover = |lasts_ms, mute| {
+            let mut item = ad_cover(0, lasts_ms, mute);
+            item.place.on = SurfaceOwned::Slot(BrowserSlot(1));
+            item
         };
 
         let started = std::time::Instant::now();
-        tv.cover(ad_card(), Millis::new(20_000), false)
+        let ad = (client.overlay())
+            .put("ad".to_owned(), slot_cover(20_000, false))
             .call()
             .await
             .unwrap();
         tokio::time::sleep(Duration::from_secs(3)).await;
         screenshot("1-covered").await;
-        lifted(CoverEnd::Deadline, Duration::from_secs(25)).await;
+        ended(ad, ItemEnd::Deadline, Duration::from_secs(25)).await;
         eprintln!("deadline after {:?}", started.elapsed());
         tokio::time::sleep(Duration::from_secs(2)).await;
         screenshot("2-lifted").await;
@@ -2832,24 +2892,51 @@ fn live_cover() {
             .unwrap_or_else(|_| panic!("the sink gets muted {muted}"));
         };
         let other = connect().await;
-        other
-            .windows()
-            .cover(window, ad_card(), Millis::new(60_000), true)
+        let o = other.overlay();
+        let theirs = (o
+            .put("ad".to_owned(), slot_cover(60_000, true))
             .call()
-            .await
+            .await)
             .unwrap();
+        let mut text = slot_cover(60_000, false);
+        text.place.at = At::Anchor {
+            anchor: Anchor::Bottom,
+            dx: Px::new(0),
+            dy: Px::new(-80),
+        };
+        text.content = ContentOwned::Text {
+            text: "Переключаю выход".to_owned(),
+            size: TextSize::Medium,
+        };
+        text.backdrop = Backdrop { blur: 3, dim: 40 };
+        text.priority = 200;
+        let mut clock = text.clone();
+        clock.place.on = SurfaceOwned::Output(None);
+        clock.place.at = At::Anchor {
+            anchor: Anchor::TopRight,
+            dx: Px::new(-40),
+            dy: Px::new(40),
+        };
+        clock.content = ContentOwned::Clock {
+            size: TextSize::Small,
+        };
+        (o.put("text".to_owned(), text).call().await).unwrap();
+        (o.put("clock".to_owned(), clock).call().await).unwrap();
         until_muted(true).await;
         eprintln!("muted under the cover, was muted {muted_before}");
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        screenshot("3-stacked").await;
         drop(other);
-        lifted(CoverEnd::Disconnected, Duration::from_secs(10)).await;
+        ended(theirs, ItemEnd::Disconnected, Duration::from_secs(10)).await;
         until_muted(muted_before).await;
 
-        tv.cover(ad_card(), Millis::new(60_000), false)
+        let ad = (client.overlay())
+            .put("ad".to_owned(), slot_cover(60_000, false))
             .call()
             .await
             .unwrap();
-        tv.uncover().call().await.unwrap();
-        lifted(CoverEnd::Uncovered, Duration::from_secs(5)).await;
+        client.overlay().dismiss(ad).call().await.unwrap();
+        ended(ad, ItemEnd::Dismissed, Duration::from_secs(5)).await;
 
         tv.stop().with_timeout(long).call().await.unwrap();
     });

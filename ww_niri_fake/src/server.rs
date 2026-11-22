@@ -10,10 +10,10 @@ use wire_weaver::prelude::*;
 use wire_weaver_server::{Lagged, Subscription};
 use ww_client_server::ResourceIndex;
 use ww_niri_api::{
-    BrowserErrorOwned, BrowserStateOwned, Button, CardOwned, CoverError, Delta, InfoOwned,
-    InputErrorOwned, LaunchErrorOwned, Launched, MediaErrorOwned, Modifiers, OutputOwned,
-    PlaybackStateOwned, PlayerInfoOwned, PlayerSourceOwned, Point, PointerPosition, Px, SinkOwned,
-    Transition, WindowError, WindowId, WindowOwned,
+    BrowserErrorOwned, BrowserStateOwned, Button, Delta, InfoOwned, InputErrorOwned, ItemId,
+    ItemInfoOwned, ItemOwned, LaunchErrorOwned, Launched, MediaErrorOwned, Modifiers, OutputOwned,
+    OverlayError, PlaybackStateOwned, PlayerInfoOwned, PlayerSourceOwned, Point, PointerPosition,
+    Px, SinkOwned, Transition, WindowError, WindowId, WindowOwned,
 };
 use ww_stream::totals::TotalsRx;
 
@@ -65,7 +65,7 @@ macro_rules! from_fail {
 
 from_fail!(
     WindowError => Window,
-    CoverError => Cover,
+    OverlayError => Overlay,
     BrowserErrorOwned => Browser,
     MediaErrorOwned => Media,
     InputErrorOwned => Input,
@@ -168,13 +168,13 @@ impl Server {
     }
 
     /// Records the call, then answers the error a test asked for or runs `f` on the model.
-    fn op<E: FromFail>(
+    fn op<T, E: FromFail>(
         &self,
         method: &'static str,
         index: Option<u32>,
         args: String,
-        f: impl FnOnce(&mut Model) -> Result<(), E>,
-    ) -> Res<'_, E>
+        f: impl FnOnce(&mut Model) -> Result<T, E>,
+    ) -> RpcResult<Result<T, Error<'_, E>>>
     where
         for<'a> Error<'a, E>: From<E>,
     {
@@ -324,31 +324,6 @@ impl Server {
         )
     }
 
-    async fn windows_cover(
-        &mut self,
-        _cx: &mut Context<'_, impl EventOut>,
-        id: WindowId,
-        card: CardOwned,
-        lasts: Millis<u32>,
-        mute: bool,
-    ) -> Res<'_, CoverError> {
-        let args = format!("({id:?}, {card:?}, {}ms, mute {mute})", lasts.get());
-        let holder = self.holder;
-        self.op("windows.cover", None, args, |m| {
-            m.cover(holder, id.0, card, lasts, mute)
-        })
-    }
-
-    async fn windows_uncover(
-        &mut self,
-        _cx: &mut Context<'_, impl EventOut>,
-        id: WindowId,
-    ) -> Res<'_, CoverError> {
-        self.op("windows.uncover", None, format!("({id:?})"), |m| {
-            m.uncover(id.0)
-        })
-    }
-
     async fn windows_hide(
         &mut self,
         _cx: &mut Context<'_, impl EventOut>,
@@ -436,38 +411,6 @@ impl Server {
         self.op("browsers.show", Some(index(chain)), args, |m| {
             m.show_browser(slot(chain), fullscreen)
         })
-    }
-
-    async fn browsers_cover(
-        &mut self,
-        _cx: &mut Context<'_, impl EventOut>,
-        chain: [ResourceIndex; 1],
-        card: CardOwned,
-        lasts: Millis<u32>,
-        mute: bool,
-    ) -> Res<'_, CoverError> {
-        let args = format!("({card:?}, {}ms, mute {mute})", lasts.get());
-        let holder = self.holder;
-        self.op("browsers.cover", Some(index(chain)), args, |m| {
-            let window = m.slot_window(slot(chain))?;
-            m.cover(holder, window, card, lasts, mute)
-        })
-    }
-
-    async fn browsers_uncover(
-        &mut self,
-        _cx: &mut Context<'_, impl EventOut>,
-        chain: [ResourceIndex; 1],
-    ) -> Res<'_, CoverError> {
-        self.op(
-            "browsers.uncover",
-            Some(index(chain)),
-            "()".to_owned(),
-            |m| {
-                let window = m.slot_window(slot(chain))?;
-                m.uncover(window)
-            },
-        )
     }
 
     async fn get_browsers_state(
@@ -795,6 +738,49 @@ impl Server {
 
     // ---- ww_niri_api::Input at input ----
 
+    async fn overlay_put(
+        &mut self,
+        _cx: &mut Context<'_, impl EventOut>,
+        key: String,
+        item: ItemOwned,
+    ) -> RpcResult<Result<ItemId, Error<'_, OverlayError>>> {
+        let args = format!("({key:?}, {item:?})");
+        let owner = self.holder;
+        self.op("overlay.put", None, args, |m| {
+            m.overlay_put(owner, key, item)
+        })
+    }
+
+    async fn overlay_lift(
+        &mut self,
+        _cx: &mut Context<'_, impl EventOut>,
+        key: String,
+    ) -> Res<'_, OverlayError> {
+        let owner = self.holder;
+        self.op("overlay.lift", None, format!("({key:?})"), |m| {
+            m.overlay_lift(owner, &key)
+        })
+    }
+
+    async fn overlay_dismiss(
+        &mut self,
+        _cx: &mut Context<'_, impl EventOut>,
+        id: ItemId,
+    ) -> Res<'_, OverlayError> {
+        self.op("overlay.dismiss", None, format!("({id:?})"), |m| {
+            m.overlay_dismiss(id)
+        })
+    }
+
+    async fn overlay_list(
+        &mut self,
+        _cx: &mut Context<'_, impl EventOut>,
+    ) -> RpcResult<Vec<ItemInfoOwned>> {
+        self.begin("overlay.list", None, "()".to_owned());
+        let owner = self.holder;
+        RpcResult::Ready(self.with(|m| m.overlay_list(owner)))
+    }
+
     async fn get_input_pointer_position(
         &mut self,
         _cx: &mut Context<'_, impl EventOut>,
@@ -1085,7 +1071,7 @@ impl wire_weaver_server::Backend for Server {
         self.observe_buf = buf;
     }
 
-    /// The link went: nothing this connection held stays down, its covers lift.
+    /// The link went: nothing this connection held stays down, its overlay items lift.
     async fn end(&mut self) {
         let holder = self.holder;
         self.shared.with(|m| m.release_held_by(holder));

@@ -1,12 +1,12 @@
 //! A generated client against the fake TV through the in-process transport.
 
-mod covers;
 mod every_method;
 mod hash_moved;
 mod hide;
 mod knobs;
 mod links;
 mod observers;
+mod overlay;
 
 use std::future::Future;
 use std::path::Path;

@@ -7,7 +7,7 @@ use std::time::Duration;
 use exact_units::Micros;
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
 use ww_niri_api::{
-    Button, CardOwned, InfoOwned, Modifiers, OutputOwned, PlayerId, PlayerInfoOwned, Point,
+    Button, InfoOwned, ItemId, ItemOwned, Modifiers, OutputOwned, PlayerId, PlayerInfoOwned, Point,
     Transition, WindowId, WindowOwned,
 };
 
@@ -15,7 +15,7 @@ use crate::api::NiriClient;
 use crate::command::{Command, PlaybackAction, PlaybackTarget};
 use crate::config::{Address, Config, HOLD_LIMIT_MAX, HOLD_LIMIT_MIN};
 use crate::error::{StartError, TvError};
-use crate::model::{self, CoverLifted, Shared};
+use crate::model::{self, OverlayEnded, Shared};
 use crate::queue::{self, Failed, Request};
 use crate::runtime;
 use crate::snapshot::{ConnectionState, Snapshot};
@@ -136,12 +136,12 @@ impl Tv {
         self.inner.shared.state.subscribe()
     }
 
-    /// Every cover that lifts on the TV from now on, whoever set it. The covers this client
-    /// holds when its link goes come as [CoverEnd::Disconnected](ww_niri_api::CoverEnd), made
-    /// here: the TV lifted them, and the link to tell was gone. A slow reader misses the oldest
-    /// and gets `Lagged`.
-    pub fn cover_lifted(&self) -> broadcast::Receiver<CoverLifted> {
-        self.inner.shared.cover_lifted.subscribe()
+    /// Every overlay item that lifts on the TV from now on, whoever owns it, with the key of
+    /// this client's own. This client's items when its link goes come as
+    /// [ItemEnd::Disconnected](ww_niri_api::ItemEnd), made here: the TV lifted them, and the
+    /// link to tell was gone. A slow reader misses the oldest and gets `Lagged`.
+    pub fn overlay_ended(&self) -> broadcast::Receiver<OverlayEnded> {
+        self.inner.shared.overlay_ended.subscribe()
     }
 
     // ---- commands ----
@@ -251,6 +251,11 @@ impl Tv {
         AudioCalls { tv: self }
     }
 
+    /// This client's overlay items.
+    pub fn overlay(&self) -> OverlayCalls<'_> {
+        OverlayCalls { tv: self }
+    }
+
     pub fn pointer(&self) -> PointerCalls<'_> {
         PointerCalls { tv: self }
     }
@@ -309,15 +314,6 @@ impl WindowCalls<'_> {
         /// Asks the app to close the window.
         fn close(&self) => Command::CloseWindow(self.id);
         fn set_fullscreen(&self, on: bool) => Command::SetFullscreen { id: self.id, on };
-        /// Covers the window with a blur and `card` for `lasts`; it lifts by itself at the end
-        /// or when this client's connection ends, so renew it while it should stay. With `mute`
-        /// the TV's sink is muted from the first muting cover until the last one lifts, then
-        /// gets its mute from before; renewals leave it as it is. [Tv::cover_lifted] tells when
-        /// and why it lifted.
-        fn cover(&self, card: CardOwned, lasts: Duration, mute: bool) =>
-            Command::Cover { id: self.id, card, lasts, mute };
-        /// Lifts the window's cover.
-        fn uncover(&self) => Command::Uncover(self.id);
         /// Hides the window: alive, but never drawn or focused until [WindowCalls::show], which
         /// brings it back on the active workspace.
         fn hide(&self) => Command::HideWindow(self.id);
@@ -340,12 +336,6 @@ impl<'a> SlotCalls<'a> {
         /// Shows the slot's window, as [WindowCalls::show].
         fn show(&self, transition: Option<Transition>, fullscreen: Option<bool>) =>
             Command::SlotShow { slot: self.index, transition, fullscreen };
-        /// Covers the slot's window, as [WindowCalls::cover]; [Tv::cover_lifted] names the
-        /// window, [SlotState::state](crate::SlotState)'s `window`.
-        fn cover(&self, card: CardOwned, lasts: Duration, mute: bool) =>
-            Command::SlotCover { slot: self.index, card, lasts, mute };
-        /// Lifts the cover of the slot's window.
-        fn uncover(&self) => Command::SlotUncover { slot: self.index };
     }
 
     /// The slot's current player.
@@ -382,6 +372,27 @@ impl PlaybackCalls<'_> {
         fn seek(&self, by: Micros<i64>) => self.command(PlaybackAction::SeekBy { by });
         /// Absolute on the current track; latest-wins while a call is in flight.
         fn set_position(&self, at: Micros<u64>) => self.command(PlaybackAction::SetPosition { at });
+    }
+}
+
+/// This client's items on the TV's overlay layer.
+pub struct OverlayCalls<'a> {
+    tv: &'a Tv,
+}
+
+impl OverlayCalls<'_> {
+    calls! {
+        /// Puts up this client's item `key`, or changes it; a put queued behind one of the same
+        /// key replaces it. It lifts at the end of its `lasts`, or when this client's connection
+        /// ends, so renew it while it should stay. With `mute` the TV's sink is muted from the
+        /// first muting item until the last one lifts, then gets its mute from before; changes
+        /// leave it as it is. [Tv::overlay_ended] tells when and why it lifted.
+        fn put(&self, key: String, item: ItemOwned) =>
+            Command::OverlayPut { key, item: Box::new(item) };
+        /// Lifts this client's item `key`.
+        fn lift(&self, key: String) => Command::OverlayLift(key);
+        /// Lifts a dismissible item, whoever owns it: a person's "show it".
+        fn dismiss(&self, id: ItemId) => Command::OverlayDismiss(id);
     }
 }
 

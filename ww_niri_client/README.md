@@ -56,17 +56,17 @@ On each link, and after a `Resync` event, the client lists everything again and 
 
 - Typed calls mirror the API and answer `Result<_, TvError>`: `tv.slot(0).start(true)`, `tv.player(id).seek(..)`, `tv.audio().set_volume(60)`, `tv.pointer().click(..)`, `tv.keyboard().press_keys("ctrl+l".into())`.
 - `Tv::send(Command)` queues and returns at once, for a UI; failures come on `Tv::errors`.
-- Each resource's commands go one call at a time, in order. Pointer and keyboard share one lane; each slot, each player, windows, volume and mute have their own.
+- Each resource's commands go one call at a time, in order. Pointer and keyboard share one lane; each slot, each player, each overlay key, windows, volume and mute have their own.
 - While a call is in flight, the commands behind it merge where one call does both:
   - pointer moves and wheel turns add up;
   - a volume or mute replaces the one before;
   - seeks add up, and a position replaces them;
-  - a cover replaces the one before of the same window or slot.
+  - a put of an overlay item replaces the one before of the same key.
 - So a fast UI never floods the link, and the rate follows the round trip. Clicks, keys and text keep their order.
 - A button or key held with `press` or `key_down` is renewed every third of the hold limit until released. `Config::hold_limit` sets it, 3 s by default.
-- `tv.window(id).cover(card, lasts, mute)` and `tv.slot(0).cover(..)` blur the window under a card for `lasts`. The cover belongs to the connection: it lifts when the link goes, also on a reconnect, so a client renews it while it should stay.
-- With `mute` the TV's default sink is muted when the first muting cover starts. When the last one lifts, the sink gets its mute from before. Renewals leave the mute as it is, so a user's unmute during the cover holds. A client that hangs or crashes never leaves the TV muted: its connection ends and the cover lifts.
-- `Tv::cover_lifted` tells of every cover that lifts on the TV, whoever set it, with the window and why: `Deadline`, `Uncovered`, `WindowClosed` or `Disconnected`. The covers this client holds when its link goes come as `Disconnected`, made by the client itself.
+- `tv.overlay().put(key, item)` puts up an item on the TV's overlay layer (docs/ww/Overlay.md): a blurred cover over a window or slot, a text, a clock or a notice, at a place and priority, for its `lasts`. The item belongs to the connection: it lifts when the link goes, also on a reconnect, so a client puts it up again while it should stay. `lift(key)` lifts it; `dismiss(id)` lifts anyone's dismissible item.
+- With `mute` the TV's default sink is muted when the first muting item goes up. When the last one lifts, the sink gets its mute from before. Changes leave the mute as it is, so a user's unmute during a cover holds. A client that hangs or crashes never leaves the TV muted: its connection ends and the item lifts.
+- `Tv::overlay_ended` tells of every item that lifts on the TV, whoever owns it, with its id, the key of this client's own, and why: `Deadline`, `Lifted`, `Dismissed`, `TargetGone` or `Disconnected`. This client's items when its link goes come as `Disconnected`, made by the client itself.
 - `tv.window(id).hide()` keeps the window running off screen: niri never draws or focuses it until `show`, which brings it back on the active workspace. A hidden window is a lasting state, not a lease: it stays hidden when the link goes.
 - `Tv::release_all` lets go of everything when the app goes to the background. A phone that vanishes leaves nothing held past the hold limit.
 

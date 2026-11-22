@@ -51,7 +51,7 @@ pub struct Server {
     pub events_open: bool,
     /// What the client injects, and holds down.
     pub input: Input,
-    /// This connection's id, for the covers it holds.
+    /// This connection's id, for what it holds and the overlay items it owns.
     pub holder: u64,
     /// Where the `input.pointer.motion` writes are.
     motion: TotalsRx<ww_niri_api::Delta>,
@@ -204,36 +204,6 @@ impl Server {
         window.browser = window.pid.and_then(|pid| self.browsers.slot_of_pid(pid));
     }
 
-    /// Covers the window for this connection, after checking the card and `lasts`.
-    async fn cover(
-        &self,
-        id: u64,
-        card: ww_niri_api::CardOwned,
-        lasts: exact_units::Millis<u32>,
-        mute: bool,
-    ) -> RpcResult<Result<(), Error<'_, ww_niri_api::CoverError>>> {
-        let lasts = match card.check_cover(lasts) {
-            Ok(lasts) => lasts,
-            Err(err) => return RpcResult::Ready(Err(err.into())),
-        };
-        let holder = self.holder;
-        let look = super::cover::Look {
-            card,
-            until: std::time::Instant::now() + lasts,
-        };
-        match call(&self.run, move |host| host.cover(id, holder, look, mute)).await {
-            Some(res) => RpcResult::Ready(res.map_err(Into::into)),
-            None => Unimplemented.into(),
-        }
-    }
-
-    async fn uncover(&self, id: u64) -> RpcResult<Result<(), Error<'_, ww_niri_api::CoverError>>> {
-        match call(&self.run, move |host| host.uncover(id)).await {
-            Some(res) => RpcResult::Ready(res.map_err(Into::into)),
-            None => Unimplemented.into(),
-        }
-    }
-
     // ---- ww_niri_api::WwNiri at root ----
 
     /// niri version, ww_niri version, hostname.
@@ -332,31 +302,6 @@ impl Server {
     ) -> RpcResult<Result<(), Error<'_, ww_niri_api::WindowError>>> {
         self.window_op(move |host| host.set_fullscreen(id.0, on))
             .await
-    }
-
-    async fn windows_cover(
-        &mut self,
-        _cx: &mut Context<'_, impl EventOut>,
-        id: ww_niri_api::WindowId,
-        card: ww_niri_api::CardOwned,
-        lasts: exact_units::Fixed<
-            exact_units::units::Second,
-            exact_units::prefix::Milli,
-            u32,
-            exact_units::Unbounded,
-        >,
-        mute: bool,
-    ) -> RpcResult<Result<(), Error<'_, ww_niri_api::CoverError>>> {
-        self.cover(id.0, card, lasts, mute).await
-    }
-
-    /// Lifts the window's cover, whoever set it.
-    async fn windows_uncover(
-        &mut self,
-        _cx: &mut Context<'_, impl EventOut>,
-        id: ww_niri_api::WindowId,
-    ) -> RpcResult<Result<(), Error<'_, ww_niri_api::CoverError>>> {
-        self.uncover(id.0).await
     }
 
     async fn windows_hide(
@@ -493,38 +438,6 @@ impl Server {
             // Closed in between.
             Some(false) => RpcResult::Ready(Err(BrowserErrorOwned::NoWindow.into())),
             None => Unimplemented.into(),
-        }
-    }
-
-    /// Covers the slot's window, as [Windows::cover].
-    async fn browsers_cover(
-        &mut self,
-        _cx: &mut Context<'_, impl EventOut>,
-        index_chain: [ResourceIndex; 1],
-        card: ww_niri_api::CardOwned,
-        lasts: exact_units::Fixed<
-            exact_units::units::Second,
-            exact_units::prefix::Milli,
-            u32,
-            exact_units::Unbounded,
-        >,
-        mute: bool,
-    ) -> RpcResult<Result<(), Error<'_, ww_niri_api::CoverError>>> {
-        match self.browser_window(index_chain[0].get().0 as u8).await {
-            Some(window) => self.cover(window.id.0, card, lasts, mute).await,
-            None => RpcResult::Ready(Err(ww_niri_api::CoverError::NoSuchWindow.into())),
-        }
-    }
-
-    /// Lifts the cover of the slot's window, as [Windows::uncover].
-    async fn browsers_uncover(
-        &mut self,
-        _cx: &mut Context<'_, impl EventOut>,
-        index_chain: [ResourceIndex; 1],
-    ) -> RpcResult<Result<(), Error<'_, ww_niri_api::CoverError>>> {
-        match self.browser_window(index_chain[0].get().0 as u8).await {
-            Some(window) => self.uncover(window.id.0).await,
-            None => RpcResult::Ready(Err(ww_niri_api::CoverError::NoSuchWindow.into())),
         }
     }
 
@@ -814,6 +727,85 @@ impl Server {
                 description: sink.description,
             }),
             None => GetResult::GetError(audio_unavailable("no default sink")),
+        }
+    }
+
+    // ---- ww_niri_api::Overlay at overlay ----
+
+    /// Puts up this connection's item `key`, or changes it, after checking it; a slot's window
+    /// is found now.
+    async fn overlay_put(
+        &mut self,
+        _cx: &mut Context<'_, impl EventOut>,
+        key: String,
+        item: ww_niri_api::ItemOwned,
+    ) -> RpcResult<Result<ww_niri_api::ItemId, Error<'_, ww_niri_api::OverlayError>>> {
+        use ww_niri_api::{OverlayError, SurfaceOwned};
+
+        use super::overlay::Target;
+
+        let lasts = match item.check(&key) {
+            Ok(lasts) => lasts,
+            Err(err) => return RpcResult::Ready(Err(err.into())),
+        };
+        let target = match &item.place.on {
+            SurfaceOwned::Window(id) => Target::Window(id.0),
+            SurfaceOwned::Slot(slot) => match self.browser_window(slot.0).await {
+                Some(window) => Target::Window(window.id.0),
+                None => return RpcResult::Ready(Err(OverlayError::NoSuchWindow.into())),
+            },
+            SurfaceOwned::Output(name) => Target::Output(name.clone()),
+            SurfaceOwned::Unknown(_) => {
+                unreachable!("ItemOwned::check refuses a surface this side does not know")
+            }
+        };
+        let until = lasts.map(|lasts| std::time::Instant::now() + lasts);
+        let owner = self.holder;
+        match call(&self.run, move |host| {
+            host.overlay_put(owner, key, target, item, until)
+        })
+        .await
+        {
+            Some(res) => RpcResult::Ready(res.map_err(Into::into)),
+            None => Unimplemented.into(),
+        }
+    }
+
+    /// Lifts this connection's item `key`.
+    async fn overlay_lift(
+        &mut self,
+        _cx: &mut Context<'_, impl EventOut>,
+        key: String,
+    ) -> RpcResult<Result<(), Error<'_, ww_niri_api::OverlayError>>> {
+        let owner = self.holder;
+        match call(&self.run, move |host| host.overlay_lift(owner, key)).await {
+            Some(res) => RpcResult::Ready(res.map_err(Into::into)),
+            None => Unimplemented.into(),
+        }
+    }
+
+    /// Lifts a dismissible item, whoever owns it.
+    async fn overlay_dismiss(
+        &mut self,
+        _cx: &mut Context<'_, impl EventOut>,
+        id: ww_niri_api::ItemId,
+    ) -> RpcResult<Result<(), Error<'_, ww_niri_api::OverlayError>>> {
+        info!("ww: {} dismisses overlay item {}", self.peer, id.0);
+        match call(&self.run, move |host| host.overlay_dismiss(id)).await {
+            Some(res) => RpcResult::Ready(res.map_err(Into::into)),
+            None => Unimplemented.into(),
+        }
+    }
+
+    /// Every item, front to back, with `own` set on this connection's.
+    async fn overlay_list(
+        &mut self,
+        _cx: &mut Context<'_, impl EventOut>,
+    ) -> RpcResult<Vec<ww_niri_api::ItemInfoOwned>> {
+        let owner = self.holder;
+        match call(&self.run, move |host| host.overlay_list(owner)).await {
+            Some(items) => RpcResult::Ready(items),
+            None => Unimplemented.into(),
         }
     }
 

@@ -277,9 +277,11 @@ pub(crate) async fn run(
             Some(done) = in_flight.join_next() => match done {
                 Ok((lane, pending, result)) => {
                     queue.lanes.done(&lane);
-                    if result.is_ok() {
-                        note_cover(&shared, &pending.command);
-                    }
+                    let result = result.map(|put| {
+                        if let (Some(id), Command::OverlayPut { key, .. }) = (put, &pending.command) {
+                            shared.own_item(id, key);
+                        }
+                    });
                     queue.answer(pending.command, pending.replies, result);
                 }
                 Err(e) if e.is_panic() => std::panic::resume_unwind(e.into_panic()),
@@ -301,18 +303,6 @@ pub(crate) async fn run(
             },
             _ = stop.changed() => return,
         }
-    }
-}
-
-/// Follows the covers this client holds, for [Tv::cover_lifted](crate::Tv::cover_lifted).
-fn note_cover(shared: &Shared, command: &Command) {
-    let window = match command {
-        Command::Cover { id, .. } => Some(*id),
-        Command::SlotCover { slot, .. } => shared.slot_window(*slot),
-        _ => None,
-    };
-    if let Some(window) = window {
-        shared.hold_cover(window);
     }
 }
 

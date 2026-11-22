@@ -217,12 +217,11 @@ impl wire_weaver_server::Backend for Server {
         self.observe_buf = buf;
     }
 
-    /// The link went: the covers the client held lift, as a lease does, and nothing it held
-    /// down stays down.
+    /// The link went: the client's overlay items lift, and nothing it held down stays down.
     async fn end(&mut self) {
         debug!("ww: link to {} is down", self.peer);
         let holder = self.holder;
-        let _ = call(&self.run, move |host| host.uncover_held_by(holder)).await;
+        let _ = call(&self.run, move |host| host.overlay_lift_owned_by(holder)).await;
         if let Err(err) = self.input.release_all().await {
             warn!("ww: error releasing what {} held: {err:?}", self.peer);
         }

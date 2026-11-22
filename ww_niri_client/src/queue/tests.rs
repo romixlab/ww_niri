@@ -120,35 +120,46 @@ fn volume_and_position_are_latest_wins_seeks_add_up() {
 }
 
 #[test]
-fn a_cover_replaces_the_one_before_of_its_window() {
-    use std::time::Duration;
+fn a_put_replaces_the_one_before_of_its_key() {
+    use ww_niri_api::{
+        At, Backdrop, ContentOwned, ItemOwned, PlaceOwned, SurfaceOwned, TextSize, WindowId,
+    };
 
-    use ww_niri_api::{CardOwned, WindowId};
-
-    let cover = |id, secs| Command::Cover {
-        mute: false,
-        id: WindowId(id),
-        card: CardOwned {
-            title: "Реклама".to_owned(),
-            countdown: None,
-            clock: false,
-            footer: None,
-        },
-        lasts: Duration::from_secs(secs),
+    let put = |key: &str, priority| Command::OverlayPut {
+        key: key.to_owned(),
+        item: Box::new(ItemOwned {
+            place: PlaceOwned {
+                on: SurfaceOwned::Window(WindowId(1)),
+                at: At::Fill,
+            },
+            content: ContentOwned::Clock {
+                size: TextSize::Small,
+            },
+            backdrop: Backdrop::default(),
+            priority,
+            lasts: None,
+            mute: false,
+            dismissible: false,
+        }),
     };
     let mut lanes = Lanes::default();
-    for c in [cover(1, 10), cover(1, 9), cover(2, 5), cover(2, 4)] {
+    for c in [put("a", 10), put("a", 9), put("b", 5), put("b", 4)] {
         lanes.push(c, None).unwrap();
     }
-    lanes.push(Command::Uncover(WindowId(2)), None).unwrap();
-    lanes.push(cover(2, 3), None).unwrap();
+    lanes
+        .push(Command::OverlayLift("b".to_owned()), None)
+        .unwrap();
+    lanes.push(put("b", 3), None).unwrap();
     assert_eq!(
-        queued(&lanes, &Lane::Windows),
+        queued(&lanes, &Lane::Overlay("a".to_owned())),
+        [put("a", 9)]
+    );
+    assert_eq!(
+        queued(&lanes, &Lane::Overlay("b".to_owned())),
         [
-            cover(1, 9),
-            cover(2, 4),
-            Command::Uncover(WindowId(2)),
-            cover(2, 3)
+            put("b", 4),
+            Command::OverlayLift("b".to_owned()),
+            put("b", 3)
         ]
     );
 }

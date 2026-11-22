@@ -212,14 +212,59 @@ fn host_relative_moves_and_pointer_notices() {
     }
 }
 
+/// An overlay item: a cover over `window` filling it, or a text at its bottom.
+fn overlay_item(window: u64, cover: bool, priority: u8) -> ww_niri_api::ItemOwned {
+    use ww_niri_api::{
+        Anchor, At, Backdrop, CardOwned, ContentOwned, ItemOwned, PlaceOwned, Px, SurfaceOwned,
+        TextSize, WindowId,
+    };
+
+    let (at, content, backdrop) = if cover {
+        let card = CardOwned {
+            title: "Реклама".to_owned(),
+            countdown: Some("Передача вернётся через".to_owned()),
+            clock: true,
+            footer: Some("Первый канал".to_owned()),
+        };
+        (
+            At::Fill,
+            ContentOwned::Card(card),
+            Backdrop { blur: 2, dim: 65 },
+        )
+    } else {
+        let at = At::Anchor {
+            anchor: Anchor::Bottom,
+            dx: Px::new(0),
+            dy: Px::new(-80),
+        };
+        let text = ContentOwned::Text {
+            text: "Переключаю выход".to_owned(),
+            size: TextSize::Large,
+        };
+        (at, text, Backdrop { blur: 0, dim: 100 })
+    };
+    ItemOwned {
+        place: PlaceOwned {
+            on: SurfaceOwned::Window(WindowId(window)),
+            at,
+        },
+        content,
+        backdrop,
+        priority,
+        lasts: None,
+        mute: false,
+        dismissible: false,
+    }
+}
+
 #[test]
-fn host_cover_lifts_at_its_end_and_with_its_holder() {
+fn host_overlay_items_stack_lift_by_owner_end_and_window() {
     use std::time::{Duration, Instant};
 
-    use ww_niri_api::{CardOwned, CoverError};
+    use ww_niri_api::OverlayError;
 
     use crate::layout::LayoutElement as _;
-    use crate::ww::cover::Look;
+    use crate::ww::overlay::Target;
 
     let mut f = Fixture::new();
     f.add_output(1, (1920, 1080));
@@ -234,55 +279,63 @@ fn host_cover_lifts_at_its_end_and_with_its_holder() {
     f.double_roundtrip(id);
     let wid = f.niri_state().windows()[0].id.0;
 
-    let look = |lasts| Look {
-        card: CardOwned {
-            title: "Реклама".to_owned(),
-            countdown: Some("Передача вернётся через".to_owned()),
-            clock: true,
-            footer: None,
-        },
-        until: Instant::now() + lasts,
-    };
-    let covered = |f: &mut Fixture| {
-        let mut covered = None;
+    // The window's items, front to back.
+    let drawn = |f: &mut Fixture| {
+        let mut ids = Vec::new();
         f.niri().layout.with_windows(|mapped, _, _, _| {
-            covered = Some(mapped.cover().is_some());
+            ids = mapped.overlay().iter().map(|l| l.id).collect();
         });
-        covered.unwrap()
+        ids
+    };
+    let put = |f: &mut Fixture, owner, key: &str, cover, until| {
+        let item = overlay_item(wid, cover, if cover { 150 } else { 200 });
+        f.niri_state()
+            .overlay_put(owner, key.to_owned(), Target::Window(wid), item, until)
+            .map(|id| id.0)
     };
 
     assert_eq!(
-        f.niri_state()
-            .cover(9999, 1, look(Duration::from_secs(1)), false),
-        Err(CoverError::NoSuchWindow)
+        f.niri_state().overlay_put(
+            1,
+            "ad".to_owned(),
+            Target::Window(9999),
+            overlay_item(9999, true, 0),
+            None
+        ),
+        Err(OverlayError::NoSuchWindow)
     );
-    assert_eq!(f.niri_state().uncover(wid), Err(CoverError::NotCovered));
 
-    // Uncovered explicitly.
-    f.niri_state()
-        .cover(wid, 1, look(Duration::from_secs(60)), false)
-        .unwrap();
-    assert!(covered(&mut f));
-    f.niri_state().uncover(wid).unwrap();
-    assert!(!covered(&mut f));
-
-    // Lifted with its holder; another holder's cover stays.
-    f.niri_state()
-        .cover(wid, 1, look(Duration::from_secs(60)), false)
-        .unwrap();
-    f.niri_state().uncover_held_by(2);
-    assert!(covered(&mut f));
-    f.niri_state().uncover_held_by(1);
-    assert!(!covered(&mut f));
+    // Two owners' items stack; the text of owner 2 goes over the cover of owner 1.
+    let ad = put(&mut f, 1, "ad", true, None).unwrap();
+    let text = put(&mut f, 2, "exit", false, None).unwrap();
+    assert_eq!(drawn(&mut f), [text, ad]);
+    // An owner lifts only its own.
+    assert_eq!(
+        f.niri_state().overlay_lift(2, "ad".to_owned()),
+        Err(OverlayError::NoSuchItem)
+    );
+    f.niri_state().overlay_lift(2, "exit".to_owned()).unwrap();
+    assert_eq!(drawn(&mut f), [ad]);
+    // An owner's end lifts its items only.
+    put(&mut f, 2, "exit", false, None).unwrap();
+    f.niri_state().overlay_lift_owned_by(1);
+    assert_eq!(drawn(&mut f).len(), 1);
+    f.niri_state().overlay_lift_owned_by(2);
+    assert_eq!(drawn(&mut f), Vec::<u64>::new());
 
     // Lifted by the timer at its end.
-    f.niri_state()
-        .cover(wid, 1, look(Duration::from_millis(50)), false)
-        .unwrap();
-    assert!(covered(&mut f));
+    put(
+        &mut f,
+        1,
+        "ad",
+        true,
+        Some(Instant::now() + Duration::from_millis(50)),
+    )
+    .unwrap();
+    assert_eq!(drawn(&mut f).len(), 1);
     let deadline = Instant::now() + Duration::from_secs(5);
-    while covered(&mut f) {
-        assert!(Instant::now() < deadline, "the cover outlived its end");
+    while !drawn(&mut f).is_empty() {
+        assert!(Instant::now() < deadline, "the item outlived its end");
         // niri's own loop: its timers fire without waking the fixture's.
         f.state
             .server
@@ -290,22 +343,32 @@ fn host_cover_lifts_at_its_end_and_with_its_holder() {
             .dispatch(Duration::from_millis(10), &mut f.state.server.state)
             .unwrap();
     }
-    assert!(f.niri().ww.covers.is_empty());
-    assert!(f.niri().ww.cover_timer.is_none());
+    assert!(f.niri().ww.overlay.is_empty());
+    assert!(f.niri().ww.overlay_timer.is_none());
+
+    // The window closes: its items lift.
+    put(&mut f, 1, "ad", true, None).unwrap();
+    let window = f.client(id).window(&surface);
+    window.attach_null();
+    window.commit();
+    f.double_roundtrip(id);
+    f.niri_state().refresh_and_flush_clients();
+    assert!(f.niri().ww.overlay.is_empty());
 }
 
-/// Renders a covered red window on a surfaceless EGL renderer and checks the blur, the dim and
-/// the card. `WW_COVER_PNG=path` also writes the frame there to look at.
+/// Renders a red window under a cover of one owner and a text of another, and a notice on the
+/// output, on a surfaceless EGL renderer: the blur, the dim, the card, the text and the notice
+/// show. `WW_COVER_PNG=path` also writes the frame there to look at.
 #[test]
-fn cover_renders_blur_dim_and_card() {
-    use std::time::{Duration, Instant};
-
+fn overlay_renders_cover_text_and_output_notice() {
     use smithay::backend::allocator::Fourcc;
     use smithay::utils::Transform;
-    use ww_niri_api::CardOwned;
+    use ww_niri_api::{
+        Anchor, At, Backdrop, ContentOwned, ItemOwned, PlaceOwned, Px, SurfaceOwned,
+    };
 
     use crate::render_helpers::{render_to_vec, RenderCtx, RenderTarget};
-    use crate::ww::cover::Look;
+    use crate::ww::overlay::Target;
 
     let config = niri_config::Config::parse_mem("hotkey-overlay { skip-at-startup; }").unwrap();
     let mut f = Fixture::with_config(config);
@@ -360,20 +423,57 @@ fn cover_renders_blur_dim_and_card() {
         let i = (y * 1920 + x) * 4;
         [frame[i], frame[i + 1], frame[i + 2]]
     };
+    let lit = |frame: &[u8], xs: std::ops::Range<usize>, ys: std::ops::Range<usize>| {
+        ys.flat_map(|y| xs.clone().map(move |x| (x, y)))
+            .any(|(x, y)| {
+                let [r, g, _] = px(frame, x, y);
+                r > 200 && g > 180
+            })
+    };
 
     let plain = frame(&mut f);
     assert_eq!(px(&plain, 960, 100), [255, 0, 0]);
 
-    let look = Look {
-        card: CardOwned {
-            title: "Реклама".to_owned(),
-            countdown: Some("Передача вернётся через".to_owned()),
-            clock: true,
-            footer: Some("Первый канал".to_owned()),
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(130);
+    let state = f.niri_state();
+    let window = Target::Window(wid);
+    (state.overlay_put(
+        1,
+        "ad".to_owned(),
+        window.clone(),
+        overlay_item(wid, true, 150),
+        Some(until),
+    ))
+    .unwrap();
+    (state.overlay_put(
+        2,
+        "exit".to_owned(),
+        window,
+        overlay_item(wid, false, 200),
+        None,
+    ))
+    .unwrap();
+    let notice = ItemOwned {
+        place: PlaceOwned {
+            on: SurfaceOwned::Output(None),
+            at: At::Anchor {
+                anchor: Anchor::TopRight,
+                dx: Px::new(-40),
+                dy: Px::new(40),
+            },
         },
-        until: Instant::now() + Duration::from_secs(130),
+        content: ContentOwned::Notice {
+            title: "Звонок".to_owned(),
+            body: Some("Мама".to_owned()),
+        },
+        // The blur needs framebuffer blits; without them the box is the dim alone.
+        backdrop: Backdrop { blur: 2, dim: 100 },
+        priority: 100,
+        lasts: None,
+        mute: false,
+        dismissible: true,
     };
-    f.niri_state().cover(wid, 1, look, false).unwrap();
+    (state.overlay_put(3, "call".to_owned(), Target::Output(None), notice, None)).unwrap();
     let covered = frame(&mut f);
     if let Some(path) = std::env::var_os("WW_COVER_PNG") {
         let file = std::fs::File::create(path).unwrap();
@@ -389,22 +489,30 @@ fn cover_renders_blur_dim_and_card() {
         [r, g, b]
     );
     // Each line of the card shows: light pixels across its band.
-    for (line, y) in [
-        ("title", 380),
-        ("countdown", 520),
-        ("clock", 720),
-        ("footer", 900),
-    ] {
-        let lit = (y - 30..y + 30)
-            .flat_map(|y| (0..1920).map(move |x| (x, y)))
-            .any(|(x, y)| {
-                let [r, g, _] = px(&covered, x, y);
-                r > 200 && g > 180
-            });
-        assert!(lit, "the {line} line is drawn");
+    for (line, y) in [("title", 380), ("countdown", 520), ("clock", 720)] {
+        assert!(
+            lit(&covered, 0..1920, y - 30..y + 30),
+            "the {line} line is drawn"
+        );
     }
+    // The text sits in its opaque box at the bottom, over the card's footer.
+    assert!(lit(&covered, 600..1320, 900..1000), "the text is drawn");
+    let [r, g, b] = px(&covered, 960, 1080 - 81);
+    assert!(
+        near(r, 42.) && near(g, 29.) && near(b, 22.),
+        "the text's box: {:?}",
+        [r, g, b]
+    );
+    // The notice is in the output's top right corner, in its box.
+    assert!(lit(&covered, 1500..1880, 40..200), "the notice is drawn");
+    assert!(
+        !lit(&covered, 0..400, 0..200),
+        "nothing in the top left corner"
+    );
 
-    f.niri_state().uncover(wid).unwrap();
+    f.niri_state().overlay_lift_owned_by(1);
+    f.niri_state().overlay_lift_owned_by(2);
+    f.niri_state().overlay_lift_owned_by(3);
     assert_eq!(px(&frame(&mut f), 960, 100), [255, 0, 0]);
 }
 
@@ -412,74 +520,80 @@ fn cover_renders_blur_dim_and_card() {
 /// `WW_COVER_STRIPES_PNG=path` writes the frame there to look at.
 #[test]
 fn cover_blurs_detail_away() {
-    use std::time::{Duration, Instant};
+    use std::rc::Rc;
 
     use smithay::backend::allocator::Fourcc;
     use smithay::backend::renderer::element::Kind;
+    use smithay::backend::renderer::gles::GlesRenderer;
     use smithay::utils::{Point, Scale, Size, Transform};
-    use ww_niri_api::CardOwned;
+    use ww_niri_api::{At, Backdrop, ContentOwned, TextSize};
 
     use crate::backend::Headless;
     use crate::layout::LayoutElementRenderElement;
     use crate::render_helpers::render_to_vec;
     use crate::render_helpers::solid_color::{SolidColorBuffer, SolidColorRenderElement};
-    use crate::ww::cover::render::{CoverElement, CoverRender};
-    use crate::ww::cover::Look;
+    use crate::ww::overlay::render::{Area, OverlayElement, OverlayRender};
+    use crate::ww::overlay::Look;
 
     let mut headless = Headless::new();
     if let Err(err) = headless.add_renderer() {
         eprintln!("skipped: no surfaceless EGL renderer: {err:?}");
         return;
     }
-    let size = Size::from((1920., 1080.));
-    let look = Look {
-        card: CardOwned {
-            title: String::new(),
-            countdown: None,
-            clock: false,
-            footer: None,
+    let look = Rc::new(Look {
+        id: 1,
+        priority: 0,
+        at: At::Fill,
+        content: ContentOwned::Text {
+            text: String::new(),
+            size: TextSize::Small,
         },
-        until: Instant::now() + Duration::from_secs(60),
+        backdrop: Backdrop { blur: 2, dim: 65 },
+        until: None,
+    });
+    let render = OverlayRender::default();
+    let area = Area {
+        loc: Point::from((0., 0.)),
+        size: Size::from((1920., 1080.)),
+        scale: Scale::from(1.),
+        alpha: 1.,
     };
-    let render = CoverRender::default();
     let frame = headless
         .with_primary_renderer(|renderer| {
             let mut elements = Vec::new();
-            render.render(
-                renderer,
-                &look,
-                Point::from((0., 0.)),
-                size,
-                Scale::from(1.),
-                1.,
-                |_, _| {
-                    // White and blue stripes, 40 px wide, at the scale asked for.
-                    (0..48)
-                        .map(|i| {
-                            let color = if i % 2 == 0 {
-                                [1., 1., 1., 1.]
-                            } else {
-                                [0., 0., 1., 1.]
-                            };
-                            let buffer = SolidColorBuffer::new((40., 1080.), color);
-                            let at = Point::from((f64::from(i) * 40., 0.));
-                            let elem = SolidColorRenderElement::from_buffer(
-                                &buffer,
-                                at,
-                                1.,
-                                Kind::Unspecified,
-                            );
-                            LayoutElementRenderElement::SolidColor(elem)
-                        })
-                        .collect()
-                },
-                &mut |elem| elements.push(elem),
-            );
+            // White and blue stripes, 40 px wide, at the scale asked for.
+            let mut window = |_: &mut GlesRenderer, _| {
+                (0..48)
+                    .map(|i| {
+                        let color = if i % 2 == 0 {
+                            [1., 1., 1., 1.]
+                        } else {
+                            [0., 0., 1., 1.]
+                        };
+                        let buffer = SolidColorBuffer::new((40., 1080.), color);
+                        let at = Point::from((f64::from(i) * 40., 0.));
+                        let elem = SolidColorRenderElement::from_buffer(
+                            &buffer,
+                            at,
+                            1.,
+                            Kind::Unspecified,
+                        );
+                        LayoutElementRenderElement::SolidColor(elem)
+                    })
+                    .collect()
+            };
+            let drawn = render.render(renderer, &[look], area, Some(&mut window), &mut |elem| {
+                elements.push(elem)
+            });
+            assert!(drawn.covered, "a fill with a blur covers the window");
             let elements: Vec<_> = elements
                 .into_iter()
                 .map(|elem| match elem {
-                    CoverElement::Texture(elem) => crate::niri::OutputRenderElements::Texture(elem),
-                    CoverElement::SolidColor(elem) => elem.into(),
+                    OverlayElement::Texture(elem) => {
+                        crate::niri::OutputRenderElements::Texture(elem)
+                    }
+                    OverlayElement::SolidColor(elem) => elem.into(),
+                    OverlayElement::Blur(_) => unreachable!("a cover blurs the window's copy"),
                 })
                 .collect();
             render_to_vec(

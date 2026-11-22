@@ -3,7 +3,9 @@
 use std::time::Duration;
 
 use exact_units::{Fixed, Micros, Millis};
-use ww_niri_api::{Button, CardOwned, Modifiers, PlayerId, Point, Transition, Volume, WindowId};
+use ww_niri_api::{
+    Button, ItemId, ItemOwned, Modifiers, PlayerId, Point, Transition, Volume, WindowId,
+};
 
 use crate::api::NiriClient;
 use crate::error::TvError;
@@ -53,15 +55,6 @@ pub enum Command {
         id: WindowId,
         on: bool,
     },
-    /// Covers the window for `lasts`, held by this client's connection: it lifts when the
-    /// connection ends, also on a reconnect. With `mute` the TV's sink is muted while it holds.
-    Cover {
-        id: WindowId,
-        card: CardOwned,
-        lasts: Duration,
-        mute: bool,
-    },
-    Uncover(WindowId),
     /// Hides the window until a [Command::ShowWindow].
     HideWindow(WindowId),
     SlotStart {
@@ -79,16 +72,6 @@ pub enum Command {
         slot: u8,
         transition: Option<Transition>,
         fullscreen: Option<bool>,
-    },
-    /// Covers the slot's window, as [Command::Cover].
-    SlotCover {
-        slot: u8,
-        card: CardOwned,
-        lasts: Duration,
-        mute: bool,
-    },
-    SlotUncover {
-        slot: u8,
     },
     Playback {
         target: PlaybackTarget,
@@ -133,6 +116,17 @@ pub enum Command {
     KeyUp(String),
     /// Releases every button and key held through this client: the app goes to the background.
     ReleaseAll,
+    /// Puts up this client's overlay item `key`, or changes it. It belongs to this client's
+    /// connection: it lifts when the connection ends, also on a reconnect.
+    OverlayPut {
+        key: String,
+        /// Boxed: an item is far larger than any other command.
+        item: Box<ItemOwned>,
+    },
+    /// Lifts this client's overlay item `key`.
+    OverlayLift(String),
+    /// Lifts a dismissible overlay item, whoever owns it.
+    OverlayDismiss(ItemId),
 }
 
 /// Which resource a command drives: commands of one lane go one at a time, in order.
@@ -145,6 +139,9 @@ pub(crate) enum Lane {
     Muted,
     /// Pointer and keyboard: one lane, so clicks land where the moves before them went.
     Input,
+    /// One of this client's overlay items, by key.
+    Overlay(String),
+    Dismiss,
 }
 
 impl Command {
@@ -154,15 +151,11 @@ impl Command {
             | Command::FocusWindow(_)
             | Command::CloseWindow(_)
             | Command::SetFullscreen { .. }
-            | Command::Cover { .. }
-            | Command::Uncover(_)
             | Command::HideWindow(_) => Lane::Windows,
             Command::SlotStart { slot, .. }
             | Command::SlotOpen { slot, .. }
             | Command::SlotStop { slot }
-            | Command::SlotShow { slot, .. }
-            | Command::SlotCover { slot, .. }
-            | Command::SlotUncover { slot } => Lane::Slot(*slot),
+            | Command::SlotShow { slot, .. } => Lane::Slot(*slot),
             Command::Playback { target, .. } => Lane::Playback(*target),
             Command::SetVolume(_) => Lane::Volume,
             Command::SetMuted(_) => Lane::Muted,
@@ -178,19 +171,22 @@ impl Command {
             | Command::KeyDown(_)
             | Command::KeyUp(_)
             | Command::ReleaseAll => Lane::Input,
+            Command::OverlayPut { key, .. } | Command::OverlayLift(key) => {
+                Lane::Overlay(key.clone())
+            }
+            Command::OverlayDismiss(_) => Lane::Dismiss,
         }
     }
 
     /// Folds `next`, queued right after `self`, into `self` when one call does both: moves and
-    /// wheel turns add up, a volume or mute replaces the one before, a cover of the same window
-    /// replaces the one before, seeks add up and a position replaces what came before it. Gives
-    /// `next` back otherwise.
+    /// wheel turns add up, a volume or mute replaces the one before, a put of an overlay item
+    /// replaces the one before of its key, seeks add up and a position replaces what came before
+    /// it. Gives `next` back otherwise.
     pub(crate) fn merge(&mut self, next: Command) -> Result<(), Command> {
         use PlaybackAction::{SeekBy, SetPosition};
         match (self, next) {
-            (this @ Command::Cover { .. }, next @ Command::Cover { .. })
-            | (this @ Command::SlotCover { .. }, next @ Command::SlotCover { .. })
-                if this.lane() == next.lane() && this.cover_target() == next.cover_target() =>
+            (this @ Command::OverlayPut { .. }, next @ Command::OverlayPut { .. })
+                if this.lane() == next.lane() =>
             {
                 *this = next;
                 Ok(())
@@ -270,17 +266,6 @@ impl Command {
     }
 }
 
-impl Command {
-    /// The window or slot a cover command is about.
-    fn cover_target(&self) -> Option<(Option<WindowId>, Option<u8>)> {
-        match self {
-            Command::Cover { id, .. } => Some((Some(*id), None)),
-            Command::SlotCover { slot, .. } => Some((None, Some(*slot))),
-            _ => None,
-        }
-    }
-}
-
 /// A duration as the API sends it, in whole milliseconds; `what` names it when it does not fit.
 fn millis<T: TryFrom<u128> + exact_units::Storage>(
     duration: Duration,
@@ -300,7 +285,24 @@ fn px(v: i32) -> ww_niri_api::Px {
 }
 
 /// Sends one command and waits for its answer.
+/// Makes the command's call; a put answers its item's id.
 pub(crate) async fn execute(
+    client: &NiriClient,
+    command: &Command,
+    hold: Duration,
+) -> Result<Option<ItemId>, TvError> {
+    let overlay = client.overlay();
+    match command {
+        Command::OverlayPut { key, item } => Ok(Some(
+            overlay.put(key.clone(), (**item).clone()).call().await?,
+        )),
+        Command::OverlayLift(key) => Ok(overlay.lift(key.clone()).call().await.map(|()| None)?),
+        Command::OverlayDismiss(id) => Ok(overlay.dismiss(*id).call().await.map(|()| None)?),
+        command => execute_unit(client, command, hold).await.map(|()| None),
+    }
+}
+
+async fn execute_unit(
     client: &NiriClient,
     command: &Command,
     hold: Duration,
@@ -335,16 +337,6 @@ async fn window(client: &NiriClient, command: &Command) -> Result<(), TvError> {
         Command::FocusWindow(id) => Ok(windows.focus(*id).call().await?),
         Command::CloseWindow(id) => Ok(windows.close(*id).call().await?),
         Command::SetFullscreen { id, on } => Ok(windows.set_fullscreen(*id, *on).call().await?),
-        Command::Cover {
-            id,
-            card,
-            lasts,
-            mute,
-        } => Ok(windows
-            .cover(*id, card.clone(), millis(*lasts, "cover lasts")?, *mute)
-            .call()
-            .await?),
-        Command::Uncover(id) => Ok(windows.uncover(*id).call().await?),
         Command::HideWindow(id) => Ok(windows.hide(*id).call().await?),
         other => unreachable!("{other:?} is not in the windows lane"),
     }
@@ -377,13 +369,6 @@ async fn browser(client: &NiriClient, slot: u8, command: &Command) -> Result<(),
             fullscreen,
             ..
         } => Ok(browser.show(*transition, *fullscreen).call().await?),
-        Command::SlotCover {
-            card, lasts, mute, ..
-        } => Ok(browser
-            .cover(card.clone(), millis(*lasts, "cover lasts")?, *mute)
-            .call()
-            .await?),
-        Command::SlotUncover { .. } => Ok(browser.uncover().call().await?),
         other => unreachable!("{other:?} is not in a slot's lane"),
     }
 }
