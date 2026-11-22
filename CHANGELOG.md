@@ -4,6 +4,8 @@ Changes of ww_niri on top of upstream niri. Upstream's own changes are in its re
 
 ## [Unreleased]
 
+## [26.21.0] - 2026-11-22
+
 ### Changed
 
 - The control API server runs on wire_weaver_server over ww_calloop, with its connection and request limits (P2618).
