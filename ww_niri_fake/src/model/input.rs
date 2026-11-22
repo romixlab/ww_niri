@@ -6,7 +6,7 @@ use ww_niri_api::{
 };
 
 use super::{
-    InputEntry, Mark, Model, Rect, ReleasedBy, HOLD_DEFAULT_US, INPUT_LOG_LEN_MAX,
+    Held, InputEntry, Mark, Model, Rect, ReleasedBy, HOLD_DEFAULT_US, INPUT_LOG_LEN_MAX,
     OUTPUT_HEIGHT_PX, OUTPUT_WIDTH_PX,
 };
 use crate::keys;
@@ -120,18 +120,24 @@ impl Model {
         Ok(())
     }
 
-    /// Presses a button, or renews the hold limit of one held.
+    /// Presses a button for connection `holder`, or renews the hold limit of one held, which
+    /// `holder` then holds.
     pub(crate) fn press(
         &mut self,
+        holder: u64,
         button: Button,
         hold_ms: Option<u16>,
     ) -> Result<(), InputErrorOwned> {
         check_button(button)?;
         let until = self.now_us + hold_limit_us(hold_ms)?;
-        if let Some((_, at)) = self.held_buttons.iter_mut().find(|(b, _)| *b == button) {
-            *at = until;
+        if let Some(held) = self.held_buttons.iter_mut().find(|h| h.what == button) {
+            (held.until_us, held.holder) = (until, holder);
         } else {
-            self.held_buttons.push((button, until));
+            self.held_buttons.push(Held {
+                what: button,
+                until_us: until,
+                holder,
+            });
             self.log(InputEntry::Press(button));
         }
         Ok(())
@@ -139,7 +145,7 @@ impl Model {
 
     pub(crate) fn release(&mut self, button: Button) -> Result<(), InputErrorOwned> {
         check_button(button)?;
-        self.held_buttons.retain(|(b, _)| *b != button);
+        self.held_buttons.retain(|h| h.what != button);
         self.log(InputEntry::Release {
             button,
             by: ReleasedBy::Call,
@@ -191,8 +197,10 @@ impl Model {
         Ok(())
     }
 
+    /// Holds a key down for connection `holder`, as [Self::press] a button.
     pub(crate) fn key_down(
         &mut self,
+        holder: u64,
         key: &str,
         hold_ms: Option<u16>,
     ) -> Result<(), InputErrorOwned> {
@@ -200,10 +208,14 @@ impl Model {
             return Err(InputErrorOwned::UnknownKey(key.to_owned()));
         }
         let until = self.now_us + hold_limit_us(hold_ms)?;
-        if let Some((_, at)) = self.held_keys.iter_mut().find(|(k, _)| k == key) {
-            *at = until;
+        if let Some(held) = self.held_keys.iter_mut().find(|h| h.what == key) {
+            (held.until_us, held.holder) = (until, holder);
         } else {
-            self.held_keys.push((key.to_owned(), until));
+            self.held_keys.push(Held {
+                what: key.to_owned(),
+                until_us: until,
+                holder,
+            });
             self.log(InputEntry::KeyDown(key.to_owned()));
         }
         Ok(())
@@ -213,7 +225,7 @@ impl Model {
         if !keys::is_key(key) {
             return Err(InputErrorOwned::UnknownKey(key.to_owned()));
         }
-        self.held_keys.retain(|(k, _)| k != key);
+        self.held_keys.retain(|h| h.what != key);
         self.log(InputEntry::KeyUp {
             key: key.to_owned(),
             by: ReleasedBy::Call,
@@ -221,17 +233,20 @@ impl Model {
         Ok(())
     }
 
-    /// The connection ended: nothing it held stays down.
-    /// The connection ended: what it held comes up, its covers lift.
-    pub(crate) fn release_all(&mut self) {
-        self.lift_all_covers();
-        for (button, _) in std::mem::take(&mut self.held_buttons) {
+    /// Connection `holder` ended: what it held comes up, its covers lift.
+    pub(crate) fn release_held_by(&mut self, holder: u64) {
+        self.lift_covers_held_by(holder);
+        let (released, held) = (self.held_buttons.drain(..)).partition(|h| h.holder == holder);
+        self.held_buttons = held;
+        for Held { what: button, .. } in released {
             self.log(InputEntry::Release {
                 button,
                 by: ReleasedBy::LinkDown,
             });
         }
-        for (key, _) in std::mem::take(&mut self.held_keys) {
+        let (released, held) = (self.held_keys.drain(..)).partition(|h| h.holder == holder);
+        self.held_keys = held;
+        for Held { what: key, .. } in released {
             self.log(InputEntry::KeyUp {
                 key,
                 by: ReleasedBy::LinkDown,

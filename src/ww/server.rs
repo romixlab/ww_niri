@@ -1,13 +1,13 @@
 //! Handlers of `ww_niri_api::WwNiri`, one [Server] per connection. Started from `ww api scaffold
 //! ww_niri_api --alloc --use-async`; handlers not done yet answer `Unimplemented`.
 
-use std::net::SocketAddr;
 use std::rc::Rc;
 
 use wire_weaver::prelude::*;
 use ww_client_server::ResourceIndex;
 use ww_stream::totals::TotalsRx;
 
+use super::follow::{Next, Sources};
 use super::host::{call, Run, WwHost};
 use super::hub::{Hub, Mark};
 use super::input::Input;
@@ -16,20 +16,22 @@ use super::{Audio, Browsers, Players, Services};
 
 type InputRes<'a> = Result<(), Error<'a, ww_niri_api::InputErrorOwned>>;
 
-/// Who a connection serves, for the log.
+/// Who a connection serves, for the log: the medium, and the client as the transport saw it.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Peer {
-    WebSocket(SocketAddr),
-    /// `None` until the host's link is up.
-    Udp(Option<SocketAddr>),
+    WebSocket(wire_weaver::Peer),
+    Udp(wire_weaver::Peer),
 }
 
 impl std::fmt::Display for Peer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::WebSocket(addr) => write!(f, "{addr}"),
-            Self::Udp(Some(addr)) => write!(f, "udp {addr}"),
-            Self::Udp(None) => f.write_str("a udp host"),
+        let (medium, peer) = match self {
+            Self::WebSocket(peer) => ("", peer),
+            Self::Udp(peer) => ("udp ", peer),
+        };
+        match peer {
+            wire_weaver::Peer::Addr(addr) => write!(f, "{medium}{addr}"),
+            other => write!(f, "{medium}{other:?}"),
         }
     }
 }
@@ -53,6 +55,12 @@ pub struct Server {
     pub holder: u64,
     /// Where the `input.pointer.motion` writes are.
     motion: TotalsRx<ww_niri_api::Delta>,
+    /// What the connection follows between requests.
+    pub sources: Sources,
+    /// What happened and waits for the backend's next poll.
+    pub due: Option<Next>,
+    /// What observed properties are serialized into.
+    pub observe_buf: Vec<u8>,
 }
 
 impl Server {
@@ -70,6 +78,9 @@ impl Server {
             events_open: false,
             holder: services.next_holder(),
             motion: TotalsRx::new(),
+            sources: Sources::new(&services.hub, &services.audio),
+            due: None,
+            observe_buf: vec![0; super::serve::MESSAGE_LEN_MAX],
         }
     }
 
@@ -989,6 +1000,36 @@ impl WireWeaverAsyncApiBackend for Server {
 
     fn version(&self) -> FullVersion<'_> {
         ww_niri_api::WW_NIRI_FULL_GID
+    }
+}
+
+impl WireWeaverSharedApiBackend for Server {
+    async fn process_exclusive_bytes<'a>(
+        &mut self,
+        origin: &CallContext,
+        out: &mut EventWriter<'_, impl MessageSink>,
+        medium: (),
+        data: &[u8],
+        scratch: &'a mut [u8],
+    ) -> Result<&'a [u8], ShrinkWrapError> {
+        self.process_request_from(origin, data, scratch, out, medium)
+            .await
+    }
+
+    fn is_shared(data: &[u8]) -> bool {
+        Self::is_shared(data)
+    }
+
+    async fn process_shared_bytes<'a>(
+        &self,
+        origin: &CallContext,
+        out: &mut EventWriter<'_, impl MessageSink>,
+        medium: (),
+        data: &[u8],
+        scratch: &'a mut [u8],
+    ) -> Result<&'a [u8], ShrinkWrapError> {
+        self.process_shared_from(origin, data, scratch, out, medium)
+            .await
     }
 }
 

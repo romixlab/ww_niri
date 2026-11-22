@@ -16,11 +16,15 @@ pub struct Cover {
     pub until_us: u64,
     /// It mutes the sink while it holds.
     pub mute: bool,
+    /// The connection that set it, or renewed it last.
+    pub(crate) holder: u64,
 }
 
 impl Model {
+    /// Covers the window for connection `holder`.
     pub(crate) fn cover(
         &mut self,
+        holder: u64,
         window: u64,
         card: CardOwned,
         lasts: Millis<u32>,
@@ -40,6 +44,7 @@ impl Model {
                 card,
                 until_us,
                 mute,
+                holder,
             },
         );
         self.hold_mute();
@@ -107,9 +112,12 @@ impl Model {
         }
     }
 
-    /// The connection ended: it held every cover.
-    pub(super) fn lift_all_covers(&mut self) {
-        let windows: Vec<u64> = self.covers.keys().copied().collect();
+    /// Connection `holder` ended: its covers lift.
+    pub(super) fn lift_covers_held_by(&mut self, holder: u64) {
+        let windows: Vec<u64> = (self.covers.values())
+            .filter(|c| c.holder == holder)
+            .map(|c| c.window.0)
+            .collect();
         for window in windows {
             self.lift(window, CoverEnd::Disconnected);
         }

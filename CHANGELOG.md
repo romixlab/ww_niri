@@ -4,6 +4,14 @@ Changes of ww_niri on top of upstream niri. Upstream's own changes are in its re
 
 ## [Unreleased]
 
+### Changed
+
+- The control API server runs on wire_weaver_server over ww_calloop, with its connection and request limits (P2618).
+- A stopped listener frees its address at once; its open connections go on until their links end (P2618).
+- `ww_niri_fake` serves on wire_weaver_server: many clients, each releasing only what it held; `rebind` moves its paths (P2618).
+- `ww_niri_client`: a `Tv` races its addresses; `MotionSender` cuts a reconnect wait short on the next move (P2618).
+- **Breaking:** control API over WebSocket: only the paths `/ww` and `/` reach the API, others get 404 (P2618).
+
 ## [26.20.0] - 2026-11-22
 
 ### Added

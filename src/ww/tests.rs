@@ -3,7 +3,7 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::net::TcpListener;
+use std::net::{SocketAddr, TcpListener};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -19,7 +19,6 @@ use ww_niri_api::{
 use super::audio::Target;
 use super::browsers::{LoopIo, Settings};
 use super::config::SlotConfig;
-use super::connection::serve;
 use super::host::WwHost;
 use super::input::{Key, Op, TextKeys};
 use super::Services;
@@ -318,13 +317,21 @@ impl WwHost for FakeHost {
     }
 }
 
-/// Where a bench serves the API.
+/// Which listener a bench's clients connect to; both listen.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Medium {
-    /// One WebSocket connection.
     WebSocket,
-    /// A UDP listener, taking any number of hosts.
     Udp,
+}
+
+/// What a test asks of a bench's loop.
+enum Ctl {
+    /// Stop the loop.
+    Stop,
+    /// Stop the listeners bound so far; answers once they are.
+    StopListening(std::sync::mpsc::Sender<()>),
+    /// Bind another address, as a changed `listen` line does; answers the address bound.
+    Bind(SocketAddr, std::sync::mpsc::Sender<SocketAddr>),
 }
 
 struct Bench {
@@ -332,11 +339,11 @@ struct Bench {
     url: String,
     medium: Medium,
     fake: Fake,
-    stop: calloop::channel::Sender<()>,
+    ctl: calloop::channel::Sender<Ctl>,
     thread: std::thread::JoinHandle<()>,
 }
 
-/// Serves one connection against a fake host with `windows`, on a calloop loop of its own.
+/// Serves the API with `windows`, on a calloop loop of its own.
 fn bench(windows: Vec<WindowOwned>) -> Bench {
     bench_with(windows, Settings::default(), None, None)
 }
@@ -361,13 +368,7 @@ fn bench_on(
     bus: Option<String>,
     audio: Option<Target>,
 ) -> Bench {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let (url_tx, url_rx) = std::sync::mpsc::channel();
-    if medium == Medium::WebSocket {
-        url_tx
-            .send(format!("ws://{}/ww", listener.local_addr().unwrap()))
-            .unwrap();
-    }
     let (events_tx, events_rx) = async_channel::unbounded();
     let fake = Fake {
         calls: Arc::default(),
@@ -375,7 +376,7 @@ fn bench_on(
         windows: Arc::new(Mutex::new(windows)),
         pointer: Arc::new(Mutex::new((110., 70.))),
     };
-    let (stop_tx, stop_rx) = calloop::channel::channel::<()>();
+    let (ctl_tx, ctl_rx) = calloop::channel::channel::<Ctl>();
 
     let host_fake = fake.clone();
     let thread = std::thread::spawn(move || {
@@ -383,10 +384,6 @@ fn bench_on(
         let handle = event_loop.handle();
         let (executor, scheduler) = calloop::futures::executor().unwrap();
         handle.insert_source(executor, |(), _, _| {}).unwrap();
-        handle
-            .insert_source(stop_rx, |_, _, host| host.stop = true)
-            .unwrap();
-
         let hub = Rc::new(RefCell::new(Hub::default()));
         let services = Services::new(&handle, &scheduler, settings, slots);
         if let Some(bus) = bus {
@@ -401,6 +398,19 @@ fn bench_on(
                 .audio
                 .follow(&scheduler, LoopIo::new(handle.clone()), target);
         }
+        let bind = {
+            let (handle, scheduler, services) =
+                (handle.clone(), scheduler.clone(), services.clone());
+            move |addr| super::serve::bind(&handle, &scheduler, &services, addr).unwrap()
+        };
+        let mut bound = vec![bind("127.0.0.1:0".parse().unwrap())];
+        let addr = bound[0].local_addr();
+        url_tx
+            .send(match medium {
+                Medium::WebSocket => format!("ws://{addr}/ww"),
+                Medium::Udp => addr.to_string(),
+            })
+            .unwrap();
         let mut host = FakeHost {
             fake: host_fake,
             hub: hub.clone(),
@@ -420,24 +430,21 @@ fn bench_on(
             })
             .unwrap();
 
-        // Kept until the loop stops.
-        let mut _udp = None;
-        match medium {
-            Medium::WebSocket => {
-                let (stream, peer) = listener.accept().unwrap();
-                stream.set_nodelay(true).unwrap();
-                let stream = handle.adapt_io(stream).unwrap();
-                scheduler
-                    .schedule(serve(handle.clone(), stream, peer))
-                    .unwrap();
-            }
-            Medium::Udp => {
-                let udp = super::udp::listen(&handle, &scheduler, "127.0.0.1:0".parse().unwrap())
-                    .unwrap();
-                url_tx.send(udp.local_addr().to_string()).unwrap();
-                _udp = Some(udp);
-            }
-        }
+        handle
+            .insert_source(ctl_rx, move |event, _, host| match event {
+                calloop::channel::Event::Msg(Ctl::StopListening(done)) => {
+                    bound.drain(..).for_each(|b| b.stop());
+                    done.send(()).unwrap();
+                }
+                calloop::channel::Event::Msg(Ctl::Bind(addr, done)) => {
+                    bound.push(bind(addr));
+                    done.send(bound.last().unwrap().local_addr()).unwrap();
+                }
+                calloop::channel::Event::Msg(Ctl::Stop) | calloop::channel::Event::Closed => {
+                    host.stop = true;
+                }
+            })
+            .unwrap();
 
         while !host.stop {
             event_loop.dispatch(None, &mut host).unwrap();
@@ -448,7 +455,7 @@ fn bench_on(
         url: url_rx.recv().unwrap(),
         medium,
         fake,
-        stop: stop_tx,
+        ctl: ctl_tx,
         thread,
     }
 }
@@ -456,13 +463,7 @@ fn bench_on(
 impl Bench {
     /// A new client of the bench.
     async fn connect(&self) -> NiriClient {
-        NiriClient::config(|c| match self.medium {
-            Medium::WebSocket => c.websocket_url(self.url.clone()),
-            Medium::Udp => c.udp_addr(self.url.clone()),
-        })
-        .connect()
-        .await
-        .unwrap()
+        client_of(self.medium, self.url.clone()).await
     }
 
     fn run(self, test: impl AsyncFnOnce(NiriClient, &Fake)) {
@@ -474,8 +475,26 @@ impl Bench {
             let client = self.connect().await;
             test(client, &self.fake).await;
         });
-        self.stop.send(()).unwrap();
+        self.end();
+    }
+
+    fn end(self) {
+        self.ctl.send(Ctl::Stop).unwrap();
         self.thread.join().unwrap();
+    }
+
+    /// Stops the listeners, as a `listen` line gone from ww.kdl does.
+    fn stop_listening(&self) {
+        let (done, stopped) = std::sync::mpsc::channel();
+        self.ctl.send(Ctl::StopListening(done)).unwrap();
+        stopped.recv().unwrap();
+    }
+
+    /// Binds `addr` beside, as a `listen` line added to ww.kdl does; answers the address bound.
+    fn bind(&self, addr: SocketAddr) -> SocketAddr {
+        let (done, bound) = std::sync::mpsc::channel();
+        self.ctl.send(Ctl::Bind(addr, done)).unwrap();
+        bound.recv().unwrap()
     }
 }
 
@@ -486,6 +505,53 @@ fn info_over_websocket() {
         assert_eq!(info.ww_niri_version, env!("CARGO_PKG_VERSION"));
         assert!(!info.niri_version.is_empty());
     });
+}
+
+/// A client of `url` on `medium`, connected.
+async fn client_of(medium: Medium, url: String) -> NiriClient {
+    NiriClient::config(|c| match medium {
+        Medium::WebSocket => c.websocket_url(url.clone()),
+        Medium::Udp => c.udp_addr(url.clone()),
+    })
+    .connect()
+    .await
+    .unwrap()
+}
+
+/// Listeners stopped while clients are connected, as for a changed address: the clients go on,
+/// the old port is closed at once, and the listeners of the new address take new clients on
+/// both media and both WebSocket paths.
+#[test]
+fn listener_stop_and_rebind() {
+    let bench = bench(Vec::new());
+    let old: SocketAddr = bench.url["ws://".len()..bench.url.len() - "/ww".len()]
+        .parse()
+        .unwrap();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        let ws = bench.connect().await;
+        let udp = client_of(Medium::Udp, old.to_string()).await;
+
+        bench.stop_listening();
+        let refused = std::net::TcpStream::connect(old).unwrap_err();
+        assert_eq!(refused.kind(), std::io::ErrorKind::ConnectionRefused);
+        ws.info().call().await.unwrap();
+        udp.info().call().await.unwrap();
+
+        let new = bench.bind("127.0.0.1:0".parse().unwrap());
+        assert_ne!(new.port(), old.port());
+        for url in [format!("ws://{new}/ww"), format!("ws://{new}/")] {
+            let client = client_of(Medium::WebSocket, url).await;
+            client.info().call().await.unwrap();
+        }
+        let client = client_of(Medium::Udp, new.to_string()).await;
+        client.info().call().await.unwrap();
+        ws.info().call().await.unwrap();
+    });
+    bench.end();
 }
 
 /// The device's error of a call that should fail with one.

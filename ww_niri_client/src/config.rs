@@ -33,8 +33,8 @@ pub struct Config {
 }
 
 impl Config {
-    /// Each attempt tries the addresses in order, the first that answers wins: a LAN address
-    /// before a tailnet one.
+    /// Each attempt opens all the addresses at once, the first to answer wins, so a LAN
+    /// address that is gone costs nothing while a tailnet one answers (wire_weaver CLT-80).
     pub fn new(addresses: impl IntoIterator<Item = Address>) -> Self {
         Self {
             addresses: addresses.into_iter().collect(),

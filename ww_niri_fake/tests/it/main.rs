@@ -5,6 +5,7 @@ mod every_method;
 mod hash_moved;
 mod hide;
 mod knobs;
+mod links;
 mod observers;
 
 use std::future::Future;
