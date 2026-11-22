@@ -152,7 +152,7 @@ async fn run(
                 return;
             }
         };
-        totals.run(sink, state).await;
+        totals.run(sink, &client.cmd).await;
     };
     tokio::select! {
         () = sending => {}
