@@ -96,6 +96,11 @@ pub(crate) struct Control {
     reachable: bool,
     /// [FakeTv::rebind]s so far: which path the listeners are at.
     binds: u32,
+    /// [FakeTv::restart_reporting_hash]es so far: each ends the servers, which start again
+    /// reporting [Control::api_hash].
+    restarts: u32,
+    /// [Options::api_hash], then what the last restart set.
+    api_hash: Option<wire_weaver::ww_version::ApiHashPair<'static>>,
     stop: bool,
 }
 
@@ -129,8 +134,6 @@ pub(crate) struct Shared {
     /// Signals a change of `bound`.
     bound_changed: Condvar,
     info: InfoOwned,
-    /// [Options::api_hash].
-    pub(crate) api_hash: Option<wire_weaver::ww_version::ApiHashPair<'static>>,
 }
 
 /// A poisoned lock panics: the fake is broken past use.
@@ -241,6 +244,8 @@ impl FakeTv {
                 drops: 0,
                 reachable: true,
                 binds: 0,
+                restarts: 0,
+                api_hash: options.api_hash,
                 stop: false,
             }),
             clock: Clock::new(options.clock),
@@ -251,7 +256,6 @@ impl FakeTv {
             bound: Mutex::new([None; 2]),
             bound_changed: Condvar::new(),
             info: options.info,
-            api_hash: options.api_hash,
         });
         let motion_path = format!("{path}/motion");
         let thread = {
@@ -319,6 +323,21 @@ impl FakeTv {
     pub fn drop_connection(&self) {
         self.shared
             .update_control(|c| c.drops = c.drops.wrapping_add(1));
+    }
+
+    /// Restarts the TV's servers, as ww_niri does after an update that moved its API: the open
+    /// connections end, and the links that come next see `hash` as the API's hash (`None`: the
+    /// generated `api_hash()`). The model and the paths stay. Returns once the restart is
+    /// ordered; a client that keeps trying finds the TV again by itself.
+    pub fn restart_reporting_hash(
+        &self,
+        hash: Option<wire_weaver::ww_version::ApiHashPair<'static>>,
+    ) {
+        self.shared.update_control(|c| {
+            c.api_hash = hash;
+            c.restarts = c.restarts.wrapping_add(1);
+            c.drops = c.drops.wrapping_add(1);
+        });
     }
 
     /// Stops listening at [FakeTv::path] and [FakeTv::motion_path] and listens at new ones, as
