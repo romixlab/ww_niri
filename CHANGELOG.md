@@ -4,6 +4,8 @@ Changes of ww_niri on top of upstream niri. Upstream's own changes are in its re
 
 ## [Unreleased]
 
+## [26.22.0] - 2026-11-22
+
 ### Added
 
 - Control API `overlay`: items each client owns by key, stacked by priority, on windows, slots or outputs (P2618).

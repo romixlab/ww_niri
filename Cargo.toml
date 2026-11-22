@@ -10,7 +10,7 @@ members = [
 ]
 
 [workspace.package]
-version = "26.21.1"
+version = "26.22.0"
 description = "A scrollable-tiling Wayland compositor"
 authors = ["Ivan Molodetskikh <yalterz@gmail.com>"]
 license = "GPL-3.0-or-later"
