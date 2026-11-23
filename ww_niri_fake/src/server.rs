@@ -1052,6 +1052,11 @@ impl wire_weaver_server::Backend for Server {
         for news in std::mem::take(&mut self.due) {
             match news {
                 News::Out(Out::Event(event)) => events.push(event),
+                News::Out(Out::EventTo(holder, event)) => {
+                    if holder == self.holder {
+                        events.push(event);
+                    }
+                }
                 News::Out(Out::Mark(mark)) => self.mark(mark),
                 News::Resync => {
                     events.push(ww_niri_api::EventOwned::Resync);

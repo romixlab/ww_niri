@@ -4,6 +4,16 @@ Changes of ww_niri on top of upstream niri. Upstream's own changes are in its re
 
 ## [Unreleased]
 
+### Added
+
+- Overlay `Progress` content: title, detail and seconds since the item's first put, counting up (P2618#23nov-2020b).
+- Overlay `report_shown`: the owner hears `OverlayShown` with the presentation time of the first frame drawing the put (P2618#23nov-2020b).
+- `ww_niri_client`: `Tv::overlay_shown`; `ww_niri_fake` reports a `report_shown` put shown at once (P2618#23nov-2020b).
+
+### Changed
+
+- **Breaking:** control API: `Item` has a new field `report_shown` (P2618#23nov-2020b).
+
 ## [26.23.0] - 2026-11-22
 
 ### Changed

@@ -7,6 +7,7 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use exact_units::Micros;
 use tokio::sync::{broadcast, mpsc, watch};
 use tokio::task::JoinHandle;
 use wire_weaver_client::observe::{ObserveEvent, on_change};
@@ -27,7 +28,8 @@ const UPDATES_MAX: usize = 256;
 const RELIST_DELAY: Duration = Duration::from_millis(250);
 /// Browser slots the model follows; ww.kdl's `browsers` is far below.
 const SLOTS_MAX: usize = 32;
-/// Ended overlay items kept for a slow [Tv::overlay_ended](crate::Tv::overlay_ended) reader.
+/// Ended and shown overlay items kept for a slow [Tv::overlay_ended](crate::Tv::overlay_ended)
+/// or [Tv::overlay_shown](crate::Tv::overlay_shown) reader.
 const OVERLAY_ENDED_MAX: usize = 64;
 
 /// An overlay item that lifted on the TV, from [Tv::overlay_ended](crate::Tv::overlay_ended).
@@ -39,12 +41,24 @@ pub struct OverlayEnded {
     pub why: ItemEnd,
 }
 
+/// A frame that first drew one of this client's items put with `report_shown` reached the
+/// screen, from [Tv::overlay_shown](crate::Tv::overlay_shown).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OverlayShown {
+    pub id: ItemId,
+    /// The item's key; `None` when the put's answer has not come yet.
+    pub key: Option<String>,
+    /// When the frame reached the screen, on the TV's `CLOCK_MONOTONIC`.
+    pub at: Micros<u64>,
+}
+
 /// What the [Tv](crate::Tv) handles read, and the model task writes.
 pub(crate) struct Shared {
     pub(crate) snapshot: watch::Sender<Arc<Snapshot>>,
     pub(crate) state: watch::Sender<ConnectionState>,
     pub(crate) on_change: Option<OnChange>,
     pub(crate) overlay_ended: broadcast::Sender<OverlayEnded>,
+    pub(crate) overlay_shown: broadcast::Sender<OverlayShown>,
     /// This client's overlay items, by id, with their keys, as far as it knows.
     own_items: Mutex<BTreeMap<ItemId, String>>,
 }
@@ -60,6 +74,7 @@ impl Shared {
             }),
             on_change,
             overlay_ended: broadcast::channel(OVERLAY_ENDED_MAX).0,
+            overlay_shown: broadcast::channel(OVERLAY_ENDED_MAX).0,
             own_items: Mutex::new(BTreeMap::new()),
         }
     }
@@ -80,6 +95,12 @@ impl Shared {
         let key = self.own_items().remove(&id);
         // Nobody listens: dropped.
         drop(self.overlay_ended.send(OverlayEnded { id, key, why }));
+    }
+
+    fn overlay_shown(&self, id: ItemId, at: Micros<u64>) {
+        let key = self.own_items().get(&id).cloned();
+        // Nobody listens: dropped.
+        drop(self.overlay_shown.send(OverlayShown { id, key, at }));
     }
 
     /// The link went: the TV lifted this client's items.
@@ -369,6 +390,7 @@ impl Session<'_> {
             EventOwned::BrowserStarted(_) | EventOwned::BrowserStopped { .. } => {}
             // Overlay items belong to the connection that put them up, not to the snapshot.
             EventOwned::OverlayEnded { id, why } => self.shared.overlay_ended(id, why),
+            EventOwned::OverlayShown { id, at } => self.shared.overlay_shown(id, at),
             EventOwned::Unknown(_) => {}
         }
         Ok(())

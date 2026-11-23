@@ -1152,6 +1152,7 @@ impl<W: LayoutElement> Tile<W> {
                     });
                 elements
             };
+            crate::ww::overlay::render::mark_drawn(self.window.overlay(), target);
             let drawn = self.overlay.render(
                 ctx.renderer,
                 self.window.overlay(),

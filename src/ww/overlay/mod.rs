@@ -7,6 +7,7 @@
 //! [Overlay::on_output] at each frame. [render] draws both. While any item asked for `mute`, the
 //! default sink is muted ([Overlay::mutes], [super::Audio::hold_mute]).
 
+use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -39,6 +40,10 @@ pub struct Look {
     pub backdrop: Backdrop,
     /// The item's end, where a card's countdown reaches 0:00.
     pub until: Option<Instant>,
+    /// The item's first put, where a progress starts counting.
+    pub since: Instant,
+    /// A frame for the screen drew it since [Overlay::frame_started].
+    pub drawn: Cell<bool>,
 }
 
 impl Look {
@@ -56,6 +61,15 @@ impl Look {
         let left = self.until?.saturating_duration_since(now);
         let secs = left.as_millis().div_ceil(1000);
         Some(format!("{label} {}:{:02}", secs / 60, secs % 60))
+    }
+
+    /// A progress's time since the item's first put at `now`, as `m:ss`, rounded down.
+    pub fn elapsed(&self, now: Instant) -> Option<String> {
+        let ContentOwned::Progress { .. } = &self.content else {
+            return None;
+        };
+        let secs = now.saturating_duration_since(self.since).as_secs();
+        Some(format!("{}:{:02}", secs / 60, secs % 60))
     }
 
     /// It shows a clock.
@@ -81,6 +95,8 @@ struct Entry {
     /// As put, with a slot unresolved: what `list` shows.
     item: ItemOwned,
     mute: bool,
+    /// The owner waits for [Overlay::take_shown] to report this put.
+    report: bool,
     look: Rc<Look>,
 }
 
@@ -106,7 +122,10 @@ impl Overlay {
         item: ItemOwned,
         until: Option<Instant>,
     ) -> Result<u64, OverlayError> {
-        let id = match self.find(owner, key) {
+        let found = self.find(owner, key);
+        let since =
+            (found.and_then(|id| self.items.get(&id))).map_or_else(Instant::now, |e| e.look.since);
+        let id = match found {
             Some(id) => id,
             None => {
                 let owned = self.items.values().filter(|e| e.owner == owner).count();
@@ -124,12 +143,15 @@ impl Overlay {
             content: item.content.clone(),
             backdrop: item.backdrop,
             until,
+            since,
+            drawn: Cell::new(false),
         });
         let entry = Entry {
             owner,
             key: key.to_owned(),
             target,
             mute: item.mute,
+            report: item.report_shown,
             item,
             look,
         };
@@ -190,6 +212,26 @@ impl Overlay {
         lifted
     }
 
+    /// A frame for the screen starts: no item is drawn in it yet.
+    pub fn frame_started(&self) {
+        for e in self.items.values().filter(|e| e.report) {
+            e.look.drawn.set(false);
+        }
+    }
+
+    /// The items whose put asked to be reported and that the frame just rendered drew, as
+    /// (owner, id); each put is reported once.
+    pub fn take_shown(&mut self) -> Vec<(u64, u64)> {
+        let mut shown = Vec::new();
+        for (id, e) in &mut self.items {
+            if e.report && e.look.drawn.get() {
+                e.report = false;
+                shown.push((e.owner, *id));
+            }
+        }
+        shown
+    }
+
     /// Whether an item mutes the default sink.
     pub fn mutes(&self) -> bool {
         self.items.values().any(|e| e.mute)
@@ -242,10 +284,13 @@ impl Overlay {
             .collect()
     }
 
-    /// When the next item ends, a countdown shows the next second or a clock the next minute,
-    /// after `now`; `wall` is the wall clock at `now`.
+    /// When the next item ends, a countdown or a progress shows the next second or a clock the
+    /// next minute, after `now`; `wall` is the wall clock at `now`.
     pub fn next_wake(&self, now: Instant, wall: SystemTime) -> Option<Instant> {
         let looks = self.items.values().map(|e| &e.look);
+        let counts = (looks.clone())
+            .filter(|look| matches!(look.content, ContentOwned::Progress { .. }))
+            .map(|look| next_count(look.since, now));
         let ends = looks.clone().filter_map(|look| {
             let until = look.until?;
             Some(match look.countdown(now) {
@@ -257,8 +302,14 @@ impl Overlay {
             .clone()
             .any(|look| look.has_clock())
             .then(|| now + to_next_minute(wall));
-        ends.chain(minute).min()
+        ends.chain(counts).chain(minute).min()
     }
+}
+
+/// The next whole second counted from `since` after `now`, where a progress changes.
+fn next_count(since: Instant, now: Instant) -> Instant {
+    let into = now.saturating_duration_since(since);
+    now + (Duration::from_secs(1) - Duration::from_nanos(u64::from(into.subsec_nanos())))
 }
 
 /// The next whole second before `until` after `now`, where the countdown changes, or `until`.
@@ -277,6 +328,20 @@ fn to_next_minute(wall: SystemTime) -> Duration {
     let since = wall.duration_since(UNIX_EPOCH).unwrap_or_default();
     let into = Duration::new(since.as_secs() % 60, since.subsec_nanos());
     Duration::from_secs(60) - into
+}
+
+/// What the compositor tells the owners of `shown` items, as (owner, id): a frame that drew them
+/// reached the screen at `at`, on `CLOCK_MONOTONIC`.
+pub fn shown(hub: &super::hub::Hub, shown: &[(u64, u64)], at: Duration) {
+    let at_us = u64::try_from(at.as_micros()).expect("the monotonic clock fits 584 000 years");
+    for &(owner, id) in shown {
+        debug!("ww: overlay item {id} shown at {at_us} us");
+        let event = ww_niri_api::EventOwned::OverlayShown {
+            id: ItemId(id),
+            at: exact_units::Fixed::new(at_us),
+        };
+        hub.emit_to(owner, &event);
+    }
 }
 
 /// What the compositor tells the clients when items go.

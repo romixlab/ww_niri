@@ -30,6 +30,7 @@ fn cover(priority: u8, lasts_ms: u32) -> ItemOwned {
         lasts: Some(Fixed::new(lasts_ms)),
         mute: false,
         dismissible: false,
+        report_shown: false,
     }
 }
 
@@ -52,6 +53,7 @@ fn text(priority: u8) -> ItemOwned {
         lasts: None,
         mute: false,
         dismissible: false,
+        report_shown: false,
     }
 }
 
@@ -63,6 +65,8 @@ fn look(content: ContentOwned, until: Option<Instant>) -> Look {
         content,
         backdrop: Backdrop::default(),
         until,
+        since: Instant::now(),
+        drawn: Default::default(),
     }
 }
 
@@ -276,4 +280,87 @@ fn mutes_while_a_muting_item_is_up() {
     // Changed to an item without mute.
     o.put(2, "b", W1, cover(0, 1000), None).unwrap();
     assert!(!o.mutes());
+}
+
+fn progress() -> ItemOwned {
+    let mut item = text(200);
+    item.place.on = SurfaceOwned::Output(None);
+    item.content = ContentOwned::Progress {
+        title: "Загружаю плеер".to_owned(),
+        detail: Some("Первый канал".to_owned()),
+    };
+    item
+}
+
+#[test]
+fn progress_counts_up_from_the_first_put() {
+    let mut o = Overlay::default();
+    let id = o
+        .put(1, "status", Target::Output(None), text(200), None)
+        .unwrap();
+    let since = o.on_output("HDMI-A-1", true)[0].since;
+    // The mark turns into progress: the count starts at the mark.
+    assert_eq!(
+        o.put(1, "status", Target::Output(None), progress(), None),
+        Ok(id)
+    );
+    let look = o.on_output("HDMI-A-1", true)[0].clone();
+    assert_eq!(look.since, since);
+    let at = |ms| look.elapsed(since + Duration::from_millis(ms));
+    assert_eq!(at(0).as_deref(), Some("0:00"));
+    assert_eq!(at(999).as_deref(), Some("0:00"));
+    assert_eq!(at(61_000).as_deref(), Some("1:01"));
+    assert_eq!(
+        look.elapsed(since - Duration::from_secs(1)).as_deref(),
+        Some("0:00")
+    );
+    // Not a progress, no count.
+    o.put(2, "t", W1, text(0), None).unwrap();
+    assert_eq!(o.on_window(1)[0].elapsed(since), None);
+
+    // Wakes at each whole second counted from the start.
+    let wall = SystemTime::UNIX_EPOCH;
+    let now = since + Duration::from_millis(2_300);
+    assert_eq!(o.next_wake(now, wall), Some(since + Duration::from_secs(3)));
+    assert_eq!(
+        o.next_wake(since + Duration::from_secs(3), wall),
+        Some(since + Duration::from_secs(4))
+    );
+}
+
+#[test]
+fn shown_reports_a_drawn_put_once_to_its_owner() {
+    use crate::render_helpers::RenderTarget;
+
+    let mut o = Overlay::default();
+    let mut asks = progress();
+    asks.report_shown = true;
+    let id = o
+        .put(7, "status", Target::Output(None), asks.clone(), None)
+        .unwrap();
+    o.put(8, "quiet", Target::Output(None), progress(), None)
+        .unwrap();
+
+    // Not drawn yet, or drawn only for a screencast: nothing to report.
+    o.frame_started();
+    assert_eq!(o.take_shown(), []);
+    render::mark_drawn(&o.on_output("DP-1", true), RenderTarget::Screencast);
+    assert_eq!(o.take_shown(), []);
+
+    o.frame_started();
+    render::mark_drawn(&o.on_output("DP-1", true), RenderTarget::Output);
+    assert_eq!(o.take_shown(), [(7, id)]);
+    // Once per put.
+    o.frame_started();
+    render::mark_drawn(&o.on_output("DP-1", true), RenderTarget::Output);
+    assert_eq!(o.take_shown(), []);
+
+    // A new put asks again; a frame that did not draw it does not report it.
+    o.put(7, "status", Target::Output(None), asks, None)
+        .unwrap();
+    render::mark_drawn(&o.on_output("DP-1", true), RenderTarget::Output);
+    o.frame_started();
+    assert_eq!(o.take_shown(), []);
+    render::mark_drawn(&o.on_output("DP-1", true), RenderTarget::Output);
+    assert_eq!(o.take_shown(), [(7, id)]);
 }

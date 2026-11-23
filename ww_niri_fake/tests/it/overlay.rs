@@ -31,6 +31,7 @@ pub fn cover(on: SurfaceOwned, lasts_ms: u32, mute: bool) -> ItemOwned {
         lasts: Some(Fixed::new(lasts_ms)),
         mute,
         dismissible: true,
+        report_shown: false,
     }
 }
 
@@ -54,6 +55,7 @@ pub fn text(id: u64) -> ItemOwned {
         lasts: None,
         mute: false,
         dismissible: false,
+        report_shown: false,
     }
 }
 

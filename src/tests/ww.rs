@@ -254,6 +254,7 @@ fn overlay_item(window: u64, cover: bool, priority: u8) -> ww_niri_api::ItemOwne
         lasts: None,
         mute: false,
         dismissible: false,
+        report_shown: false,
     }
 }
 
@@ -472,6 +473,7 @@ fn overlay_renders_cover_text_and_output_notice() {
         lasts: None,
         mute: false,
         dismissible: true,
+        report_shown: false,
     };
     (state.overlay_put(3, "call".to_owned(), Target::Output(None), notice, None)).unwrap();
     let covered = frame(&mut f);
@@ -550,6 +552,8 @@ fn cover_blurs_detail_away() {
         },
         backdrop: Backdrop { blur: 2, dim: 65 },
         until: None,
+        since: std::time::Instant::now(),
+        drawn: Default::default(),
     });
     let render = OverlayRender::default();
     let area = Area {
@@ -626,4 +630,132 @@ fn cover_blurs_detail_away() {
         .max()
         .unwrap();
     assert!(step <= 4, "a step of {step} between neighbours");
+}
+
+/// A put queues a redraw of the outputs at once; a progress is drawn with its count, and the
+/// owner alone hears when the frame that first drew it reached the screen.
+/// `WW_PROGRESS_PNG=path` writes the frame there to look at.
+#[test]
+fn overlay_put_redraws_at_once_and_reports_the_shown_frame() {
+    use std::time::Duration;
+
+    use smithay::backend::allocator::Fourcc;
+    use smithay::utils::Transform;
+    use ww_niri_api::{
+        Anchor, At, Backdrop, ContentOwned, EventOwned, ItemOwned, PlaceOwned, Px, SurfaceOwned,
+    };
+
+    use crate::niri::RedrawState;
+    use crate::render_helpers::{render_to_vec, RenderCtx, RenderTarget};
+    use crate::ww::overlay::Target;
+
+    let config = niri_config::Config::parse_mem("hotkey-overlay { skip-at-startup; }").unwrap();
+    let mut f = Fixture::with_config(config);
+    if let Err(err) = f.niri_state().backend.headless().add_renderer() {
+        eprintln!("skipped: no surfaceless EGL renderer: {err:?}");
+        return;
+    }
+    f.add_output(1, (1920, 1080));
+    f.dispatch();
+    let output = f.niri_output(1);
+    let redraw = |f: &mut Fixture| {
+        let output = f.niri_output(1);
+        matches!(
+            f.niri().output_state[&output].redraw_state,
+            RedrawState::Idle
+        )
+    };
+    assert!(redraw(&mut f), "the output is drawn and idle");
+
+    let hub = f.niri().ww.services().hub.clone();
+    let (owner, other) = (hub.subscribe(3), hub.subscribe(4));
+    let item = ItemOwned {
+        place: PlaceOwned {
+            on: SurfaceOwned::Output(None),
+            at: At::Anchor {
+                anchor: Anchor::BottomRight,
+                dx: Px::new(-40),
+                dy: Px::new(-40),
+            },
+        },
+        content: ContentOwned::Progress {
+            title: "Загружаю плеер".to_owned(),
+            detail: Some("Первый канал".to_owned()),
+        },
+        backdrop: Backdrop { blur: 0, dim: 100 },
+        priority: 200,
+        lasts: None,
+        mute: false,
+        dismissible: false,
+        report_shown: true,
+    };
+    let id = (f.niri_state())
+        .overlay_put(3, "status".to_owned(), Target::Output(None), item, None)
+        .unwrap();
+    assert!(!redraw(&mut f), "the put queued a redraw at once");
+
+    let frame = {
+        let state = f.niri_state();
+        let niri = &state.niri;
+        state
+            .backend
+            .with_primary_renderer(|renderer| {
+                let ctx = RenderCtx {
+                    renderer: &mut *renderer,
+                    target: RenderTarget::Output,
+                    xray: None,
+                };
+                let elements = niri.render_to_vec(ctx, &output, false);
+                render_to_vec(
+                    renderer,
+                    (1920, 1080).into(),
+                    1.0.into(),
+                    Transform::Normal,
+                    Fourcc::Abgr8888,
+                    elements.iter().rev(),
+                )
+                .unwrap()
+            })
+            .unwrap()
+    };
+    if let Some(path) = std::env::var_os("WW_PROGRESS_PNG") {
+        let file = std::fs::File::create(path).unwrap();
+        crate::utils::write_png_rgba8(file, 1920, 1080, &frame).unwrap();
+    }
+    // Title, detail and count are light lines in the bottom right corner, nowhere else.
+    let light_rows = |xs: std::ops::Range<usize>, ys: std::ops::Range<usize>| {
+        ys.filter(|y| {
+            xs.clone().any(|x| {
+                let i = (y * 1920 + x) * 4;
+                frame[i] > 200 && frame[i + 1] > 160
+            })
+        })
+        .count()
+    };
+    let rows = light_rows(1300..1880, 700..1040);
+    assert!(rows > 60, "{rows} rows of text in the corner");
+    assert_eq!(
+        light_rows(0..600, 0..400),
+        0,
+        "nothing in the top left corner"
+    );
+
+    assert!(owner.try_recv().is_err(), "not on the screen yet");
+    f.niri().ww.overlay_frame_queued(&output);
+    f.niri()
+        .ww
+        .overlay_presented(&output, Duration::from_millis(1234));
+    assert_eq!(
+        owner.try_recv(),
+        Ok(EventOwned::OverlayShown {
+            id,
+            at: exact_units::Fixed::new(1_234_000),
+        })
+    );
+    assert!(other.try_recv().is_err(), "only the owner hears it");
+    // Once: the next frame reports nothing.
+    f.niri()
+        .ww
+        .overlay_presented(&output, Duration::from_millis(1250));
+    assert!(owner.try_recv().is_err());
 }

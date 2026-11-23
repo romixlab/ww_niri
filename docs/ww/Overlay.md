@@ -44,6 +44,9 @@ Sizes of text are relative: they are laid out for a surface 1080 px high and sca
 | `Text { text, size }` | Lines of text, `Small`, `Medium` or `Large`. |
 | `Clock { size }` | `HH:MM` in the compositor's local time. |
 | `Notice { title, body }` | A bold title and a smaller body, in a box. |
+| `Progress { title, detail }` | A bold title, a smaller detail and the time since the item's first put (`m:ss`), counting up once a second. A `put` of the same key keeps the start: a mark that turns into a progress counts from the mark. |
+
+A progress counts on the compositor's side: a client that hangs and stops renewing its item cannot leave a "loading" that looks alive. Give it a `lasts` and renew it while the work runs; it lifts by itself when the renewals stop.
 
 Every item has a backdrop under its content: `Backdrop { blur, dim }`.
 
@@ -55,6 +58,14 @@ Every item has a backdrop under its content: `Backdrop { blur, dim }`.
 
 `mute: true` mutes the default sink while the item is up. When the last muting item lifts, the sink gets back the mute it had before the first. Without an audio server the item still shows.
 
+## Shown
+
+`report_shown: true` on a `put` asks when the item reaches the screen. The owner alone gets `Event::OverlayShown { id, at }` once, for the first frame that drew that put: `at` is the frame's presentation time from niri's presentation feedback (the DRM vblank), in microseconds on the compositor's `CLOCK_MONOTONIC`. A client on the same machine compares it with its own monotonic clock to measure request to screen. Each `put` that asks is reported again; a `put` that does not ask costs nothing.
+
+- Only frames for the screen count: a screencast or screenshot render does not.
+- An item that is never drawn (its output gone, a window on another workspace, the screen locked) is never reported.
+- A `put` queues a redraw of the outputs at once; the next frame draws it, without waiting for the overlay's timer.
+
 ## Stacking
 
 - `priority` 0 to 255; higher is drawn on top. Equal priorities: the later item (higher id) on top. A change by `put` keeps an item's place in the stack, unless it changes the priority.
@@ -65,7 +76,7 @@ Every item has a backdrop under its content: `Backdrop { blur, dim }`.
 
 - Window items are drawn by the window's tile, in its render elements: they follow the tile's moves, resizes, opacity and the overview, and leave with it. They are drawn over the window and its popups.
 - Output items are drawn in `Niri::render` above the layer shell's overlay layer and the windows, under niri's own UI (the Alt-Tab switcher, the hotkey overlay, the exit dialog, the config error notice) and the pointer. They are not drawn while the screen is locked or the screenshot UI is open.
-- Each item's textures are kept between frames and drawn again only when their text or size changes: once a second for a countdown, once a minute for a clock. One timer wakes the loop at the next end, countdown second or minute.
+- Each item's textures are kept between frames and drawn again only when their text or size changes: once a second for a countdown or a progress, once a minute for a clock. One timer wakes the loop at the next end, countdown or progress second, or minute.
 
 ## The API
 
@@ -83,7 +94,7 @@ trait Overlay {
 
 `OverlayError`: `NoSuchWindow`, `NoSuchItem`, `NotDismissible`, `TooMany`, `BadArgument` (a `lasts`, blur, dim or text out of range, a `Card` not on `Fill`, a key empty or too long).
 
-`ww_niri_client` puts and lifts through commands of one lane per key (`Command::OverlayPut`, `OverlayLift`, `OverlayDismiss`): a `put` queued behind one of the same key replaces it. `Tv::overlay_ended` tells the ends of every item, with the key of the client's own; the client's own items end as `Disconnected` when its link goes. `ww_niri_fake` keeps the same items and rules, for the tests of clients.
+`ww_niri_client` puts and lifts through commands of one lane per key (`Command::OverlayPut`, `OverlayLift`, `OverlayDismiss`): a `put` queued behind one of the same key replaces it. `Tv::overlay_ended` tells the ends of every item, with the key of the client's own; the client's own items end as `Disconnected` when its link goes. `Tv::overlay_shown` tells when the client's items asking `report_shown` reached the screen. `ww_niri_fake` keeps the same items and rules, for the tests of clients; it has no frames and reports a `report_shown` put shown at once, at its clock's time.
 
 ## Why this shape
 

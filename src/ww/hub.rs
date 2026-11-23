@@ -22,16 +22,17 @@ pub enum Mark {
 
 #[derive(Default)]
 pub struct Hub {
-    subscribers: RefCell<Vec<Sender<EventOwned>>>,
+    /// Each with the connection it belongs to.
+    subscribers: RefCell<Vec<(u64, Sender<EventOwned>)>>,
     marks: RefCell<Vec<Sender<Mark>>>,
     pointer: RefCell<Vec<Sender<()>>>,
 }
 
 impl Hub {
-    /// Events from now on, for one connection.
-    pub fn subscribe(&self) -> Receiver<EventOwned> {
+    /// Events from now on, for connection `holder`.
+    pub fn subscribe(&self, holder: u64) -> Receiver<EventOwned> {
         let (tx, rx) = async_channel::bounded(EVENT_QUEUE);
-        self.subscribers.borrow_mut().push(tx);
+        self.subscribers.borrow_mut().push((holder, tx));
         rx
     }
 
@@ -76,6 +77,13 @@ impl Hub {
         // A full queue: that connection fell behind, it notices the closed channel and resyncs.
         self.subscribers
             .borrow_mut()
-            .retain(|tx| tx.try_send(event.clone()).is_ok());
+            .retain(|(_, tx)| tx.try_send(event.clone()).is_ok());
+    }
+
+    /// An event for connection `holder` alone; no observed property follows it.
+    pub fn emit_to(&self, holder: u64, event: &EventOwned) {
+        self.subscribers
+            .borrow_mut()
+            .retain(|(h, tx)| *h != holder || tx.try_send(event.clone()).is_ok());
     }
 }

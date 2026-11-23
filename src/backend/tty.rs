@@ -1786,6 +1786,8 @@ impl Tty {
                 }
 
                 feedback.presented::<_, smithay::utils::Monotonic>(time, refresh, seq, flags);
+                #[cfg(feature = "ww")]
+                niri.ww.overlay_presented(&output, time);
 
                 if !presentation_time.is_zero() {
                     let misprediction_s =
@@ -1998,6 +2000,9 @@ impl Tty {
 
                     match drm_compositor.queue_frame(data) {
                         Ok(()) => {
+                            #[cfg(feature = "ww")]
+                            niri.ww.overlay_frame_queued(output);
+
                             let output_state = niri.output_state.get_mut(output).unwrap();
                             let new_state = RedrawState::WaitingForVBlank {
                                 redraw_needed: false,
