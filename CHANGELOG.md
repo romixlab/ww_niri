@@ -6,6 +6,10 @@ Changes of ww_niri on top of upstream niri. Upstream's own changes are in its re
 
 ### Added
 
+- `deploy/niri-seatd.service`: the TV's niri unit with `Type=notify` and a watchdog; `just install-seatd-unit` installs it.
+
+### Added
+
 - systemd watchdog: niri sends `WATCHDOG=1` from its main loop when the unit sets `WatchdogSec=`.
 
 ## [26.23.0] - 2026-11-22

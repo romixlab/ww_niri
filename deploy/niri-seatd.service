@@ -1,0 +1,20 @@
+# niri as the session itself on a seat without logind (seatd): the TV's setup. Installed as
+# ~/.config/systemd/user/niri.service by `just install-seatd-unit`; `just install` refreshes it where it already exists.
+# Desktops that run niri through a display manager or niri-session must not have this unit.
+[Unit]
+Description=ww_niri on the TV (P2618#10nov-2039): the compositor on HDMI, through seatd
+After=default.target
+
+[Service]
+# niri sends READY=1 itself (`systemd` cargo feature, src/main.rs), the watchdog beat is src/ww/watchdog.rs.
+Type=notify
+NotifyAccess=main
+WatchdogSec=30s
+Environment=LIBSEAT_BACKEND=seatd
+Environment=RUST_LOG=niri=info
+ExecStart=%h/.local/bin/niri --session
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target

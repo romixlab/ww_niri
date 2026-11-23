@@ -18,6 +18,7 @@ lint:
     spl check --progress never
 
 # Build niri --profile deploy and install it through binkeep (the set is in deploy/binkeep.toml). Does not restart niri.
+# Also refreshes the seatd unit where this PC already has it (the TV only).
 install:
     cargo build --profile deploy --locked -p niri
     test -x target/deploy/niri
@@ -25,6 +26,18 @@ install:
     rm -rf ~/.cache/ww_niri-deploy && mkdir -m 755 -p ~/.cache/ww_niri-deploy
     install -m 755 target/deploy/niri ~/.cache/ww_niri-deploy/niri
     binkeep install niri ~/.cache/ww_niri-deploy
+    {{just_executable()}} refresh-seatd-unit
+
+# The TV's niri unit (deploy/niri-seatd.service) as ~/.config/systemd/user/niri.service, for a new seatd machine.
+# Never on a desktop that runs niri through a display manager or niri-session. Does not restart niri.
+install-seatd-unit:
+    mkdir -p ~/.config/systemd/user
+    install -m 644 deploy/niri-seatd.service ~/.config/systemd/user/niri.service
+    systemctl --user daemon-reload
+
+# Only where ~/.config/systemd/user/niri.service already says seatd: reinstall it when it differs from the repo's.
+refresh-seatd-unit:
+    @if grep -qs seatd ~/.config/systemd/user/niri.service && ! cmp -s deploy/niri-seatd.service ~/.config/systemd/user/niri.service; then {{just_executable()}} install-seatd-unit && echo "niri.service changed: niri needs a restart to use it"; fi
 
 # Refuses on local changes. Does NOT restart niri: it is the session compositor and a restart closes every window.
 # The new niri runs after the next session restart (README.md, "Deploying niri on a PC").
