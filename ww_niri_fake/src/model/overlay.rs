@@ -2,14 +2,22 @@
 //! their end, on the owner's `lift`, on a `dismiss`, when the owner's connection ends or when
 //! their window closes. While one asks for `mute` the sink is muted, and it gets its earlier
 //! mute back when the last such item lifts. A put with `report_shown` is shown at once: its
-//! owner hears `OverlayShown` at the fake's clock.
+//! owner hears `OverlayShown` at the fake's clock. A fill's image must be one of the fake's
+//! backgrounds. The `show_only` filter marks the items it hides in `list`. A change of volume or
+//! mute puts up the compositor's own volume indicator, as ww_niri does.
 
 use ww_niri_api::{
-    EventOwned, ItemEnd, ItemId, ItemInfoOwned, ItemOwned, OverlayError, SurfaceOwned, WindowId,
-    ITEMS_MAX, ITEMS_PER_OWNER_MAX,
+    Anchor, At, BackdropOwned, ContentOwned, EventOwned, FillOwned, ItemEnd, ItemId, ItemInfoOwned,
+    ItemOwned, OverlayError, PlaceOwned, Px, ShowOnlyOwned, SurfaceOwned, WindowId, ITEMS_MAX,
+    ITEMS_PER_OWNER_MAX,
 };
 
-use super::{Model, Out};
+use super::{Mark, Model, Out};
+
+/// The owner of the compositor's own items; connections are numbered from 1.
+pub const COMPOSITOR: u64 = 0;
+/// The key of the volume indicator.
+pub const VOLUME_KEY: &str = "volume";
 
 /// An overlay item as the fake has it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -41,6 +49,11 @@ impl Model {
         item: ItemOwned,
     ) -> Result<ItemId, OverlayError> {
         let lasts = item.check(&key)?;
+        if let FillOwned::Image(name) = &item.backdrop.fill {
+            if !self.backgrounds.contains(name) {
+                return Err(OverlayError::NoSuchImage);
+            }
+        }
         let window = match &item.place.on {
             SurfaceOwned::Window(id) => Some(*id),
             SurfaceOwned::Slot(slot) => Some(WindowId(
@@ -120,6 +133,8 @@ impl Model {
     pub(crate) fn overlay_list(&self, owner: u64) -> Vec<ItemInfoOwned> {
         (self.overlay().into_iter())
             .map(|i| ItemInfoOwned {
+                hidden: (self.show_only.as_ref())
+                    .is_some_and(|f| !f.shows(i.item.priority, &i.key, i.id)),
                 id: i.id,
                 key: i.key,
                 own: i.owner == owner,
@@ -155,13 +170,60 @@ impl Model {
         match (mutes, self.mute_held) {
             (true, None) => {
                 self.mute_held = Some(self.muted);
-                self.set_audio(self.volume, true);
+                self.set_level(self.volume, true);
             }
             (false, Some(before)) => {
                 self.mute_held = None;
-                self.set_audio(self.volume, before);
+                self.set_level(self.volume, before);
             }
             _ => {}
+        }
+    }
+
+    /// Draws only the items `filter` matches; `None`: all.
+    pub(crate) fn set_show_only(&mut self, filter: Option<ShowOnlyOwned>) {
+        self.show_only = filter;
+        self.mark(Mark::ShowOnly);
+    }
+
+    pub(crate) fn show_only(&self) -> Option<ShowOnlyOwned> {
+        self.show_only.clone()
+    }
+
+    /// Adds an image to the backgrounds folder.
+    pub(crate) fn add_background(&mut self, name: &str) {
+        self.backgrounds.insert(name.to_owned());
+    }
+
+    /// The compositor's volume indicator, top right, for 1.5 s.
+    pub(super) fn show_volume(&mut self) {
+        let label = if self.muted { "Muted" } else { "Volume" };
+        let item = ItemOwned {
+            place: PlaceOwned {
+                on: SurfaceOwned::Output(None),
+                at: At::Anchor {
+                    anchor: Anchor::TopRight,
+                    dx: Px::new(-40),
+                    dy: Px::new(40),
+                },
+            },
+            content: ContentOwned::Meter {
+                label: label.to_owned(),
+                percent: self.volume,
+            },
+            backdrop: BackdropOwned {
+                blur: 2,
+                dim: 70,
+                ..BackdropOwned::default()
+            },
+            priority: 224,
+            lasts: Some(exact_units::Fixed::new(1500)),
+            mute: false,
+            dismissible: false,
+            report_shown: false,
+        };
+        if let Err(err) = self.overlay_put(COMPOSITOR, VOLUME_KEY.to_owned(), item) {
+            unreachable!("the volume indicator is a valid item and the compositor's only: {err:?}");
         }
     }
 

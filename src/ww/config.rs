@@ -1,5 +1,6 @@
 //! `ww.kdl`: where the control API listens, the name it is announced under, how many browser
-//! slots there are and whose they are.
+//! slots there are and whose they are, where the volume indicator sits and where the overlay's
+//! images are.
 //!
 //! ```kdl
 //! listen "lan:7590"
@@ -8,7 +9,13 @@
 //! advertise "Living room TV"
 //! browsers 3
 //! browser 1 owner="Roman" user-agent="Mozilla/5.0 (SMART-TV; Linux; Tizen 6.0) AppleWebKit/538.1 (KHTML, like Gecko) Version/6.0 TV Safari/538.1"
+//! volume-indicator anchor="top-right" dx=-40 dy=40 output="HDMI-A-1" label="Громкость" muted-label="Без звука"
+//! backgrounds "/home/tv/backgrounds"
 //! ```
+//!
+//! `volume-indicator` places ww_niri's own volume item (docs/ww/Overlay.md); each property may be
+//! left out, the line too: top right, 40 px in, on the focused output. `backgrounds` is the folder
+//! of the overlay's fill images, `backgrounds` next to `ww.kdl` when left out.
 //!
 //! A `browser N` line belongs to slot `N` (below the `browsers` count): `owner` names the person
 //! whose sign-ins the slot's profile keeps, and `user-agent` is the user agent its Firefox sends
@@ -27,9 +34,10 @@ use std::time::SystemTime;
 use anyhow::{bail, Context as _};
 use directories::ProjectDirs;
 use ww_dns_sd::InstanceName;
-use ww_niri_api::{OWNER_LEN_MAX, USER_AGENT_LEN_MAX};
+use ww_niri_api::{Anchor, ITEM_TEXT_LEN_MAX, OWNER_LEN_MAX, USER_AGENT_LEN_MAX};
 
 use super::interfaces::Interfaces;
+use super::overlay::volume::Indicator;
 
 /// Browser slots when `ww.kdl` doesn't say.
 pub const DEFAULT_BROWSERS: u8 = 2;
@@ -44,6 +52,70 @@ struct RawConfig {
     browsers: Option<u8>,
     #[knuffel(children(name = "browser"))]
     browser: Vec<RawSlot>,
+    #[knuffel(child)]
+    volume_indicator: Option<RawVolume>,
+    #[knuffel(child, unwrap(argument))]
+    backgrounds: Option<String>,
+}
+
+/// The `volume-indicator` line.
+#[derive(knuffel::Decode, Debug, Default, Clone, PartialEq, Eq)]
+struct RawVolume {
+    #[knuffel(property)]
+    anchor: Option<String>,
+    #[knuffel(property)]
+    dx: Option<i32>,
+    #[knuffel(property)]
+    dy: Option<i32>,
+    #[knuffel(property)]
+    output: Option<String>,
+    #[knuffel(property)]
+    label: Option<String>,
+    #[knuffel(property(name = "muted-label"))]
+    muted_label: Option<String>,
+}
+
+impl RawVolume {
+    fn indicator(self) -> anyhow::Result<Indicator> {
+        let mut indicator = Indicator::default();
+        if let Some(anchor) = self.anchor {
+            indicator.anchor = parse_anchor(&anchor)?;
+        }
+        indicator.dx = self.dx.unwrap_or(indicator.dx);
+        indicator.dy = self.dy.unwrap_or(indicator.dy);
+        indicator.output = self.output;
+        let text = |what: &str, text: String| {
+            if text.trim().is_empty() || text.len() > ITEM_TEXT_LEN_MAX {
+                bail!("volume-indicator: {what} is empty or longer than {ITEM_TEXT_LEN_MAX} bytes");
+            }
+            Ok(text)
+        };
+        if let Some(label) = self.label {
+            indicator.label = text("label", label)?;
+        }
+        if let Some(label) = self.muted_label {
+            indicator.muted_label = text("muted-label", label)?;
+        }
+        Ok(indicator)
+    }
+}
+
+fn parse_anchor(text: &str) -> anyhow::Result<Anchor> {
+    Ok(match text {
+        "top-left" => Anchor::TopLeft,
+        "top" => Anchor::Top,
+        "top-right" => Anchor::TopRight,
+        "left" => Anchor::Left,
+        "center" => Anchor::Center,
+        "right" => Anchor::Right,
+        "bottom-left" => Anchor::BottomLeft,
+        "bottom" => Anchor::Bottom,
+        "bottom-right" => Anchor::BottomRight,
+        _ => bail!(
+            "volume-indicator: anchor {text:?} is not one of top-left, top, top-right, left, \
+             center, right, bottom-left, bottom, bottom-right"
+        ),
+    })
 }
 
 /// One `browser N` line.
@@ -131,6 +203,9 @@ pub struct WwConfig {
     pub advertise: Option<InstanceName>,
     /// The browser slots by index: their count is `browsers`.
     pub slots: Vec<SlotConfig>,
+    pub volume_indicator: Indicator,
+    /// The `backgrounds` folder; `None`: `backgrounds` next to `ww.kdl`.
+    pub backgrounds: Option<PathBuf>,
 }
 
 impl Default for WwConfig {
@@ -139,6 +214,8 @@ impl Default for WwConfig {
             listen: Vec::new(),
             advertise: None,
             slots: vec![SlotConfig::default(); usize::from(DEFAULT_BROWSERS)],
+            volume_indicator: Indicator::default(),
+            backgrounds: None,
         }
     }
 }
@@ -185,10 +262,17 @@ impl WwConfig {
             };
         }
 
+        let volume_indicator = (raw.volume_indicator)
+            .map(RawVolume::indicator)
+            .transpose()?
+            .unwrap_or_default();
+
         Ok(Self {
             listen,
             advertise,
             slots,
+            volume_indicator,
+            backgrounds: raw.backgrounds.map(PathBuf::from),
         })
     }
 
@@ -361,6 +445,29 @@ mod tests {
         assert!(WwConfig::parse("ww.kdl", "advertise \"\"").is_err());
         let long = format!("advertise {:?}", "x".repeat(64));
         assert!(WwConfig::parse("ww.kdl", &long).is_err());
+    }
+
+    #[test]
+    fn volume_indicator_and_backgrounds() {
+        let text = "volume-indicator anchor=\"bottom-left\" dy=-60 output=\"HDMI-A-1\" \
+                    label=\"Громкость\"\nbackgrounds \"/srv/bg\"\n";
+        let config = WwConfig::parse("ww.kdl", text).unwrap();
+        let want = Indicator {
+            anchor: Anchor::BottomLeft,
+            dy: -60,
+            output: Some("HDMI-A-1".to_owned()),
+            label: "Громкость".to_owned(),
+            ..Indicator::default()
+        };
+        assert_eq!(config.volume_indicator, want);
+        assert_eq!(config.backgrounds, Some(PathBuf::from("/srv/bg")));
+        for text in [
+            "volume-indicator anchor=\"middle\"",
+            "volume-indicator label=\" \"",
+            "volume-indicator colour=\"red\"",
+        ] {
+            assert!(WwConfig::parse("ww.kdl", text).is_err(), "{text}");
+        }
     }
 
     #[test]

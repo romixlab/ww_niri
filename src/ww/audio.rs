@@ -298,6 +298,10 @@ pub struct Audio {
     client: RefCell<Option<Rc<Client>>>,
     sink: RefCell<Option<SinkState>>,
     watchers: RefCell<Vec<Sender<()>>>,
+    /// Told of changes of the default sink's volume or mute, but for the overlay's own mutes.
+    level_watchers: RefCell<Vec<Sender<()>>>,
+    /// A mute the mute task set and the server has not reported yet.
+    mute_own: Cell<Option<bool>>,
     /// While overlay items hold the mute: the sink's mute before they did.
     mute_held: Cell<Option<bool>>,
     /// The mute the mute task sets next.
@@ -312,6 +316,8 @@ impl Audio {
             client: RefCell::new(None),
             sink: RefCell::new(None),
             watchers: RefCell::new(Vec::new()),
+            level_watchers: RefCell::new(Vec::new()),
+            mute_own: Cell::new(None),
             mute_held: Cell::new(None),
             mute_next: Cell::new(None),
             mute_wake: async_channel::bounded(1),
@@ -348,6 +354,9 @@ impl Audio {
     async fn apply_mutes(&self) {
         while self.mute_wake.1.recv().await.is_ok() {
             if let Some(muted) = self.mute_next.take() {
+                if self.sink().is_some_and(|sink| sink.muted != muted) {
+                    self.mute_own.set(Some(muted));
+                }
                 if let Err(err) = self.set_muted(muted).await {
                     warn!("ww: error setting the overlay's mute {muted}: {err}");
                 }
@@ -455,10 +464,20 @@ impl Audio {
             return;
         }
         debug!("ww: default sink is {sink:?}");
-        self.sink.replace(sink);
-        self.watchers
-            .borrow_mut()
-            .retain(|tx| !matches!(tx.try_send(()), Err(async_channel::TrySendError::Closed(_))));
+        let before = self.sink.replace(sink.clone());
+        let level = level_changed(before.as_ref(), sink.as_ref(), &self.mute_own);
+        notify(&self.watchers);
+        if level {
+            notify(&self.level_watchers);
+        }
+    }
+
+    /// Gets a message after each change of the default sink's volume or mute, made here or
+    /// elsewhere, but for the mutes of overlay items; not when the sink itself changes.
+    pub fn watch_level(&self) -> Receiver<()> {
+        let (tx, rx) = async_channel::bounded(1);
+        self.level_watchers.borrow_mut().push(tx);
+        rx
     }
 
     /// Gets a message after each change of the default sink (several changes may give one).
@@ -507,6 +526,33 @@ impl Audio {
     }
 }
 
+/// Tells each of `watchers`, dropping those gone; a full one has a message waiting already.
+fn notify(watchers: &RefCell<Vec<Sender<()>>>) {
+    watchers
+        .borrow_mut()
+        .retain(|tx| !matches!(tx.try_send(()), Err(async_channel::TrySendError::Closed(_))));
+}
+
+/// Whether the same sink's volume or mute changed from `before` to `after`; a mute change to
+/// `mute_own` is the overlay's own and is taken from it.
+fn level_changed(
+    before: Option<&SinkState>,
+    after: Option<&SinkState>,
+    mute_own: &Cell<Option<bool>>,
+) -> bool {
+    let (Some(before), Some(after)) = (before, after) else {
+        return false;
+    };
+    if before.name != after.name {
+        return false;
+    }
+    let own_mute = before.muted != after.muted && mute_own.get() == Some(after.muted);
+    if own_mute {
+        mute_own.set(None);
+    }
+    before.volume != after.volume || (before.muted != after.muted && !own_mute)
+}
+
 fn c_name(name: &str) -> Result<CString, AudioError> {
     CString::new(name).map_err(|err| AudioError::Io(err.to_string()))
 }
@@ -537,5 +583,40 @@ fn sink_state(info: &protocol::SinkInfo) -> SinkState {
         volume: percent.min(u64::from(MAX_PERCENT)) as u16,
         muted: info.muted,
         channels: info.cvolume.channels().len() as u8,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sink(name: &str, volume: u16, muted: bool) -> SinkState {
+        SinkState {
+            name: name.to_owned(),
+            description: String::new(),
+            volume,
+            muted,
+            channels: 2,
+        }
+    }
+
+    #[test]
+    fn level_changes_but_not_the_overlay_mute_or_another_sink() {
+        let own = Cell::new(None);
+        let a = sink("a", 40, false);
+        assert!(level_changed(Some(&a), Some(&sink("a", 45, false)), &own));
+        assert!(level_changed(Some(&a), Some(&sink("a", 40, true)), &own));
+        assert!(!level_changed(Some(&a), Some(&sink("b", 45, false)), &own));
+        assert!(!level_changed(None, Some(&a), &own));
+        assert!(!level_changed(Some(&a), Some(&a), &own));
+
+        // The overlay muted it: once not shown, then a person's mute is.
+        own.set(Some(true));
+        assert!(!level_changed(Some(&a), Some(&sink("a", 40, true)), &own));
+        assert_eq!(own.get(), None);
+        assert!(level_changed(Some(&a), Some(&sink("a", 40, true)), &own));
+        // A volume change that comes with the overlay's mute still shows.
+        own.set(Some(true));
+        assert!(level_changed(Some(&a), Some(&sink("a", 50, true)), &own));
     }
 }

@@ -31,7 +31,7 @@ pub trait WwNiri {
     ww_impl!(audio: Audio);
     /// Pointer and keyboard, injected through kernel uinput devices as real devices.
     ww_impl!(input: Input);
-    /// Items each client puts above the windows: covers, texts, a clock, notices.
+    /// Items each client puts above the windows: covers, texts, a clock, notices, meters.
     ww_impl!(overlay: Overlay);
 
     /// Windows, outputs, browsers and players coming and going, in order. After
@@ -315,9 +315,14 @@ pub trait Overlay {
     /// Lifts an item put up as `dismissible`, whoever owns it: a person's "show it".
     fn dismiss(id: ItemId) -> Result<(), OverlayError>;
 
-    /// Every item, front to back, with `own` set on this connection's.
+    /// Every item, front to back, with `own` set on this connection's and `hidden` on those
+    /// [Overlay::show_only] hides.
     #[effect(read)]
     fn list() -> RefVec<'i, ItemInfo<'i>>;
+
+    /// Which items are drawn, for every connection: `None` draws all, a filter only the items
+    /// it matches. Hidden items keep their lifetime, mute and end events.
+    property!(rw+observe show_only: Option<ShowOnly<'i>>, OverlayError);
 }
 
 #[ww_trait]
@@ -373,7 +378,7 @@ pub struct ItemId(pub u64);
 pub struct Item<'i> {
     pub place: Place<'i>,
     pub content: Content<'i>,
-    pub backdrop: Backdrop,
+    pub backdrop: Backdrop<'i>,
     /// Higher is drawn on top; equal ones by id, the later on top. By convention 0-63 ambient
     /// (a clock), 64-127 notices, 128-191 covers, 192-255 status of what plays.
     pub priority: u8,
@@ -455,6 +460,9 @@ pub enum Content<'i> {
         title: &'i str,
         detail: Option<&'i str>,
     },
+    /// A label, then a bar of [METER_BLOCKS] blocks filled to `percent` with the percent after
+    /// it; past 100 % the bar stays full.
+    Meter { label: &'i str, percent: u16 },
 }
 
 /// A text's size, laid out for a surface 1080 px high and scaled to the real one.
@@ -466,18 +474,85 @@ pub enum TextSize {
 }
 
 /// What an item has under its content: a box around an anchored item's content, the whole
-/// surface at [At::Fill]. At [At::Fill] on a window with `blur`, the window is not drawn, only
-/// its blurred copy, and its popups are hidden.
+/// surface at [At::Fill]. From the bottom: the fill, the blur, the dim. At [At::Fill] on a window
+/// with `blur`, the window is not drawn, only its blurred copy under the fill, and its popups are
+/// hidden.
+#[derive_shrink_wrap(owned(feature = "std"), derive(Clone, Debug, Default, PartialEq, Eq))]
+pub struct Backdrop<'i> {
+    /// Passes of the blur, 0 (none) to [BLUR_MAX].
+    pub blur: u8,
+    /// Percent of a warm dark over the blur, 0 to 100.
+    pub dim: u8,
+    /// What the box is filled with under the blur and the dim.
+    pub fill: Fill<'i>,
+}
+
+/// An item's fill under its blur and dim.
+#[derive_shrink_wrap(owned(feature = "std"), derive(Clone, Debug, PartialEq, Eq), ww_repr = unib32)]
+pub enum Fill<'i> {
+    /// Nothing: what is under the box shows, as the blur and dim leave it.
+    None,
+    /// A colour, its alpha 0 (clear) to 255 (opaque).
+    Color(Rgba),
+    /// An image by its file name in ww_niri's backgrounds folder, scaled to cover the box and
+    /// cut to it. Images are never sent over the API.
+    Image(&'i str),
+}
+
+#[expect(
+    clippy::derivable_impls,
+    reason = "derive_shrink_wrap does not pass #[default] on to the variant"
+)]
+impl Default for Fill<'_> {
+    fn default() -> Self {
+        Self::None
+    }
+}
+
+#[cfg(feature = "std")]
+#[expect(
+    clippy::derivable_impls,
+    reason = "derive_shrink_wrap does not pass #[default] on to the variant"
+)]
+impl Default for FillOwned {
+    fn default() -> Self {
+        Self::None
+    }
+}
+
+/// A colour with its alpha, 8 bits each, not premultiplied.
 #[derive_shrink_wrap(
     borrowed,
     owned(feature = "std"),
     derive(Copy, Clone, Debug, Default, PartialEq, Eq)
 )]
-pub struct Backdrop {
-    /// Passes of the blur, 0 (none) to [BLUR_MAX].
-    pub blur: u8,
-    /// Percent of a warm dark over the blur, 0 to 100.
-    pub dim: u8,
+pub struct Rgba {
+    pub r: u8,
+    pub g: u8,
+    pub b: u8,
+    pub a: u8,
+}
+
+/// Which items [Overlay::show_only] draws: those matching any of its parts.
+#[derive_shrink_wrap(owned(feature = "std"), derive(Clone, Debug, Default, PartialEq, Eq))]
+pub struct ShowOnly<'i> {
+    /// Items whose priority is in one of these bands.
+    pub bands: RefVec<'i, Band>,
+    /// Items whose owner's key is one of these, whoever the owner is.
+    pub keys: RefVec<'i, &'i str>,
+    /// Items by id.
+    pub ids: RefVec<'i, ItemId>,
+}
+
+/// Priorities from `lowest` to `highest`, both included.
+#[derive_shrink_wrap(
+    borrowed,
+    owned(feature = "std"),
+    derive(Copy, Clone, Debug, PartialEq, Eq)
+)]
+pub struct Band {
+    pub lowest: u8,
+    pub highest: u8,
 }
 
 /// An item as [Overlay::list] shows it.
@@ -488,6 +563,8 @@ pub struct ItemInfo<'i> {
     pub key: &'i str,
     /// This connection owns it.
     pub own: bool,
+    /// [Overlay::show_only] hides it: it is up, not drawn.
+    pub hidden: bool,
     pub item: Item<'i>,
 }
 
@@ -518,6 +595,14 @@ pub const BLUR_MAX: u8 = 4;
 pub const ITEMS_PER_OWNER_MAX: usize = 16;
 /// Most items up at once.
 pub const ITEMS_MAX: usize = 128;
+/// Blocks of a [Content::Meter]'s bar.
+pub const METER_BLOCKS: u16 = 10;
+/// Highest percent of a [Content::Meter].
+pub const METER_PERCENT_MAX: u16 = 999;
+/// Longest image name of a [Fill::Image], in bytes.
+pub const IMAGE_NAME_LEN_MAX: usize = 64;
+/// Most bands, keys and ids each in a [ShowOnly].
+pub const SHOW_ONLY_PARTS_MAX: usize = 16;
 
 #[cfg(feature = "std")]
 impl ContentOwned {
@@ -536,6 +621,7 @@ impl ContentOwned {
                 body: detail,
             }
             | Self::Progress { title, detail } => [Some(title.as_str()), detail.as_deref(), None],
+            Self::Meter { label, .. } => [Some(label.as_str()), None, None],
             Self::Unknown(_) => return None,
         })
     }
@@ -547,9 +633,10 @@ impl ItemOwned {
     ///
     /// # Errors
     ///
-    /// `BadArgument` for a content or place this side does not know, an empty or long key, a
-    /// `lasts` of 0 or past [ITEM_LASTS_MAX], a blur past [BLUR_MAX], a dim past 100, a text past
-    /// [ITEM_TEXT_LEN_MAX] or a card not at [At::Fill].
+    /// `BadArgument` for a content, place or fill this side does not know, an empty or long key,
+    /// a `lasts` of 0 or past [ITEM_LASTS_MAX], a blur past [BLUR_MAX], a dim past 100, a text
+    /// past [ITEM_TEXT_LEN_MAX], a card not at [At::Fill], a meter past [METER_PERCENT_MAX] or an
+    /// image name that is not [image_name_ok].
     pub fn check(&self, key: &str) -> Result<Option<core::time::Duration>, OverlayError> {
         let lasts = self
             .lasts
@@ -577,11 +664,61 @@ impl ItemOwned {
                 .into_iter()
                 .flatten()
                 .any(|t| t.len() > ITEM_TEXT_LEN_MAX)
-            || (matches!(self.content, ContentOwned::Card(_)) && self.place.at != At::Fill);
+            || (matches!(self.content, ContentOwned::Card(_)) && self.place.at != At::Fill)
+            || matches!(self.content, ContentOwned::Meter { percent, .. } if percent > METER_PERCENT_MAX)
+            || !self.backdrop.fill.is_ok();
         if bad {
             return Err(OverlayError::BadArgument);
         }
         Ok(lasts)
+    }
+}
+
+/// Whether `name` may name an image of the backgrounds folder: 1 to [IMAGE_NAME_LEN_MAX] bytes
+/// of ASCII letters, digits, `-`, `_` and `.`, not starting with `.`; so never a path.
+pub fn image_name_ok(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= IMAGE_NAME_LEN_MAX
+        && !name.starts_with('.')
+        && (name.bytes()).all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+}
+
+#[cfg(feature = "std")]
+impl FillOwned {
+    /// Known to this side, and an image named as [image_name_ok] wants.
+    fn is_ok(&self) -> bool {
+        match self {
+            Self::None | Self::Color(_) => true,
+            Self::Image(name) => image_name_ok(name),
+            Self::Unknown(_) => false,
+        }
+    }
+}
+
+#[cfg(feature = "std")]
+impl ShowOnlyOwned {
+    /// Checks the filter against [SHOW_ONLY_PARTS_MAX] and [ITEM_KEY_LEN_MAX].
+    ///
+    /// # Errors
+    ///
+    /// `BadArgument` for too many parts, a key empty or too long, or a band upside down.
+    pub fn check(&self) -> Result<(), OverlayError> {
+        let bad = self.bands.len() > SHOW_ONLY_PARTS_MAX
+            || self.keys.len() > SHOW_ONLY_PARTS_MAX
+            || self.ids.len() > SHOW_ONLY_PARTS_MAX
+            || (self.keys.iter()).any(|k| k.is_empty() || k.len() > ITEM_KEY_LEN_MAX)
+            || (self.bands.iter()).any(|b| b.lowest > b.highest);
+        if bad {
+            return Err(OverlayError::BadArgument);
+        }
+        Ok(())
+    }
+
+    /// Whether it draws an item of `priority`, owner's key `key` and id `id`.
+    pub fn shows(&self, priority: u8, key: &str, id: ItemId) -> bool {
+        (self.bands.iter()).any(|b| (b.lowest..=b.highest).contains(&priority))
+            || self.keys.iter().any(|k| k == key)
+            || self.ids.contains(&id)
     }
 }
 
@@ -845,8 +982,10 @@ pub enum OverlayError {
     NotDismissible,
     /// The connection has [ITEMS_PER_OWNER_MAX] items up, or the layer [ITEMS_MAX].
     TooMany,
-    /// See [ItemOwned::check].
+    /// See [ItemOwned::check] and [ShowOnlyOwned::check].
     BadArgument,
+    /// A [Fill::Image] the backgrounds folder has no readable PNG image of that name for.
+    NoSuchImage,
 }
 
 #[derive_shrink_wrap(owned(feature = "std"), derive(Clone, Debug, PartialEq, Eq), ww_repr = unib32)]

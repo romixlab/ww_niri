@@ -143,7 +143,7 @@ We also have a community Discord server: https://discord.gg/vT8Sfjy7sx
 
 ## The overlay layer (ww_niri)
 
-Control API clients put items on one layer above the windows: covers, texts, a clock, notices, each owned by its client and stacked by priority. See [docs/ww/Overlay.md](docs/ww/Overlay.md).
+Control API clients put items on one layer above the windows: covers, texts, a clock, notices, meters, each owned by its client and stacked by priority, each over its own blur, dim and colour or image fill. One shared filter can show only some of them. ww_niri shows the volume on every change, at the place `volume-indicator` in `ww.kdl` gives. See [docs/ww/Overlay.md](docs/ww/Overlay.md).
 
 ## Deploying niri on a PC (ww_niri)
 

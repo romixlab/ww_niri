@@ -5,22 +5,26 @@
 //! owner's `lift`, on a `dismiss` when dismissible, when its owner's connection ends or when its
 //! window closes. Windows carry what to draw of their items ([Look]); output items are read from
 //! [Overlay::on_output] at each frame. [render] draws both. While any item asked for `mute`, the
-//! default sink is muted ([Overlay::mutes], [super::Audio::hold_mute]).
+//! default sink is muted ([Overlay::mutes], [super::Audio::hold_mute]). A [ShowOnlyOwned] filter
+//! keeps the items it does not match up but undrawn.
 
 use std::cell::Cell;
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use ww_niri_api::{
-    At, Backdrop, ContentOwned, ItemEnd, ItemId, ItemInfoOwned, ItemOwned, OverlayError, ITEMS_MAX,
-    ITEMS_PER_OWNER_MAX,
+    At, BackdropOwned, ContentOwned, FillOwned, ItemEnd, ItemId, ItemInfoOwned, ItemOwned,
+    OverlayError, ShowOnlyOwned, ITEMS_MAX, ITEMS_PER_OWNER_MAX,
 };
 
+pub mod image;
 pub mod render;
 mod state;
 #[cfg(test)]
 mod tests;
+pub mod volume;
 
 /// What an item is drawn on, with a browser slot resolved to its window.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -37,7 +41,9 @@ pub struct Look {
     pub priority: u8,
     pub at: At,
     pub content: ContentOwned,
-    pub backdrop: Backdrop,
+    pub backdrop: BackdropOwned,
+    /// The fill's image, read when the item was put.
+    pub image: Option<Rc<image::Image>>,
     /// The item's end, where a card's countdown reaches 0:00.
     pub until: Option<Instant>,
     /// The item's first put, where a progress starts counting.
@@ -100,11 +106,21 @@ struct Entry {
     look: Rc<Look>,
 }
 
+impl Entry {
+    fn shown_by(&self, filter: Option<&ShowOnlyOwned>) -> bool {
+        filter.is_none_or(|f| f.shows(self.look.priority, &self.key, ItemId(self.look.id)))
+    }
+}
+
 /// The items by id, and who owns each.
 #[derive(Debug, Default)]
 pub struct Overlay {
     items: BTreeMap<u64, Entry>,
     last_id: u64,
+    show_only: Option<ShowOnlyOwned>,
+    /// Where [FillOwned::Image] names its images; `None`: no images.
+    pub backgrounds: Option<PathBuf>,
+    images: image::Images,
 }
 
 impl Overlay {
@@ -113,7 +129,8 @@ impl Overlay {
     ///
     /// # Errors
     ///
-    /// `TooMany` for a new item past [ITEMS_PER_OWNER_MAX] or [ITEMS_MAX].
+    /// `TooMany` for a new item past [ITEMS_PER_OWNER_MAX] or [ITEMS_MAX]; `NoSuchImage` for a
+    /// fill's image that is not in [Overlay::backgrounds] or is not a PNG image.
     pub fn put(
         &mut self,
         owner: u64,
@@ -122,6 +139,16 @@ impl Overlay {
         item: ItemOwned,
         until: Option<Instant>,
     ) -> Result<u64, OverlayError> {
+        let image = match &item.backdrop.fill {
+            FillOwned::Image(name) => {
+                let dir = self
+                    .backgrounds
+                    .as_deref()
+                    .ok_or(OverlayError::NoSuchImage)?;
+                Some(self.images.load(dir, name)?)
+            }
+            _ => None,
+        };
         let found = self.find(owner, key);
         let since =
             (found.and_then(|id| self.items.get(&id))).map_or_else(Instant::now, |e| e.look.since);
@@ -141,7 +168,8 @@ impl Overlay {
             priority: item.priority,
             at: item.place.at,
             content: item.content.clone(),
-            backdrop: item.backdrop,
+            backdrop: item.backdrop.clone(),
+            image,
             until,
             since,
             drawn: Cell::new(false),
@@ -156,7 +184,18 @@ impl Overlay {
             look,
         };
         self.items.insert(id, entry);
+        self.images
+            .keep(self.items.values().filter_map(|e| e.look.image.as_ref()));
         Ok(id)
+    }
+
+    /// Draws only the items `filter` matches; `None`: all.
+    pub fn set_show_only(&mut self, filter: Option<ShowOnlyOwned>) {
+        self.show_only = filter;
+    }
+
+    pub fn show_only(&self) -> Option<&ShowOnlyOwned> {
+        self.show_only.as_ref()
     }
 
     fn find(&self, owner: u64, key: &str) -> Option<u64> {
@@ -261,8 +300,9 @@ impl Overlay {
     }
 
     fn looks(&self, on: impl Fn(&Target) -> bool) -> Vec<Rc<Look>> {
+        let filter = self.show_only.as_ref();
         let mut looks: Vec<Rc<Look>> = (self.items.values())
-            .filter(|e| on(&e.target))
+            .filter(|e| on(&e.target) && e.shown_by(filter))
             .map(|e| e.look.clone())
             .collect();
         looks.sort_by_key(|look| std::cmp::Reverse(look.rank()));
@@ -279,6 +319,7 @@ impl Overlay {
                 id: ItemId(e.look.id),
                 key: e.key.clone(),
                 own: e.owner == owner,
+                hidden: !e.shown_by(self.show_only.as_ref()),
                 item: e.item.clone(),
             })
             .collect()

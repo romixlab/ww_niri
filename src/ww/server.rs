@@ -103,6 +103,10 @@ impl Server {
                 self.mark_changed_browsers_state([UNib32(u32::from(*slot)).into()]);
                 return;
             }
+            Mark::ShowOnly => {
+                self.mark_changed_overlay_show_only();
+                return;
+            }
         };
         match event {
             EventOwned::PlayerAppeared(info) => {
@@ -805,6 +809,32 @@ impl Server {
         let owner = self.holder;
         match call(&self.run, move |host| host.overlay_list(owner)).await {
             Some(items) => RpcResult::Ready(items),
+            None => Unimplemented.into(),
+        }
+    }
+
+    /// Draws only the items the filter matches, for every connection.
+    async fn set_overlay_show_only(
+        &mut self,
+        _cx: &mut Context<'_, impl EventOut>,
+        value: Option<ww_niri_api::ShowOnlyOwned>,
+    ) -> SetResult<Error<'_, ww_niri_api::OverlayError>> {
+        if let Some(Err(err)) = value.as_ref().map(ww_niri_api::ShowOnlyOwned::check) {
+            return SetResult::SetError(err.into());
+        }
+        info!("ww: {} shows only {value:?} of the overlay", self.peer);
+        match call(&self.run, move |host| host.overlay_set_show_only(value)).await {
+            Some(()) => SetResult::Set,
+            None => Unimplemented.into(),
+        }
+    }
+
+    async fn get_overlay_show_only(
+        &mut self,
+        _cx: &mut Context<'_, impl EventOut>,
+    ) -> GetResult<Option<ww_niri_api::ShowOnlyOwned>, Error<'_, ww_niri_api::OverlayError>> {
+        match call(&self.run, |host| host.overlay_show_only()).await {
+            Some(filter) => GetResult::Value(filter),
             None => Unimplemented.into(),
         }
     }
