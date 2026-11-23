@@ -11,10 +11,16 @@ Changes of ww_niri on top of upstream niri. Upstream's own changes are in its re
 - Overlay `Progress` content: title, detail and seconds since the item's first put, counting up (P2618#23nov-2020b).
 - Overlay `report_shown`: the owner hears `OverlayShown` with the presentation time of the first frame drawing the put (P2618#23nov-2020b).
 - `ww_niri_client`: `Tv::overlay_shown`; `ww_niri_fake` reports a `report_shown` put shown at once (P2618#23nov-2020b).
+- Volume indicator: an overlay meter on every volume or mute change, placed by `volume-indicator` in ww.kdl (P2618#23nov-2021b).
+- Overlay `Meter` content: a label, a bar of 10 blocks and the percent (P2618#23nov-2021b).
+- Overlay `show_only`: one observed filter by band, key or id; hidden items stay up, `list` marks them (P2618#23nov-2021c).
+- Overlay backdrop `fill`: none, a colour, or a PNG image from the `backgrounds` folder, under blur and dim (P2618#23nov-2021c).
+- `ww_niri_client`: `tv.overlay().show_only`; `ww_niri_fake`: `show_only`, `add_background` and the volume indicator (P2618#23nov-2021c).
 
 ### Changed
 
 - **Breaking:** control API: `Item` has a new field `report_shown` (P2618#23nov-2020b).
+- **Breaking:** control API: `Backdrop` has a new field `fill` and a lifetime; `ItemInfo` a new field `hidden` (P2618#23nov-2021c).
 
 ## [26.23.0] - 2026-11-22
 

@@ -4,7 +4,8 @@ use std::time::Duration;
 
 use exact_units::{Fixed, Micros, Millis};
 use ww_niri_api::{
-    Button, ItemId, ItemOwned, Modifiers, PlayerId, Point, Transition, Volume, WindowId,
+    Button, ItemId, ItemOwned, Modifiers, PlayerId, Point, ShowOnlyOwned, Transition, Volume,
+    WindowId,
 };
 
 use crate::api::NiriClient;
@@ -127,6 +128,8 @@ pub enum Command {
     OverlayLift(String),
     /// Lifts a dismissible overlay item, whoever owns it.
     OverlayDismiss(ItemId),
+    /// Draws only the overlay items the filter matches, for every client; `None`: all.
+    OverlayShowOnly(Option<ShowOnlyOwned>),
 }
 
 /// Which resource a command drives: commands of one lane go one at a time, in order.
@@ -142,6 +145,7 @@ pub(crate) enum Lane {
     /// One of this client's overlay items, by key.
     Overlay(String),
     Dismiss,
+    ShowOnly,
 }
 
 impl Command {
@@ -175,6 +179,7 @@ impl Command {
                 Lane::Overlay(key.clone())
             }
             Command::OverlayDismiss(_) => Lane::Dismiss,
+            Command::OverlayShowOnly(_) => Lane::ShowOnly,
         }
     }
 
@@ -231,6 +236,10 @@ impl Command {
             }
             (Command::SetMuted(m), Command::SetMuted(n)) => {
                 *m = n;
+                Ok(())
+            }
+            (Command::OverlayShowOnly(f), Command::OverlayShowOnly(n)) => {
+                *f = n;
                 Ok(())
             }
             (
@@ -315,6 +324,11 @@ async fn execute_unit(
             Ok(client.audio().write_volume(volume).write().await?)
         }
         Command::SetMuted(on) => Ok(client.audio().write_muted(*on).write().await?),
+        Command::OverlayShowOnly(filter) => Ok(client
+            .overlay()
+            .write_show_only(filter.clone())
+            .write()
+            .await?),
         Command::TypeText(_) | Command::PressKeys(_) | Command::KeyDown(_) | Command::KeyUp(_) => {
             keyboard(client, command, hold).await
         }

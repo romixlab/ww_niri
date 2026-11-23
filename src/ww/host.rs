@@ -8,7 +8,7 @@ use async_channel::Receiver;
 use calloop::LoopHandle;
 use ww_niri_api::{
     InputErrorOwned, ItemId, ItemInfoOwned, ItemOwned, OutputOwned, OverlayError, PointerPosition,
-    Transition, WindowOwned,
+    ShowOnlyOwned, Transition, WindowOwned,
 };
 
 use super::input::{Key, Op, TextKeys};
@@ -49,6 +49,9 @@ pub trait WwHost: 'static {
     fn overlay_lift_owned_by(&mut self, owner: u64);
     /// Every item, as `owner` sees them.
     fn overlay_list(&mut self, owner: u64) -> Vec<ItemInfoOwned>;
+    /// Draws only the items the checked `filter` matches; `None`: all.
+    fn overlay_set_show_only(&mut self, filter: Option<ShowOnlyOwned>);
+    fn overlay_show_only(&mut self) -> Option<ShowOnlyOwned>;
 
     /// What every connection shares.
     fn services(&mut self) -> Rc<super::Services>;
@@ -121,7 +124,7 @@ mod niri_state {
     use smithay::output::Output;
     use ww_niri_api::{
         InputErrorOwned, ItemId, ItemInfoOwned, ItemOwned, OutputOwned, OverlayError,
-        PointerPosition, Transition, WindowId, WindowOwned, WorkspaceId,
+        PointerPosition, ShowOnlyOwned, Transition, WindowId, WindowOwned, WorkspaceId,
     };
 
     use super::{Key, Op, TextKeys, WwHost};
@@ -288,6 +291,14 @@ mod niri_state {
 
         fn overlay_list(&mut self, owner: u64) -> Vec<ItemInfoOwned> {
             self.ww_overlay_list(owner)
+        }
+
+        fn overlay_set_show_only(&mut self, filter: Option<ShowOnlyOwned>) {
+            self.ww_overlay_set_show_only(filter);
+        }
+
+        fn overlay_show_only(&mut self) -> Option<ShowOnlyOwned> {
+            self.ww_overlay_show_only()
         }
 
         fn services(&mut self) -> std::rc::Rc<crate::ww::Services> {

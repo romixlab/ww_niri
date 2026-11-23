@@ -42,7 +42,7 @@ use record::Record;
 pub use record::{Call, ErrorKind, Fail, FailError, METHODS};
 use tokio::sync::{watch, Notify};
 use wire_weaver_server::Fanout;
-use ww_niri_api::{InfoOwned, PointerPosition, WindowError, WindowId, WindowOwned};
+use ww_niri_api::{InfoOwned, PointerPosition, ShowOnlyOwned, WindowError, WindowId, WindowOwned};
 
 /// How the fake TV starts.
 #[derive(Clone, Debug)]
@@ -425,6 +425,11 @@ impl FakeTv {
         self.shared.with(|m| (m.volume, m.muted))
     }
 
+    /// The overlay's `show_only` filter.
+    pub fn show_only(&self) -> Option<ShowOnlyOwned> {
+        self.shared.with(|m| m.show_only())
+    }
+
     // ---- changes made elsewhere ----
 
     /// Opens a window on a workspace of its own and shows it, as an app started on the TV would.
@@ -439,6 +444,11 @@ impl FakeTv {
     /// `NoSuchWindow` when there is none with this id.
     pub fn close_window(&self, id: WindowId) -> Result<(), WindowError> {
         self.shared.with(|m| m.close_window(id.0))
+    }
+
+    /// An image named `name` is now in the backgrounds folder, for fills.
+    pub fn add_background(&self, name: &str) {
+        self.shared.with(|m| m.add_background(name));
     }
 
     /// Volume (percent, 0 to 150) and mute changed on the TV.

@@ -122,7 +122,7 @@ fn volume_and_position_are_latest_wins_seeks_add_up() {
 #[test]
 fn a_put_replaces_the_one_before_of_its_key() {
     use ww_niri_api::{
-        At, Backdrop, ContentOwned, ItemOwned, PlaceOwned, SurfaceOwned, TextSize, WindowId,
+        At, BackdropOwned, ContentOwned, ItemOwned, PlaceOwned, SurfaceOwned, TextSize, WindowId,
     };
 
     let put = |key: &str, priority| Command::OverlayPut {
@@ -135,7 +135,7 @@ fn a_put_replaces_the_one_before_of_its_key() {
             content: ContentOwned::Clock {
                 size: TextSize::Small,
             },
-            backdrop: Backdrop::default(),
+            backdrop: BackdropOwned::default(),
             priority,
             lasts: None,
             mute: false,

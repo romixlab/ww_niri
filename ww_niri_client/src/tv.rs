@@ -8,7 +8,7 @@ use exact_units::Micros;
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
 use ww_niri_api::{
     Button, InfoOwned, ItemId, ItemOwned, Modifiers, OutputOwned, PlayerId, PlayerInfoOwned, Point,
-    Transition, WindowId, WindowOwned,
+    ShowOnlyOwned, Transition, WindowId, WindowOwned,
 };
 
 use crate::api::NiriClient;
@@ -399,6 +399,9 @@ impl OverlayCalls<'_> {
         fn lift(&self, key: String) => Command::OverlayLift(key);
         /// Lifts a dismissible item, whoever owns it: a person's "show it".
         fn dismiss(&self, id: ItemId) => Command::OverlayDismiss(id);
+        /// Draws only the items `filter` matches, every client's; `None` draws all. Hidden
+        /// items stay up. Latest-wins while a call is in flight.
+        fn show_only(&self, filter: Option<ShowOnlyOwned>) => Command::OverlayShowOnly(filter);
     }
 }
 

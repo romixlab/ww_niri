@@ -18,6 +18,8 @@ pub enum Mark {
     Playback(ww_niri_api::PlayerId),
     /// A browser slot's URL or window.
     Browser(u8),
+    /// The overlay's `show_only` filter.
+    ShowOnly,
 }
 
 #[derive(Default)]
@@ -70,6 +72,10 @@ impl Hub {
 
     pub fn browser_changed(&self, slot: u8) {
         self.mark(Mark::Browser(slot));
+    }
+
+    pub fn show_only_changed(&self) {
+        self.mark(Mark::ShowOnly);
     }
 
     pub fn emit(&self, event: EventOwned) {

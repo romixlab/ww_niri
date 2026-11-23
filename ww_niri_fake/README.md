@@ -19,7 +19,7 @@ tv.advance(Duration::from_secs(1)); // the slot's window maps: Running
 - Volume (40 %), mute and a default sink.
 - A log of the keys, text, buttons and wheel turns injected ([`FakeTv::input_log`]). Text outside printable ASCII is `NotTypeable`, as with the us keymap.
 - Held buttons and keys come up after their hold limit or when the connection that holds them ends.
-- The overlay layer ([`FakeTv::overlay`]): items each connection owns by key, put up and changed by `overlay.put`, stacked by priority, each lifted with an `OverlayEnded` event. An item lifts at its end, on its owner's `lift`, on a `dismiss` when dismissible, when its window closes or when its owner's connection ends. An item with `mute` mutes the sink while it is up, as the compositor does.
+- The overlay layer ([`FakeTv::overlay`]): items each connection owns by key, put up and changed by `overlay.put`, stacked by priority, each lifted with an `OverlayEnded` event. An item lifts at its end, on its owner's `lift`, on a `dismiss` when dismissible, when its window closes or when its owner's connection ends. An item with `mute` mutes the sink while it is up, as the compositor does. A fill image must be a name [`FakeTv::add_background`] added; `show_only` marks the items it hides in `list`; a change of volume or mute puts up the compositor's volume indicator for 1.5 s.
 - Hidden windows, as ww_niri hides them: `hide` takes a window out of its workspace and focus, listed `hidden` with no workspace or output; `focus` and `set_fullscreen` leave it so; `show` brings it back on the current workspace, focused.
 
 ## Knobs for tests

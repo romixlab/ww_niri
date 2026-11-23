@@ -193,7 +193,7 @@ fn a_point_in_a_window() {
 
 /// An ad cover over `on` for `lasts_ms`.
 fn ad_cover(on: ww_niri_api::SurfaceOwned, lasts_ms: u32, mute: bool) -> ww_niri_api::ItemOwned {
-    use ww_niri_api::{At, Backdrop, CardOwned, ContentOwned, ItemOwned, PlaceOwned};
+    use ww_niri_api::{At, BackdropOwned, CardOwned, ContentOwned, ItemOwned, PlaceOwned};
 
     ItemOwned {
         place: PlaceOwned { on, at: At::Fill },
@@ -203,7 +203,11 @@ fn ad_cover(on: ww_niri_api::SurfaceOwned, lasts_ms: u32, mute: bool) -> ww_niri
             clock: true,
             footer: None,
         }),
-        backdrop: Backdrop { blur: 2, dim: 65 },
+        backdrop: BackdropOwned {
+            blur: 2,
+            dim: 65,
+            ..BackdropOwned::default()
+        },
         priority: 150,
         lasts: Some(Fixed::new(lasts_ms)),
         mute,
@@ -324,5 +328,26 @@ fn the_owner_alone_hears_its_item_shown() {
         tokio::time::sleep(Duration::from_millis(100)).await;
         assert!(shown.try_recv().is_err());
         assert!(theirs.try_recv().is_err(), "only the owner hears it");
+    });
+}
+
+#[test]
+fn show_only_reaches_the_tv() {
+    use ww_niri_api::{Band, ShowOnlyOwned};
+
+    let fake = fake();
+    run(async {
+        let tv = connect(&fake).await;
+        let status = ShowOnlyOwned {
+            bands: vec![Band {
+                lowest: 192,
+                highest: 255,
+            }],
+            ..ShowOnlyOwned::default()
+        };
+        tv.overlay().show_only(Some(status.clone())).await.unwrap();
+        assert_eq!(fake.show_only(), Some(status));
+        tv.overlay().show_only(None).await.unwrap();
+        assert_eq!(fake.show_only(), None);
     });
 }

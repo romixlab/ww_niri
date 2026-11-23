@@ -12,7 +12,7 @@ use async_channel::{Receiver, Sender};
 use wire_weaver::ww_api::{Totals, TotalsSession};
 use wire_weaver_client::{CallError, ClientConfig, Commander, WwClient};
 use ww_niri_api::{
-    At, Backdrop, CardOwned, ContentOwned, EventOwned, InputErrorOwned, ItemEnd, ItemId,
+    At, BackdropOwned, CardOwned, ContentOwned, EventOwned, InputErrorOwned, ItemEnd, ItemId,
     ItemInfoOwned, ItemOwned, LaunchErrorOwned, MediaErrorOwned, OutputOwned, OverlayError,
     PlaceOwned, SurfaceOwned, Transition, WindowError, WindowId, WindowOwned, WorkspaceId,
 };
@@ -213,6 +213,18 @@ impl WwHost for FakeHost {
 
     fn overlay_list(&mut self, owner: u64) -> Vec<ItemInfoOwned> {
         self.overlay.list(owner)
+    }
+
+    fn overlay_set_show_only(&mut self, filter: Option<ww_niri_api::ShowOnlyOwned>) {
+        self.record(format!("show only {filter:?}"));
+        self.overlay.set_show_only(filter);
+        if let Some(services) = &self.services {
+            services.hub.show_only_changed();
+        }
+    }
+
+    fn overlay_show_only(&mut self) -> Option<ww_niri_api::ShowOnlyOwned> {
+        self.overlay.show_only().cloned()
     }
 
     fn services(&mut self) -> Rc<Services> {
@@ -1072,7 +1084,11 @@ fn ad_cover(window: u64, lasts_ms: u32, mute: bool) -> ItemOwned {
             at: At::Fill,
         },
         content: ContentOwned::Card(ad_card()),
-        backdrop: Backdrop { blur: 2, dim: 65 },
+        backdrop: BackdropOwned {
+            blur: 2,
+            dim: 65,
+            ..BackdropOwned::default()
+        },
         priority: 150,
         lasts: Some(exact_units::Millis::new(lasts_ms)),
         mute,
@@ -2909,7 +2925,11 @@ fn live_cover() {
             text: "Переключаю выход".to_owned(),
             size: TextSize::Medium,
         };
-        text.backdrop = Backdrop { blur: 3, dim: 40 };
+        text.backdrop = BackdropOwned {
+            blur: 3,
+            dim: 40,
+            ..BackdropOwned::default()
+        };
         text.priority = 200;
         let mut clock = text.clone();
         clock.place.on = SurfaceOwned::Output(None);
@@ -2940,5 +2960,77 @@ fn live_cover() {
         ended(ad, ItemEnd::Dismissed, Duration::from_secs(5)).await;
 
         tv.stop().with_timeout(long).call().await.unwrap();
+    });
+}
+
+#[test]
+fn overlay_show_only_is_one_filter_every_connection_observes() {
+    use wire_weaver_client::observe::on_change;
+    use ww_niri_api::{Band, ShowOnlyOwned};
+
+    let bench = bench(vec![window(1, "firefox")]);
+    let url = bench.url.clone();
+    bench.run(async |phone, fake| {
+        let desktop = NiriClient::config(|c| c.websocket_url(url.clone()))
+            .connect()
+            .await
+            .unwrap();
+        let mut observed = desktop
+            .overlay()
+            .observe_show_only(on_change(Duration::ZERO))
+            .subscribe()
+            .await
+            .unwrap();
+        let overlay = phone.overlay();
+        let ad = overlay
+            .put("ad".to_owned(), ad_cover(1, 60_000, false))
+            .call()
+            .await
+            .unwrap();
+
+        let status = ShowOnlyOwned {
+            bands: vec![Band {
+                lowest: 192,
+                highest: 255,
+            }],
+            ..ShowOnlyOwned::default()
+        };
+        overlay
+            .write_show_only(Some(status.clone()))
+            .write()
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while observed.recv().await.unwrap().value != Some(status.clone()) {}
+        })
+        .await
+        .expect("the other connection observes the filter");
+        let read = desktop.overlay().read_show_only().read().await.unwrap();
+        assert_eq!(read, Some(status));
+        let listed = desktop.overlay().list().call().await.unwrap();
+        assert_eq!(
+            (listed.iter())
+                .map(|i| (i.id, i.hidden))
+                .collect::<Vec<_>>(),
+            [(ad, true)]
+        );
+
+        // A filter past the limits is refused and changes nothing.
+        let upside_down = ShowOnlyOwned {
+            bands: vec![Band {
+                lowest: 9,
+                highest: 1,
+            }],
+            ..ShowOnlyOwned::default()
+        };
+        assert!(overlay
+            .write_show_only(Some(upside_down))
+            .write()
+            .await
+            .is_err());
+        overlay.write_show_only(None).write().await.unwrap();
+        let listed = desktop.overlay().list().call().await.unwrap();
+        assert!(!listed[0].hidden);
+        assert!((fake.calls.lock().unwrap().iter()).any(|c| c.starts_with("show only Some")));
     });
 }

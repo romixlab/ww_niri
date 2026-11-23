@@ -13,7 +13,7 @@ use ww_niri_api::{
     BrowserErrorOwned, BrowserStateOwned, Button, Delta, InfoOwned, InputErrorOwned, ItemId,
     ItemInfoOwned, ItemOwned, LaunchErrorOwned, Launched, MediaErrorOwned, Modifiers, OutputOwned,
     OverlayError, PlaybackStateOwned, PlayerInfoOwned, PlayerSourceOwned, Point, PointerPosition,
-    Px, SinkOwned, Transition, WindowError, WindowId, WindowOwned,
+    Px, ShowOnlyOwned, SinkOwned, Transition, WindowError, WindowId, WindowOwned,
 };
 use ww_stream::totals::TotalsRx;
 
@@ -150,6 +150,7 @@ impl Server {
                 self.mark_changed_audio_sink();
             }
             Mark::Pointer => self.mark_changed_input_pointer_position(),
+            Mark::ShowOnly => self.mark_changed_overlay_show_only(),
         }
     }
 
@@ -779,6 +780,29 @@ impl Server {
         self.begin("overlay.list", None, "()".to_owned());
         let owner = self.holder;
         RpcResult::Ready(self.with(|m| m.overlay_list(owner)))
+    }
+
+    async fn set_overlay_show_only(
+        &mut self,
+        _cx: &mut Context<'_, impl EventOut>,
+        value: Option<ShowOnlyOwned>,
+    ) -> SetResult<Error<'_, OverlayError>> {
+        let fail = self.begin("overlay.show_only", None, format!(" = {value:?}"));
+        if let Some(err) = fail.and_then(OverlayError::from_fail) {
+            return SetResult::SetError(err.into());
+        }
+        if let Some(Err(err)) = value.as_ref().map(ShowOnlyOwned::check) {
+            return SetResult::SetError(err.into());
+        }
+        self.with(|m| m.set_show_only(value));
+        SetResult::Set
+    }
+
+    async fn get_overlay_show_only(
+        &mut self,
+        _cx: &mut Context<'_, impl EventOut>,
+    ) -> GetResult<Option<ShowOnlyOwned>, Error<'_, OverlayError>> {
+        GetResult::Value(self.with(|m| m.show_only()))
     }
 
     async fn get_input_pointer_position(

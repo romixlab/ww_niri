@@ -1,7 +1,8 @@
 //! Draws overlay items on a surface: a window's tile or an output.
 //!
-//! An item is its content's lines over its backdrop: a dim, and under it a blur of what is under
-//! its box (niri's framebuffer effect). On a window, the topmost item at `Fill` with a blur is a
+//! An item is its content's lines over its backdrop: a dim, under it a blur of what is under its
+//! box (niri's framebuffer effect), and under both the fill: a colour or an image scaled to cover
+//! the box. On a window, the topmost item at `Fill` with a blur is a
 //! cover: the window is rendered small into a texture, blurred with niri's blur and scaled back
 //! instead of the window, so nothing of it shows; it reblurs only when the window's content
 //! changed. Cheap on purpose: the copy has a sixteenth of the pixels.
@@ -22,8 +23,9 @@ use smithay::backend::renderer::gles::{GlesRenderer, GlesTexture};
 use smithay::backend::renderer::utils::CommitCounter;
 use smithay::backend::renderer::{Offscreen as _, Renderer as _, Texture as _};
 use smithay::utils::{Logical, Point, Rectangle, Scale, Size, Transform};
-use ww_niri_api::{Anchor, At, ContentOwned, TextSize};
+use ww_niri_api::{Anchor, At, ContentOwned, FillOwned, TextSize, METER_BLOCKS};
 
+use super::image::Image;
 use super::Look;
 use crate::layout::LayoutElementRenderElement;
 use crate::render_helpers::background_effect::RenderParams;
@@ -112,6 +114,7 @@ fn clock_style(size: TextSize) -> Style {
 const NOTICE_TITLE: Style = style(56., true, TEXT_COLOR);
 const NOTICE_BODY: Style = style(40., false, QUIET_COLOR);
 const PROGRESS_ELAPSED: Style = style(48., true, CLOCK_COLOR);
+const METER_BAR: Style = style(44., false, CLOCK_COLOR);
 
 /// An element of the overlay, front to back.
 pub enum OverlayElement {
@@ -143,6 +146,9 @@ struct ItemRender {
     lines: Vec<Line>,
     dim: SolidColorBuffer,
     effect: FramebufferEffect,
+    color: SolidColorBuffer,
+    /// The fill's image and its texture.
+    image: Option<(Rc<Image>, TextureBuffer<GlesTexture>)>,
 }
 
 impl Default for ItemRender {
@@ -151,6 +157,8 @@ impl Default for ItemRender {
             lines: Vec::new(),
             dim: SolidColorBuffer::new(Size::default(), DIM_COLOR),
             effect: FramebufferEffect::new(),
+            color: SolidColorBuffer::new(Size::default(), [0., 0., 0., 1.]),
+            image: None,
         }
     }
 }
@@ -215,10 +223,23 @@ fn wants(look: &Look, now: Instant) -> Vec<Want> {
             wants.extend(detail.clone().map(|d| Want::new(d, NOTICE_BODY)));
             wants.extend(look.elapsed(now).map(|t| Want::new(t, PROGRESS_ELAPSED)));
         }
+        ContentOwned::Meter { label, percent } => {
+            wants.push(Want::new(label.clone(), NOTICE_TITLE));
+            wants.push(Want::new(meter_bar(*percent), METER_BAR));
+        }
         // Refused at `put`.
         ContentOwned::Unknown(_) => {}
     }
     wants
+}
+
+/// A meter's bar of [METER_BLOCKS] blocks, the filled ones rounded to the nearest, then the
+/// percent.
+fn meter_bar(percent: u16) -> String {
+    let filled = (percent.min(100) * METER_BLOCKS + 50) / 100;
+    let mut bar = "\u{25A0}".repeat(usize::from(filled));
+    bar.push_str(&"\u{25A1}".repeat(usize::from(METER_BLOCKS - filled)));
+    format!("{bar}  {percent} %")
 }
 
 /// `HH:MM` in the local time zone.
@@ -521,7 +542,78 @@ impl ItemRender {
                 1.,
             )));
         }
+        self.render_fill(renderer, look, boxed, area, push);
     }
+
+    /// Pushes the fill of `boxed`: a colour, or the image scaled to cover the box, its middle
+    /// in the box's middle.
+    fn render_fill(
+        &mut self,
+        renderer: &mut GlesRenderer,
+        look: &Look,
+        boxed: Rectangle<f64, Logical>,
+        area: Area,
+        push: &mut dyn FnMut(OverlayElement),
+    ) {
+        match &look.backdrop.fill {
+            FillOwned::Color(c) => {
+                let rgb = |v: u8| f32::from(v) / 255.;
+                self.color.set_color([rgb(c.r), rgb(c.g), rgb(c.b), 1.]);
+                self.color.resize(boxed.size);
+                push(OverlayElement::SolidColor(
+                    SolidColorRenderElement::from_buffer(
+                        &self.color,
+                        boxed.loc,
+                        rgb(c.a) * area.alpha,
+                        Kind::Unspecified,
+                    ),
+                ));
+            }
+            FillOwned::Image(_) => {
+                let Some(image) = &look.image else { return };
+                let fresh = self
+                    .image
+                    .as_ref()
+                    .is_some_and(|(i, _)| Rc::ptr_eq(i, image));
+                if !fresh {
+                    match TextureBuffer::from_memory_buffer(renderer, &image.pixels) {
+                        Ok(buffer) => self.image = Some((image.clone(), buffer)),
+                        Err(err) => {
+                            warn!("ww: error uploading the overlay image {image:?}: {err:?}");
+                            self.image = None;
+                            return;
+                        }
+                    }
+                }
+                let Some((_, buffer)) = &self.image else {
+                    return;
+                };
+                let src = cover_crop(buffer.logical_size(), boxed.size);
+                let size = boxed.size.to_i32_round();
+                let elem = TextureRenderElement::from_texture_buffer(
+                    buffer.clone(),
+                    boxed.loc,
+                    area.alpha,
+                    Some(src),
+                    Some(size),
+                    Kind::Unspecified,
+                );
+                push(OverlayElement::Texture(PrimaryGpuTextureRenderElement(
+                    elem,
+                )));
+            }
+            FillOwned::None | FillOwned::Unknown(_) => {}
+        }
+    }
+}
+
+/// The part of an image of `image` size that, scaled up or down to cover `boxed`, fills it: the
+/// image's middle, as wide or as tall as the box's shape allows.
+fn cover_crop(image: Size<f64, Logical>, boxed: Size<f64, Logical>) -> Rectangle<f64, Logical> {
+    let k = (boxed.w / image.w).max(boxed.h / image.h);
+    let size = Size::from((boxed.w / k, boxed.h / k));
+    let loc = Point::from(((image.w - size.w) / 2., (image.h - size.h) / 2.));
+    Rectangle::new(loc, size)
 }
 
 /// The size of lines stacked with gaps.
@@ -613,4 +705,35 @@ fn render_line(
         Transform::Normal,
     );
     Ok(TextureBuffer::from_memory_buffer(renderer, &buffer)?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn meter_bar_fills_blocks_by_the_nearest_tenth() {
+        let bar = |percent| meter_bar(percent);
+        assert_eq!(bar(0), "□□□□□□□□□□  0 %");
+        assert_eq!(bar(44), "■■■■□□□□□□  44 %");
+        assert_eq!(bar(45), "■■■■■□□□□□  45 %");
+        assert_eq!(bar(150), "■■■■■■■■■■  150 %");
+    }
+
+    #[test]
+    fn cover_crop_keeps_the_middle() {
+        let crop = |image: (f64, f64), boxed: (f64, f64)| {
+            let r = cover_crop(Size::from(image), Size::from(boxed));
+            (r.loc.x, r.loc.y, r.size.w, r.size.h)
+        };
+        // A wide image in a 16:9 box: cut left and right.
+        assert_eq!(
+            crop((400., 100.), (160., 90.)),
+            (111.11111111111111, 0., 177.77777777777777, 100.)
+        );
+        // A tall box: cut top and bottom of a square.
+        assert_eq!(crop((100., 100.), (200., 100.)), (0., 25., 100., 50.));
+        // The same shape: all of it.
+        assert_eq!(crop((1920., 1080.), (960., 540.)), (0., 0., 1920., 1080.));
+    }
 }

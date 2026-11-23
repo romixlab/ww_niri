@@ -159,6 +159,7 @@ impl WwServer {
                 ),
                 None => warn!("ww: no audio server socket found, volume is not available"),
             }
+            show_volume(event_loop, scheduler, &services.audio);
         }
         let mut ww = Self {
             path,
@@ -311,6 +312,8 @@ impl WwServer {
                 return;
             }
         };
+        self.overlay.backgrounds = (config.backgrounds.clone())
+            .or_else(|| path.parent().map(|dir| dir.join("backgrounds")));
         let interfaces = interfaces_for(&config.listen).unwrap_or_else(|err| {
             warn!("ww: lan: and tailnet: have no address until this works: {err:?}");
             Interfaces::default()
@@ -331,6 +334,25 @@ impl WwServer {
             warn!("ww: error listening on {addr}, trying again: {err:?}");
         }
         self.advertise(&interfaces);
+    }
+}
+
+/// Shows the volume indicator on each change of the default sink's volume or mute.
+fn show_volume(
+    event_loop: &LoopHandle<'static, State>,
+    scheduler: &Scheduler<()>,
+    audio: &Rc<Audio>,
+) {
+    let (audio, event_loop) = (audio.clone(), event_loop.clone());
+    let levels = audio.watch_level();
+    let res = scheduler.schedule(async move {
+        while levels.recv().await.is_ok() {
+            let Some(sink) = audio.sink() else { continue };
+            event_loop.insert_idle(move |state| state.ww_volume_changed(sink.volume, sink.muted));
+        }
+    });
+    if let Err(err) = res {
+        warn!("ww: error scheduling the volume indicator task: {err:?}");
     }
 }
 

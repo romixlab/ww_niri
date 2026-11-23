@@ -1,12 +1,13 @@
 //! The overlay on niri's `State`: windows get their items to draw, one timer wakes the loop at
 //! each end, countdown second and clock minute, and the sink stays muted while an item asks.
+//! The compositor's own volume indicator is put here too.
 
 use std::time::{Instant, SystemTime};
 
 use calloop::timer::{TimeoutAction, Timer};
-use ww_niri_api::{ItemEnd, ItemId, ItemInfoOwned, ItemOwned, OverlayError};
+use ww_niri_api::{ItemEnd, ItemId, ItemInfoOwned, ItemOwned, OverlayError, ShowOnlyOwned};
 
-use super::{ended, Target};
+use super::{ended, volume, Target};
 use crate::niri::State;
 
 impl State {
@@ -48,6 +49,32 @@ impl State {
 
     pub(crate) fn ww_overlay_list(&self, owner: u64) -> Vec<ItemInfoOwned> {
         self.niri.ww.overlay.list(owner)
+    }
+
+    /// Draws only the items `filter` matches, `None` all; every connection's observers hear.
+    pub(crate) fn ww_overlay_set_show_only(&mut self, filter: Option<ShowOnlyOwned>) {
+        self.niri.ww.overlay.set_show_only(filter);
+        self.niri.ww.services().hub.show_only_changed();
+        self.ww_overlay_changed();
+    }
+
+    pub(crate) fn ww_overlay_show_only(&self) -> Option<ShowOnlyOwned> {
+        self.niri.ww.overlay.show_only().cloned()
+    }
+
+    /// The default sink's volume or mute changed: the volume indicator shows it, for
+    /// [volume::LASTS] from now.
+    pub(crate) fn ww_volume_changed(&mut self, percent: u16, muted: bool) {
+        let item = self.niri.ww.config().volume_indicator.item(percent, muted);
+        let target = match &item.place.on {
+            ww_niri_api::SurfaceOwned::Output(name) => Target::Output(name.clone()),
+            _ => unreachable!("the indicator is on an output"),
+        };
+        let until = Instant::now() + volume::LASTS;
+        let res = self.ww_overlay_put(volume::OWNER, volume::KEY, target, item, Some(until));
+        if let Err(err) = res {
+            warn!("ww: error showing the volume indicator: {err:?}");
+        }
     }
 
     /// Lifts the items of windows that closed.

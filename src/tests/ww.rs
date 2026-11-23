@@ -215,8 +215,8 @@ fn host_relative_moves_and_pointer_notices() {
 /// An overlay item: a cover over `window` filling it, or a text at its bottom.
 fn overlay_item(window: u64, cover: bool, priority: u8) -> ww_niri_api::ItemOwned {
     use ww_niri_api::{
-        Anchor, At, Backdrop, CardOwned, ContentOwned, ItemOwned, PlaceOwned, Px, SurfaceOwned,
-        TextSize, WindowId,
+        Anchor, At, BackdropOwned, CardOwned, ContentOwned, ItemOwned, PlaceOwned, Px,
+        SurfaceOwned, TextSize, WindowId,
     };
 
     let (at, content, backdrop) = if cover {
@@ -229,7 +229,11 @@ fn overlay_item(window: u64, cover: bool, priority: u8) -> ww_niri_api::ItemOwne
         (
             At::Fill,
             ContentOwned::Card(card),
-            Backdrop { blur: 2, dim: 65 },
+            BackdropOwned {
+                blur: 2,
+                dim: 65,
+                ..BackdropOwned::default()
+            },
         )
     } else {
         let at = At::Anchor {
@@ -241,7 +245,15 @@ fn overlay_item(window: u64, cover: bool, priority: u8) -> ww_niri_api::ItemOwne
             text: "Переключаю выход".to_owned(),
             size: TextSize::Large,
         };
-        (at, text, Backdrop { blur: 0, dim: 100 })
+        (
+            at,
+            text,
+            BackdropOwned {
+                blur: 0,
+                dim: 100,
+                ..BackdropOwned::default()
+            },
+        )
     };
     ItemOwned {
         place: PlaceOwned {
@@ -365,7 +377,7 @@ fn overlay_renders_cover_text_and_output_notice() {
     use smithay::backend::allocator::Fourcc;
     use smithay::utils::Transform;
     use ww_niri_api::{
-        Anchor, At, Backdrop, ContentOwned, ItemOwned, PlaceOwned, Px, SurfaceOwned,
+        Anchor, At, BackdropOwned, ContentOwned, ItemOwned, PlaceOwned, Px, SurfaceOwned,
     };
 
     use crate::render_helpers::{render_to_vec, RenderCtx, RenderTarget};
@@ -468,7 +480,11 @@ fn overlay_renders_cover_text_and_output_notice() {
             body: Some("Мама".to_owned()),
         },
         // The blur needs framebuffer blits; without them the box is the dim alone.
-        backdrop: Backdrop { blur: 2, dim: 100 },
+        backdrop: BackdropOwned {
+            blur: 2,
+            dim: 100,
+            ..BackdropOwned::default()
+        },
         priority: 100,
         lasts: None,
         mute: false,
@@ -528,7 +544,7 @@ fn cover_blurs_detail_away() {
     use smithay::backend::renderer::element::Kind;
     use smithay::backend::renderer::gles::GlesRenderer;
     use smithay::utils::{Point, Scale, Size, Transform};
-    use ww_niri_api::{At, Backdrop, ContentOwned, TextSize};
+    use ww_niri_api::{At, BackdropOwned, ContentOwned, TextSize};
 
     use crate::backend::Headless;
     use crate::layout::LayoutElementRenderElement;
@@ -550,7 +566,12 @@ fn cover_blurs_detail_away() {
             text: String::new(),
             size: TextSize::Small,
         },
-        backdrop: Backdrop { blur: 2, dim: 65 },
+        backdrop: BackdropOwned {
+            blur: 2,
+            dim: 65,
+            ..BackdropOwned::default()
+        },
+        image: None,
         until: None,
         since: std::time::Instant::now(),
         drawn: Default::default(),
@@ -642,7 +663,8 @@ fn overlay_put_redraws_at_once_and_reports_the_shown_frame() {
     use smithay::backend::allocator::Fourcc;
     use smithay::utils::Transform;
     use ww_niri_api::{
-        Anchor, At, Backdrop, ContentOwned, EventOwned, ItemOwned, PlaceOwned, Px, SurfaceOwned,
+        Anchor, At, BackdropOwned, ContentOwned, EventOwned, ItemOwned, PlaceOwned, Px,
+        SurfaceOwned,
     };
 
     use crate::niri::RedrawState;
@@ -682,7 +704,11 @@ fn overlay_put_redraws_at_once_and_reports_the_shown_frame() {
             title: "Загружаю плеер".to_owned(),
             detail: Some("Первый канал".to_owned()),
         },
-        backdrop: Backdrop { blur: 0, dim: 100 },
+        backdrop: BackdropOwned {
+            blur: 0,
+            dim: 100,
+            ..BackdropOwned::default()
+        },
         priority: 200,
         lasts: None,
         mute: false,
@@ -758,4 +784,165 @@ fn overlay_put_redraws_at_once_and_reports_the_shown_frame() {
         .ww
         .overlay_presented(&output, Duration::from_millis(1250));
     assert!(owner.try_recv().is_err());
+}
+
+/// ww_niri's own volume indicator goes up on a change, stays one item, and a `show_only` filter
+/// hides it; a colour and an image fill show under items on a surfaceless EGL renderer.
+/// `WW_VOLUME_PNG=path` and `WW_FILL_PNG=path` write the frames there to look at.
+#[test]
+fn volume_indicator_show_only_and_fills() {
+    use smithay::backend::allocator::Fourcc;
+    use smithay::utils::Transform;
+    use ww_niri_api::{
+        At, BackdropOwned, Band, ContentOwned, FillOwned, ItemOwned, PlaceOwned, Rgba,
+        ShowOnlyOwned, SurfaceOwned, TextSize,
+    };
+
+    use crate::render_helpers::{render_to_vec, RenderCtx, RenderTarget};
+    use crate::ww::overlay::Target;
+
+    let config = niri_config::Config::parse_mem("hotkey-overlay { skip-at-startup; }").unwrap();
+    let mut f = Fixture::with_config(config);
+    if let Err(err) = f.niri_state().backend.headless().add_renderer() {
+        eprintln!("skipped: no surfaceless EGL renderer: {err:?}");
+        return;
+    }
+    f.add_output(1, (1920, 1080));
+    f.dispatch();
+    let frame = |f: &mut Fixture| -> Vec<u8> {
+        let output = f.niri_output(1);
+        let state = f.niri_state();
+        let niri = &state.niri;
+        state
+            .backend
+            .with_primary_renderer(|renderer| {
+                let ctx = RenderCtx {
+                    renderer: &mut *renderer,
+                    target: RenderTarget::Output,
+                    xray: None,
+                };
+                let elements = niri.render_to_vec(ctx, &output, false);
+                render_to_vec(
+                    renderer,
+                    (1920, 1080).into(),
+                    1.0.into(),
+                    Transform::Normal,
+                    Fourcc::Abgr8888,
+                    elements.iter().rev(),
+                )
+                .unwrap()
+            })
+            .unwrap()
+    };
+    let px = |frame: &[u8], x: usize, y: usize| {
+        let i = (y * 1920 + x) * 4;
+        [frame[i], frame[i + 1], frame[i + 2]]
+    };
+    let lit = |frame: &[u8]| {
+        (40..200)
+            .flat_map(|y| (1500..1880).map(move |x| (x, y)))
+            .any(|(x, y)| {
+                let [r, g, _] = px(frame, x, y);
+                r > 200 && g > 180
+            })
+    };
+
+    f.niri_state().ww_volume_changed(45, false);
+    let items = f.niri_state().overlay_list(1);
+    assert_eq!(items.len(), 1);
+    let volume = &items[0];
+    assert_eq!((volume.key.as_str(), volume.own), ("volume", false));
+    assert_eq!(
+        volume.item.content,
+        ContentOwned::Meter {
+            label: "Volume".to_owned(),
+            percent: 45
+        }
+    );
+    let shown = frame(&mut f);
+    if let Some(path) = std::env::var_os("WW_VOLUME_PNG") {
+        let file = std::fs::File::create(path).unwrap();
+        crate::utils::write_png_rgba8(file, 1920, 1080, &shown).unwrap();
+    }
+    assert!(lit(&shown), "the indicator is drawn top right");
+    // Another change renews the same item.
+    f.niri_state().ww_volume_changed(45, true);
+    let again = f.niri_state().overlay_list(1);
+    assert_eq!((again.len(), again[0].id), (1, volume.id));
+
+    // Only the ambient band: the indicator is up, not drawn.
+    let ambient = ShowOnlyOwned {
+        bands: vec![Band {
+            lowest: 0,
+            highest: 63,
+        }],
+        ..ShowOnlyOwned::default()
+    };
+    f.niri_state().overlay_set_show_only(Some(ambient));
+    assert!(f.niri_state().overlay_list(1)[0].hidden);
+    assert!(!lit(&frame(&mut f)), "a hidden item is not drawn");
+    f.niri_state().overlay_set_show_only(None);
+    f.niri_state()
+        .overlay_lift_owned_by(crate::ww::overlay::volume::OWNER);
+
+    // An image two pixels wide, red then green, scaled to cover the output, under a blue box.
+    let dir = std::env::temp_dir().join(format!("ww-fills-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut encoder = png::Encoder::new(std::fs::File::create(dir.join("rg.png")).unwrap(), 2, 1);
+    encoder.set_color(png::ColorType::Rgb);
+    encoder.set_depth(png::BitDepth::Eight);
+    let mut writer = encoder.write_header().unwrap();
+    writer.write_image_data(&[255, 0, 0, 0, 255, 0]).unwrap();
+    writer.finish().unwrap();
+    f.niri_state().niri.ww.overlay.backgrounds = Some(dir.clone());
+    let item = |at: At, fill: FillOwned, priority: u8| ItemOwned {
+        place: PlaceOwned {
+            on: SurfaceOwned::Output(None),
+            at,
+        },
+        content: ContentOwned::Text {
+            text: String::new(),
+            size: TextSize::Small,
+        },
+        backdrop: BackdropOwned {
+            blur: 0,
+            dim: 0,
+            fill,
+        },
+        priority,
+        lasts: None,
+        mute: false,
+        dismissible: false,
+        report_shown: false,
+    };
+    let image = item(At::Fill, FillOwned::Image("rg.png".to_owned()), 0);
+    let blue = Rgba {
+        r: 0,
+        g: 0,
+        b: 255,
+        a: 255,
+    };
+    let anchor = At::Anchor {
+        anchor: ww_niri_api::Anchor::Center,
+        dx: ww_niri_api::Px::new(0),
+        dy: ww_niri_api::Px::new(0),
+    };
+    let state = f.niri_state();
+    (state.overlay_put(1, "bg".to_owned(), Target::Output(None), image, None)).unwrap();
+    let boxed = item(anchor, FillOwned::Color(blue), 10);
+    (state.overlay_put(1, "box".to_owned(), Target::Output(None), boxed, None)).unwrap();
+    let filled = frame(&mut f);
+    if let Some(path) = std::env::var_os("WW_FILL_PNG") {
+        let file = std::fs::File::create(path).unwrap();
+        crate::utils::write_png_rgba8(file, 1920, 1080, &filled).unwrap();
+    }
+    assert_eq!(px(&filled, 100, 540), [255, 0, 0], "the image's left half");
+    assert_eq!(
+        px(&filled, 1820, 540),
+        [0, 255, 0],
+        "the image's right half"
+    );
+    assert_eq!(px(&filled, 960, 540), [0, 0, 255], "the box's colour");
+    std::fs::remove_dir_all(&dir).unwrap();
 }

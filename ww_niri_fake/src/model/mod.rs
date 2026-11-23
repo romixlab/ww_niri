@@ -47,6 +47,7 @@ pub(crate) enum Mark {
     PlayerGone(u32),
     Audio,
     Pointer,
+    ShowOnly,
 }
 
 /// What the connection sends: an event of the `events` stream, or an observed change.
@@ -272,6 +273,10 @@ pub(crate) struct Model {
     next_item_id: u64,
     /// While an item mutes the sink: its mute before.
     mute_held: Option<bool>,
+    /// The overlay's `show_only` filter.
+    show_only: Option<ww_niri_api::ShowOnlyOwned>,
+    /// The image names of the backgrounds folder.
+    backgrounds: std::collections::BTreeSet<String>,
     input_log: VecDeque<InputEntry>,
     outbox: Vec<Out>,
     /// The outbox overflowed: the client lists again.
@@ -313,6 +318,8 @@ impl Model {
             overlay: BTreeMap::new(),
             next_item_id: 0,
             mute_held: None,
+            show_only: None,
+            backgrounds: std::collections::BTreeSet::new(),
             input_log: VecDeque::new(),
             outbox: Vec::new(),
             behind: false,
@@ -1001,7 +1008,17 @@ impl Model {
 
     // ---- audio ----
 
+    /// Volume and mute set by a client or a person: the volume indicator shows a change.
     pub(crate) fn set_audio(&mut self, volume: u16, muted: bool) {
+        let changed = (volume, muted) != (self.volume, self.muted);
+        self.set_level(volume, muted);
+        if changed && self.sink.is_some() {
+            self.show_volume();
+        }
+    }
+
+    /// Volume and mute, without the indicator: the overlay's own mutes.
+    fn set_level(&mut self, volume: u16, muted: bool) {
         self.volume = volume;
         self.muted = muted;
         self.mark(Mark::Audio);

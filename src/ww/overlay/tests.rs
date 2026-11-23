@@ -2,7 +2,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use exact_units::Fixed;
 use ww_niri_api::{
-    Anchor, At, Backdrop, CardOwned, ContentOwned, ItemOwned, OverlayError, PlaceOwned, Px,
+    Anchor, At, BackdropOwned, CardOwned, ContentOwned, ItemOwned, OverlayError, PlaceOwned, Px,
     SurfaceOwned, TextSize, WindowId,
 };
 
@@ -25,7 +25,11 @@ fn cover(priority: u8, lasts_ms: u32) -> ItemOwned {
             at: At::Fill,
         },
         content: ContentOwned::Card(card()),
-        backdrop: Backdrop { blur: 2, dim: 65 },
+        backdrop: BackdropOwned {
+            blur: 2,
+            dim: 65,
+            ..BackdropOwned::default()
+        },
         priority,
         lasts: Some(Fixed::new(lasts_ms)),
         mute: false,
@@ -48,7 +52,11 @@ fn text(priority: u8) -> ItemOwned {
             text: "Переключаю выход".to_owned(),
             size: TextSize::Medium,
         },
-        backdrop: Backdrop { blur: 0, dim: 60 },
+        backdrop: BackdropOwned {
+            blur: 0,
+            dim: 60,
+            ..BackdropOwned::default()
+        },
         priority,
         lasts: None,
         mute: false,
@@ -63,7 +71,8 @@ fn look(content: ContentOwned, until: Option<Instant>) -> Look {
         priority: 0,
         at: At::Fill,
         content,
-        backdrop: Backdrop::default(),
+        backdrop: BackdropOwned::default(),
+        image: None,
         until,
         since: Instant::now(),
         drawn: Default::default(),
@@ -363,4 +372,83 @@ fn shown_reports_a_drawn_put_once_to_its_owner() {
     assert_eq!(o.take_shown(), []);
     render::mark_drawn(&o.on_output("DP-1", true), RenderTarget::Output);
     assert_eq!(o.take_shown(), [(7, id)]);
+}
+
+#[test]
+fn show_only_hides_what_it_does_not_match() {
+    use ww_niri_api::{Band, ShowOnlyOwned};
+
+    let mut o = Overlay::default();
+    let end = Instant::now() + Duration::from_secs(1);
+    let cover_id = o.put(1, "ad", W1, cover(150, 1000), Some(end)).unwrap();
+    let text_id = o.put(2, "status", W1, text(200), None).unwrap();
+    let clock_id = o.put(2, "clock", W1, text(10), None).unwrap();
+    assert_eq!(o.on_window(1).len(), 3);
+
+    let filter = ShowOnlyOwned {
+        bands: vec![Band {
+            lowest: 192,
+            highest: 255,
+        }],
+        keys: vec!["clock".to_owned()],
+        ids: Vec::new(),
+    };
+    o.set_show_only(Some(filter.clone()));
+    assert_eq!(o.show_only(), Some(&filter));
+    let drawn: Vec<u64> = o.on_window(1).iter().map(|l| l.id).collect();
+    assert_eq!(drawn, [text_id, clock_id]);
+    let hidden: Vec<(u64, bool)> = (o.list(1).iter()).map(|i| (i.id.0, i.hidden)).collect();
+    assert_eq!(
+        hidden,
+        [(text_id, false), (cover_id, true), (clock_id, false)]
+    );
+
+    // By id; a hidden item still ends at its time.
+    o.set_show_only(Some(ShowOnlyOwned {
+        ids: vec![ItemId(cover_id)],
+        ..ShowOnlyOwned::default()
+    }));
+    assert_eq!(o.on_window(1)[0].id, cover_id);
+    o.set_show_only(Some(ShowOnlyOwned::default()));
+    assert!(o.on_window(1).is_empty());
+    assert_eq!(o.lift_due(end), [cover_id]);
+
+    o.set_show_only(None);
+    assert_eq!(o.on_window(1).len(), 2);
+}
+
+#[test]
+fn a_fill_image_comes_from_the_backgrounds_folder() {
+    let mut item = text(0);
+    item.backdrop.fill = FillOwned::Image("sky.png".to_owned());
+    let mut o = Overlay::default();
+    // No folder: no images.
+    assert_eq!(
+        o.put(1, "a", W1, item.clone(), None),
+        Err(OverlayError::NoSuchImage)
+    );
+
+    let dir = std::env::temp_dir().join(format!("ww-overlay-fill-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    o.backgrounds = Some(dir.clone());
+    assert_eq!(
+        o.put(1, "a", W1, item.clone(), None),
+        Err(OverlayError::NoSuchImage)
+    );
+    let mut encoder = png::Encoder::new(std::fs::File::create(dir.join("sky.png")).unwrap(), 2, 1);
+    encoder.set_color(png::ColorType::Rgb);
+    encoder.set_depth(png::BitDepth::Eight);
+    let mut writer = encoder.write_header().unwrap();
+    writer.write_image_data(&[0, 0, 255, 255, 0, 0]).unwrap();
+    writer.finish().unwrap();
+
+    o.put(1, "a", W1, item.clone(), None).unwrap();
+    o.put(2, "a", W1, item, None).unwrap();
+    let looks = o.on_window(1);
+    let images: Vec<&Rc<image::Image>> = looks.iter().map(|l| l.image.as_ref().unwrap()).collect();
+    // Read once for both items.
+    assert!(Rc::ptr_eq(images[0], images[1]));
+    assert_eq!(&images[0].pixels.data()[..4], &[255, 0, 0, 255]);
+    std::fs::remove_dir_all(&dir).unwrap();
 }
