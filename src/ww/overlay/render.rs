@@ -7,7 +7,7 @@
 //! changed. Cheap on purpose: the copy has a sixteenth of the pixels.
 //!
 //! Each line is a texture of its own, kept per item and drawn again only when its text or size
-//! changes: once a second for a countdown, once a minute for a clock.
+//! changes: once a second for a countdown or a progress, once a minute for a clock.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -34,6 +34,7 @@ use crate::render_helpers::offscreen::{OffscreenBuffer, OffscreenData};
 use crate::render_helpers::primary_gpu_texture::PrimaryGpuTextureRenderElement;
 use crate::render_helpers::solid_color::{SolidColorBuffer, SolidColorRenderElement};
 use crate::render_helpers::texture::{TextureBuffer, TextureRenderElement};
+use crate::render_helpers::RenderTarget;
 
 /// A cover's window copy is rendered at this part of the output scale before the blur.
 const DOWNSCALE: f64 = 0.25;
@@ -110,6 +111,7 @@ fn clock_style(size: TextSize) -> Style {
 
 const NOTICE_TITLE: Style = style(56., true, TEXT_COLOR);
 const NOTICE_BODY: Style = style(40., false, QUIET_COLOR);
+const PROGRESS_ELAPSED: Style = style(48., true, CLOCK_COLOR);
 
 /// An element of the overlay, front to back.
 pub enum OverlayElement {
@@ -208,6 +210,11 @@ fn wants(look: &Look, now: Instant) -> Vec<Want> {
             wants.push(Want::new(title.clone(), NOTICE_TITLE));
             wants.extend(body.clone().map(|b| Want::new(b, NOTICE_BODY)));
         }
+        ContentOwned::Progress { title, detail } => {
+            wants.push(Want::new(title.clone(), NOTICE_TITLE));
+            wants.extend(detail.clone().map(|d| Want::new(d, NOTICE_BODY)));
+            wants.extend(look.elapsed(now).map(|t| Want::new(t, PROGRESS_ELAPSED)));
+        }
         // Refused at `put`.
         ContentOwned::Unknown(_) => {}
     }
@@ -242,6 +249,16 @@ pub type WindowRender<'a> = &'a mut dyn FnMut(
     &mut GlesRenderer,
     Scale<f64>,
 ) -> Vec<LayoutElementRenderElement<GlesRenderer>>;
+
+/// Marks `looks` drawn when `target` is the screen; frames for a screencast or a screenshot
+/// show nobody the item.
+pub fn mark_drawn(looks: &[Rc<Look>], target: RenderTarget) {
+    if target == RenderTarget::Output {
+        for look in looks {
+            look.drawn.set(true);
+        }
+    }
+}
 
 impl OverlayRender {
     /// Draws `looks`, front to back, on `area`; `window` renders the window under them, `None`

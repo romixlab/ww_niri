@@ -208,6 +208,7 @@ fn ad_cover(on: ww_niri_api::SurfaceOwned, lasts_ms: u32, mute: bool) -> ww_niri
         lasts: Some(Fixed::new(lasts_ms)),
         mute,
         dismissible: true,
+        report_shown: false,
     }
 }
 
@@ -295,5 +296,33 @@ fn overlay_items_reach_the_tv_and_lift_with_the_connection() {
         assert!(!fake.audio().1);
         super::connected(&tv).await;
         assert!(ended.try_recv().is_err());
+    });
+}
+
+#[test]
+fn the_owner_alone_hears_its_item_shown() {
+    use ww_niri_api::{SurfaceOwned, WindowId};
+
+    let fake = fake();
+    run(async {
+        let tv = connect(&fake).await;
+        let other = connect(&fake).await;
+        let (mut shown, mut theirs) = (tv.overlay_shown(), other.overlay_shown());
+        let window = SurfaceOwned::Window(WindowId(2));
+        fake.advance(Duration::from_millis(1500));
+        let mut cover = ad_cover(window.clone(), 60_000, false);
+        cover.report_shown = true;
+        tv.overlay().put("ad".to_owned(), cover).await.unwrap();
+        let id = fake.overlay()[0].id;
+        let got = super::soon("the item shows", shown.recv()).await.unwrap();
+        assert_eq!((got.id, got.at.get()), (id, 1_500_000));
+        // Without `report_shown`, nothing.
+        tv.overlay()
+            .put("quiet".to_owned(), ad_cover(window, 60_000, false))
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(shown.try_recv().is_err());
+        assert!(theirs.try_recv().is_err(), "only the owner hears it");
     });
 }

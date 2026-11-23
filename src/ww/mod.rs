@@ -74,6 +74,9 @@ pub struct WwServer {
     /// What each output keeps to draw its items, by connector name.
     overlay_render:
         std::cell::RefCell<std::collections::HashMap<String, overlay::render::OverlayRender>>,
+    /// Items to report shown, as (owner, id), by connector name: drawn in the frame queued on
+    /// that output, waiting for its presentation.
+    overlay_queued: std::collections::HashMap<String, Vec<(u64, u64)>>,
 }
 
 /// What every connection shares: the ww side's events, the browser slots, the players and the
@@ -172,6 +175,7 @@ impl WwServer {
             overlay: overlay::Overlay::default(),
             overlay_timer: None,
             overlay_render: Default::default(),
+            overlay_queued: Default::default(),
         };
         ww.reload(event_loop);
 
@@ -194,16 +198,19 @@ impl WwServer {
         self.services.clone()
     }
 
-    /// Draws the overlay's items on `output`, front to back; `focused`: it is the focused one.
+    /// Draws the overlay's items on `output`, front to back, for `target`; `focused`: it is
+    /// the focused one.
     pub fn render_output(
         &self,
         renderer: &mut smithay::backend::renderer::gles::GlesRenderer,
         output: &smithay::output::Output,
+        target: crate::render_helpers::RenderTarget,
         focused: bool,
         push: &mut dyn FnMut(overlay::render::OverlayElement),
     ) {
         let name = output.name();
         let looks = self.overlay.on_output(&name, focused);
+        overlay::render::mark_drawn(&looks, target);
         let mut renders = self.overlay_render.borrow_mut();
         if looks.is_empty() {
             renders.remove(&name);
@@ -220,6 +227,23 @@ impl WwServer {
             .entry(name)
             .or_default()
             .render(renderer, &looks, area, None, push);
+    }
+
+    /// The frame just rendered for `output` is queued: the items it drew wait for its
+    /// presentation.
+    pub fn overlay_frame_queued(&mut self, output: &smithay::output::Output) {
+        let shown = self.overlay.take_shown();
+        if !shown.is_empty() {
+            (self.overlay_queued.entry(output.name()).or_default()).extend(shown);
+        }
+    }
+
+    /// The frame queued on `output` reached the screen at `at`, on `CLOCK_MONOTONIC`: the
+    /// owners of the items it drew first hear of it.
+    pub fn overlay_presented(&mut self, output: &smithay::output::Output, at: Duration) {
+        if let Some(shown) = self.overlay_queued.remove(&output.name()) {
+            overlay::shown(&self.services.hub, &shown, at);
+        }
     }
 
     fn check_config(&mut self, event_loop: &LoopHandle<'static, State>) {

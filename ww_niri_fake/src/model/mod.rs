@@ -53,6 +53,8 @@ pub(crate) enum Mark {
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Out {
     Event(EventOwned),
+    /// An event for one connection alone, by its holder id.
+    EventTo(u64, EventOwned),
     Mark(Mark),
 }
 

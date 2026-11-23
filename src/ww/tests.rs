@@ -1077,6 +1077,7 @@ fn ad_cover(window: u64, lasts_ms: u32, mute: bool) -> ItemOwned {
         lasts: Some(exact_units::Millis::new(lasts_ms)),
         mute,
         dismissible: true,
+        report_shown: false,
     }
 }
 

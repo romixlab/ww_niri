@@ -384,6 +384,8 @@ pub struct Item<'i> {
     pub mute: bool,
     /// Any connection may [Overlay::dismiss] it.
     pub dismissible: bool,
+    /// The owner hears [Event::OverlayShown] for the first frame that draws this put.
+    pub report_shown: bool,
 }
 
 /// A surface and where on it.
@@ -446,6 +448,12 @@ pub enum Content<'i> {
     Notice {
         title: &'i str,
         body: Option<&'i str>,
+    },
+    /// A bold title, a smaller detail and the time since the item's first put as `m:ss`,
+    /// counting up once a second. A put of the same key keeps the start.
+    Progress {
+        title: &'i str,
+        detail: Option<&'i str>,
     },
 }
 
@@ -512,6 +520,28 @@ pub const ITEMS_PER_OWNER_MAX: usize = 16;
 pub const ITEMS_MAX: usize = 128;
 
 #[cfg(feature = "std")]
+impl ContentOwned {
+    /// The texts it draws; `None` for a content this side does not know.
+    fn texts(&self) -> Option<[Option<&str>; 3]> {
+        Some(match self {
+            Self::Card(card) => [
+                Some(card.title.as_str()),
+                card.countdown.as_deref(),
+                card.footer.as_deref(),
+            ],
+            Self::Text { text, .. } => [Some(text.as_str()), None, None],
+            Self::Clock { .. } => [None; 3],
+            Self::Notice {
+                title,
+                body: detail,
+            }
+            | Self::Progress { title, detail } => [Some(title.as_str()), detail.as_deref(), None],
+            Self::Unknown(_) => return None,
+        })
+    }
+}
+
+#[cfg(feature = "std")]
 impl ItemOwned {
     /// Checks the item and its `key` against the limits; answers how long it lasts.
     ///
@@ -524,20 +554,9 @@ impl ItemOwned {
         let lasts = self
             .lasts
             .map(|l| core::time::Duration::from_millis(u64::from(l.get())));
-        let texts: [Option<&str>; 4] = match &self.content {
-            ContentOwned::Card(card) => [
-                Some(card.title.as_str()),
-                card.countdown.as_deref(),
-                card.footer.as_deref(),
-                None,
-            ],
-            ContentOwned::Text { text, .. } => [Some(text.as_str()), None, None, None],
-            ContentOwned::Clock { .. } => [None; 4],
-            ContentOwned::Notice { title, body } => {
-                [Some(title.as_str()), body.as_deref(), None, None]
-            }
-            // From a newer client: this side can't draw it.
-            ContentOwned::Unknown(_) => return Err(OverlayError::BadArgument),
+        // From a newer client: this side can't draw it.
+        let Some(texts) = self.content.texts() else {
+            return Err(OverlayError::BadArgument);
         };
         let unknown_place = matches!(self.place.on, SurfaceOwned::Unknown(_))
             || matches!(
@@ -702,6 +721,12 @@ pub enum Event<'i> {
     },
     /// The client fell behind and missed events: list everything again.
     Resync,
+    /// The first frame that drew an item put with `report_shown`; only its owner hears it.
+    OverlayShown {
+        id: ItemId,
+        /// When the frame reached the screen, on the compositor's `CLOCK_MONOTONIC`.
+        at: Micros<u64>,
+    },
 }
 
 /// Logical pixels, as niri lays the outputs out.

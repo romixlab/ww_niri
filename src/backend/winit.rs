@@ -366,13 +366,20 @@ impl Winit {
 
             self.backend.submit(Some(damage)).unwrap();
 
+            let presented = get_monotonic_time();
             let mut presentation_feedbacks = niri.take_presentation_feedbacks(output, &res.states);
             presentation_feedbacks.presented::<_, smithay::utils::Monotonic>(
-                get_monotonic_time(),
+                presented,
                 Refresh::Unknown,
                 0,
                 wp_presentation_feedback::Kind::empty(),
             );
+
+            #[cfg(feature = "ww")]
+            {
+                niri.ww.overlay_frame_queued(output);
+                niri.ww.overlay_presented(output, presented);
+            }
 
             rv = RenderResult::Submitted;
         } else {

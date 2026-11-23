@@ -140,6 +140,7 @@ fn a_put_replaces_the_one_before_of_its_key() {
             lasts: None,
             mute: false,
             dismissible: false,
+            report_shown: false,
         }),
     };
     let mut lanes = Lanes::default();

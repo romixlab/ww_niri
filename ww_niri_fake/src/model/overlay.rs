@@ -1,14 +1,15 @@
 //! The overlay's items, each owned by the connection that put it up: put, changed, lifted at
 //! their end, on the owner's `lift`, on a `dismiss`, when the owner's connection ends or when
 //! their window closes. While one asks for `mute` the sink is muted, and it gets its earlier
-//! mute back when the last such item lifts.
+//! mute back when the last such item lifts. A put with `report_shown` is shown at once: its
+//! owner hears `OverlayShown` at the fake's clock.
 
 use ww_niri_api::{
     EventOwned, ItemEnd, ItemId, ItemInfoOwned, ItemOwned, OverlayError, SurfaceOwned, WindowId,
     ITEMS_MAX, ITEMS_PER_OWNER_MAX,
 };
 
-use super::Model;
+use super::{Model, Out};
 
 /// An overlay item as the fake has it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -70,6 +71,7 @@ impl Model {
             self.now_us
                 + u64::try_from(lasts.as_micros()).expect("a checked item lasts 15 min at most")
         });
+        let report = item.report_shown;
         self.overlay.insert(
             id.0,
             OverlayItem {
@@ -82,6 +84,10 @@ impl Model {
             },
         );
         self.hold_mute();
+        if report {
+            let at = exact_units::Fixed::new(self.now_us);
+            self.push(Out::EventTo(owner, EventOwned::OverlayShown { id, at }));
+        }
         Ok(id)
     }
 

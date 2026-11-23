@@ -4672,6 +4672,11 @@ impl Niri {
             }
         }
 
+        #[cfg(feature = "ww")]
+        if ctx.target == RenderTarget::Output {
+            self.ww.overlay.frame_started();
+        }
+
         self.fill_xray_elements(ctx.as_gles(), output);
 
         // Reborrow to shorten lifetime to be able to put in xray.
@@ -4787,9 +4792,11 @@ impl Niri {
             use crate::ww::overlay::render::OverlayElement;
 
             let focused = self.layout.active_output() == Some(output);
+            let target = ctx.target;
             self.ww.render_output(
                 ctx.as_gles().renderer,
                 output,
+                target,
                 focused,
                 &mut |elem| match elem {
                     OverlayElement::Texture(elem) => push(elem.into()),

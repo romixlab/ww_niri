@@ -15,7 +15,7 @@ use crate::api::NiriClient;
 use crate::command::{Command, PlaybackAction, PlaybackTarget};
 use crate::config::{Address, Config, HOLD_LIMIT_MAX, HOLD_LIMIT_MIN};
 use crate::error::{StartError, TvError};
-use crate::model::{self, OverlayEnded, Shared};
+use crate::model::{self, OverlayEnded, OverlayShown, Shared};
 use crate::queue::{self, Failed, Request};
 use crate::runtime;
 use crate::snapshot::{ConnectionState, Snapshot};
@@ -142,6 +142,12 @@ impl Tv {
     /// link to tell was gone. A slow reader misses the oldest and gets `Lagged`.
     pub fn overlay_ended(&self) -> broadcast::Receiver<OverlayEnded> {
         self.inner.shared.overlay_ended.subscribe()
+    }
+
+    /// This client's overlay items put with `report_shown`, each when the first frame that drew
+    /// the put reached the TV's screen. A slow reader misses the oldest and gets `Lagged`.
+    pub fn overlay_shown(&self) -> broadcast::Receiver<OverlayShown> {
+        self.inner.shared.overlay_shown.subscribe()
     }
 
     // ---- commands ----

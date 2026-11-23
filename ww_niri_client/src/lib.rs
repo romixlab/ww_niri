@@ -37,7 +37,7 @@ mod tv;
 pub use command::{Command, PlaybackAction, PlaybackTarget};
 pub use config::{Address, Config, HOLD_LIMIT_MAX, HOLD_LIMIT_MIN, OnChange};
 pub use error::{StartError, TvError};
-pub use model::OverlayEnded;
+pub use model::{OverlayEnded, OverlayShown};
 pub use motion::{MotionAddress, MotionSender};
 pub use queue::Failed;
 pub use snapshot::{AudioState, ConnectionState, Playback, PlayerState, SlotState, Snapshot};

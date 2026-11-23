@@ -70,13 +70,13 @@ impl Sources {
         }
     }
 
-    /// Follows niri's events while the client has the stream open.
-    async fn follow_events(&mut self, events_open: bool, hub: &Hub, run: &Run) {
+    /// Follows niri's events while connection `holder` has the stream open.
+    async fn follow_events(&mut self, events_open: bool, holder: u64, hub: &Hub, run: &Run) {
         match (&self.events, events_open) {
             (Events::Off, true) => {
                 self.events = Events::On {
                     niri: call(run, |host| host.subscribe_events()).await.flatten(),
-                    ww: hub.subscribe(),
+                    ww: hub.subscribe(holder),
                 };
             }
             (Events::On { .. }, false) => self.events = Events::Off,
@@ -200,8 +200,10 @@ impl wire_weaver_server::Backend for Server {
         medium: (),
         now: ww_device::Instant,
     ) {
-        let (events_open, hub, run) = (self.events_open, self.hub.clone(), self.run.clone());
-        self.sources.follow_events(events_open, &hub, &run).await;
+        let (hub, run) = (self.hub.clone(), self.run.clone());
+        (self.sources)
+            .follow_events(self.events_open, self.holder, &hub, &run)
+            .await;
         if let Some(next) = self.due.take() {
             let events = self.handle(next).await;
             if self.events_open {
