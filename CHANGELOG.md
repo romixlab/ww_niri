@@ -4,6 +4,10 @@ Changes of ww_niri on top of upstream niri. Upstream's own changes are in its re
 
 ## [Unreleased]
 
+### Added
+
+- systemd watchdog: niri sends `WATCHDOG=1` from its main loop when the unit sets `WatchdogSec=`.
+
 ## [26.23.0] - 2026-11-22
 
 ### Changed

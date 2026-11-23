@@ -38,6 +38,7 @@ mod server;
 #[cfg(test)]
 mod tests;
 mod uinput;
+pub mod watchdog;
 
 pub use audio::Audio;
 pub use browsers::Browsers;

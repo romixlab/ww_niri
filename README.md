@@ -150,4 +150,5 @@ Control API clients put items on one layer above the windows: covers, texts, a c
 - `just deploy`: pulls `--ff-only` (refuses on local changes), builds `--profile deploy`, installs through binkeep (`deploy/binkeep.toml`), checks `niri --version` against HEAD.
 - It never restarts niri: niri is the session compositor, and a restart closes every window on screen.
 - The TV (alma-2tv) gets a new niri by `just deploy` there, then a session restart at a moment the person picks (log out and in, or reboot).
+- Watchdog: with `Type=notify`, `NotifyAccess=main` and `WatchdogSec=` in its unit, niri beats from its main loop every half of `WatchdogSec`; a stuck loop gets it killed and, with `Restart=on-failure`, restarted. Set `WatchdogSec=` only once a niri with the heartbeat runs: an older one is killed after it.
 - The PC's own binkeep list (`~/.config/binkeep/binkeep.toml`) needs the `niri` set from `deploy/binkeep.toml` once.

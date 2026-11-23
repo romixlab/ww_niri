@@ -252,6 +252,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if let Err(err) = notify_fd() {
             warn!("error notifying fd: {err:?}");
         }
+
+        // Beat systemd's watchdog from the main loop, so a stuck loop gets niri restarted.
+        #[cfg(feature = "ww")]
+        niri::ww::watchdog::start(&event_loop.handle());
     }
 
     watcher::setup(&mut state, &config_path, config_includes);

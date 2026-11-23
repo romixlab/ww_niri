@@ -129,8 +129,10 @@ pub fn child_command(command: impl AsRef<OsStr>) -> Command {
         process.env_remove("RUST_LIB_BACKTRACE");
     }
 
-    // Remove the systemd NOTIFY_SOCKET variable.
+    // Remove the systemd NOTIFY_SOCKET and watchdog variables.
     process.env_remove("NOTIFY_SOCKET");
+    process.env_remove("WATCHDOG_USEC");
+    process.env_remove("WATCHDOG_PID");
 
     // Set DISPLAY if needed.
     let display = CHILD_DISPLAY.read().unwrap();
