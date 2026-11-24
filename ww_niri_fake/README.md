@@ -35,6 +35,8 @@ tv.advance(Duration::from_secs(1)); // the slot's window maps: Running
 | `rebind` | Moves both paths, as ww_niri moves its listeners to a new address: open connections go on, the old paths refuse new clients. |
 | `resync` | Sends `Resync` on the `events` stream and refreshes every observer. |
 | `open_window`, `close_window`, `set_audio`, `set_sink` | Changes made on the TV itself. |
+| `mount`, `unmount`, `mount_presence` | The `ext` mount slots, as `mount` lines of ww.kdl: a program on a Unix socket reached through the TV's link. |
+| `Options::socket` | Serves the fake on a Unix socket too, as a program to mount (in another fake or in ww_niri). |
 
 `motion_path` serves the same API on a simulated UDP device, as ww_niri serves it over UDP beside the WebSocket: for `ww_niri_client`'s `MotionSender`. It takes up to 8 hosts at once, as ww_niri does; the knobs act on it too.
 
