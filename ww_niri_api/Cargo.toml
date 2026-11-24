@@ -13,8 +13,9 @@ wire = "w1.0"
 
 [features]
 default = ["std"]
-std = ["ww_api/std", "ww_si/std"]
+std = ["ww_api/std", "ww_keyed/std", "ww_si/std"]
 
 [dependencies]
 ww_api = { git = "https://github.com/vhrdtech/wire_weaver", default-features = false }
+ww_keyed = { git = "https://github.com/vhrdtech/ww_base", default-features = false }
 ww_si = { git = "https://github.com/vhrdtech/ww_base", default-features = false, features = ["time", "dimensionless", "u16", "u32", "u64", "i64"] }

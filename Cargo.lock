@@ -1008,6 +1008,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "doctest-file"
+version = "1.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c2db04e74f0a9a93103b50e90b96024c9b2bdca8bce6a632ec71b88736d3d359"
+
+[[package]]
 name = "document-features"
 version = "0.2.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2027,6 +2033,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "interprocess"
+version = "2.4.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2f243523bf126ddfc5cddf87a8193a941bfca29476ce3c842e24c916cf5a22ec"
+dependencies = [
+ "doctest-file",
+ "futures-core",
+ "libc",
+ "recvmsg",
+ "tokio",
+ "widestring",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "inventory"
 version = "0.3.25"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2679,7 +2700,10 @@ dependencies = [
  "ww_client_server",
  "ww_device",
  "ww_dns_sd",
+ "ww_keyed",
  "ww_niri_api",
+ "ww_niri_fake",
+ "ww_self",
  "ww_stream",
  "xcursor",
  "xshell",
@@ -3486,6 +3510,12 @@ dependencies = [
  "crossbeam-deque",
  "crossbeam-utils",
 ]
+
+[[package]]
+name = "recvmsg"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d3edd4d5d42c92f0a659926464d4cce56b562761267ecf0f469d85b7de384175"
 
 [[package]]
 name = "redox_event"
@@ -4999,6 +5029,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "widestring"
+version = "1.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "72069c3113ab32ab29e5584db3c6ec55d416895e60715417b5b883a357c3e471"
+
+[[package]]
 name = "winapi"
 version = "0.3.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5565,12 +5601,16 @@ dependencies = [
  "futures-channel",
  "futures-util",
  "libc",
+ "rustix 1.1.6",
+ "tokio",
+ "tokio-util",
  "wire_weaver",
  "wire_weaver_client",
  "ww_byte_stream",
  "ww_client_server",
  "ww_device",
  "ww_link",
+ "ww_local_socket",
  "ww_self",
 ]
 
@@ -5721,7 +5761,14 @@ name = "ww_local_socket"
 version = "0.6.0"
 source = "git+https://github.com/vhrdtech/wire_weaver#b274db32a308fee68c387fd52c6d64cf92dec2bd"
 dependencies = [
+ "futures-util",
+ "interprocess",
  "libc",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "widestring",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5737,6 +5784,7 @@ name = "ww_niri_api"
 version = "0.1.0"
 dependencies = [
  "ww_api",
+ "ww_keyed",
  "ww_si",
 ]
 
@@ -5785,7 +5833,10 @@ dependencies = [
  "wire_weaver_server",
  "ww_client_server",
  "ww_device",
+ "ww_keyed",
+ "ww_local_socket",
  "ww_niri_api",
+ "ww_self",
  "ww_stream",
 ]
 

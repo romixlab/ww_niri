@@ -37,6 +37,10 @@ pub trait WwNiri {
     /// Windows, outputs, browsers and players coming and going, in order. After
     /// [Event::Resync] the client lists again.
     stream!(events: Event<'i>);
+
+    /// Other local programs' APIs, by name, as `mount` lines of ww.kdl name them: each slot's
+    /// `presence` says whether its program is up, its `api` is that program's own API.
+    mounts!(ext);
 }
 
 #[ww_trait]

@@ -4,6 +4,9 @@
 use std::rc::Rc;
 
 use wire_weaver::prelude::*;
+use wire_weaver::ww_api::mount::{MountNameOwned, MountPresenceOwned};
+use wire_weaver_server::mount::Forwarder;
+use ww_client_server::mount::{MountAnswer, MountRequest};
 use ww_client_server::ResourceIndex;
 use ww_stream::totals::TotalsRx;
 
@@ -11,6 +14,7 @@ use super::follow::{Next, Sources};
 use super::host::{call, Run, WwHost};
 use super::hub::{Hub, Mark};
 use super::input::Input;
+use super::mounts::{Connector, MountClock};
 use super::players::Action;
 use super::{Audio, Browsers, Players, Services};
 
@@ -61,11 +65,28 @@ pub struct Server {
     pub due: Option<Next>,
     /// What observed properties are serialized into.
     pub observe_buf: Vec<u8>,
+    /// The `ext` mount slots.
+    pub ext: Rc<super::mounts::ExtMounts>,
+    /// This connection's links to the mounted programs.
+    pub forwarder: Forwarder<Connector, MountClock>,
+    /// The `ext` indices as `valid_indices` last answered them.
+    ext_valid: Vec<UNib32>,
+    /// The `ext` indices this client knows of: listed when it connected, or announced since.
+    pub ext_known: std::collections::BTreeSet<u32>,
 }
 
 impl Server {
-    pub fn new(run: Run, peer: Peer, services: Rc<Services>) -> Self {
+    pub fn new(
+        run: Run,
+        peer: Peer,
+        services: Rc<Services>,
+        forwarder: Forwarder<Connector, MountClock>,
+    ) -> Self {
         Self {
+            ext_known: services.ext.indices().iter().map(|index| index.0).collect(),
+            ext: services.ext.clone(),
+            forwarder,
+            ext_valid: Vec::new(),
             observe: api_impl::ObserveState::new(Default::default()),
             input: Input::new(run.clone(), services.io.clone()),
             run,
@@ -998,6 +1019,52 @@ impl Server {
         key: String,
     ) -> RpcResult<InputRes<'_>> {
         RpcResult::Ready(self.input.key_up(&key).await.map_err(Into::into))
+    }
+
+    fn valid_indices_root_ext(&mut self) -> ValidIndices<'_> {
+        self.ext_valid = self.ext.indices();
+        ValidIndices::List(RefVec::Slice {
+            slice: &self.ext_valid,
+        })
+    }
+
+    async fn get_ext_presence(
+        &mut self,
+        _cx: &mut Context<'_, impl EventOut>,
+        index_chain: [ResourceIndex; 1],
+    ) -> GetResult<MountPresenceOwned, CommonError<'_>> {
+        Value(self.ext.presence(index_chain[0].get().0))
+    }
+
+    async fn ext_request(
+        &mut self,
+        cx: &mut Context<'_, impl EventOut>,
+        _index_chain: [ResourceIndex; 1],
+        request: MountRequest<'_, '_>,
+    ) -> MountAnswer {
+        self.forwarder.forward(cx.call(), &request)
+    }
+
+    async fn ext_index_of(
+        &mut self,
+        _cx: &mut Context<'_, impl EventOut>,
+        key: MountNameOwned,
+    ) -> RpcResult<Option<UNib32>> {
+        Ready(self.ext.index_of(key.0.as_str()).map(UNib32))
+    }
+
+    async fn get_ext_key(
+        &mut self,
+        _cx: &mut Context<'_, impl EventOut>,
+        index_chain: [ResourceIndex; 1],
+    ) -> GetResult<MountNameOwned, CommonError<'_>> {
+        match self.ext.name_of(index_chain[0].get().0).map(MaxLen::new) {
+            Some(Ok(name)) => Value(MountNameOwned(name)),
+            // unmounted since the index check
+            _ => GetError(CommonError::WrongState {
+                reason: MaxLen::new_unchecked("unmounted"),
+            }),
+        }
     }
 
     /// Settings and send state of observed properties, for `Observe` requests and

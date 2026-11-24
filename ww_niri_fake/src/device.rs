@@ -8,7 +8,9 @@ use std::sync::Arc;
 
 use tokio::sync::watch;
 use wire_weaver_client::in_process::{self, TokioClock};
+use wire_weaver_server::byte_stream::{listen, PreambleFraming};
 use wire_weaver_server::in_process::InProcessListener;
+use wire_weaver_server::local_socket::LocalSocketIncoming;
 use wire_weaver_server::udp::UdpListener;
 use wire_weaver_server::{Accept, Accepted, Connection, Listener};
 use ww_device::MessageRx;
@@ -48,12 +50,16 @@ pub(crate) fn bound_path(base: &str, binds: u32) -> String {
 
 /// Serves both paths until the fake is dropped, again after each restart.
 pub(crate) async fn run(shared: Arc<Shared>, path: String, motion_path: String) {
-    let server = wire_weaver_server::Server::new(TokioClock::new());
-    let make_main = |_: &Connection| {
+    let clock = TokioClock::new();
+    let server = wire_weaver_server::Server::new(clock).mounts(shared.ext.routes());
+    let make_main = |connection: &Connection| {
         shared.links_up.fetch_add(1, Ordering::Relaxed);
-        Server::new(shared.clone())
+        Server::new(shared.clone(), connection, clock)
     };
-    let make_motion = |_: &Connection| Server::new(shared.clone());
+    let make_motion = |connection: &Connection| Server::new(shared.clone(), connection, clock);
+    let make_socket = |connection: &Connection| Server::new(shared.clone(), connection, clock);
+    let mounts = shared.ext.mounts.clone();
+    tokio::spawn(async move { mounts.run(clock).await });
     loop {
         let control = shared.control();
         if control.stop {
@@ -65,7 +71,33 @@ pub(crate) async fn run(shared: Arc<Shared>, path: String, motion_path: String) 
         let motion = Paths::new(&shared, 1, motion_path.clone(), |path| {
             UdpListener::<_, MOTION_PEERS>::new(in_process::udp_device(path), MESSAGE_LEN_MAX)
         });
-        let (main, motion, ()) = tokio::join!(
+        let socket = async {
+            let Some(path) = &shared.socket else {
+                return;
+            };
+            // the fake's own socket from before its restart, or from an earlier fake of the test
+            let listener = match ww_local_socket::listen(path, true) {
+                Ok(listener) => listener,
+                Err(err) => panic!("the fake TV listens on {path:?}: {err}"),
+            };
+            let listener = listen(
+                LocalSocketIncoming::new(listener),
+                PreambleFraming::new("ww_niri_fake", MESSAGE_LEN_MAX),
+                clock,
+            );
+            let served = server
+                .serve(
+                    link_config(&control),
+                    listener,
+                    make_socket,
+                    stopped(&shared, control.restarts),
+                )
+                .await;
+            if let Err(err) = served {
+                panic!("the fake TV serves on {path:?}: {err:?}");
+            }
+        };
+        let (main, motion, (), ()) = tokio::join!(
             server.serve(
                 link_config(&control),
                 main,
@@ -79,6 +111,7 @@ pub(crate) async fn run(shared: Arc<Shared>, path: String, motion_path: String) 
                 stopped(&shared, control.restarts)
             ),
             tick(&shared, control.restarts),
+            socket,
         );
         if let Err(never) = main {
             match never {}

@@ -17,14 +17,18 @@ exact_units = { workspace = true, features = [
   "dimensionless",
 ] }
 futures-util = { workspace = true, features = ["std"] }
-tokio = { workspace = true, features = ["rt", "sync", "time", "macros"] }
+tokio = { workspace = true, features = ["rt", "sync", "time", "macros", "net"] }
 wire_weaver = { workspace = true, features = ["std"] }
 wire_weaver_client = { workspace = true, features = ["in_process"] }
 # the host server ww_niri runs: many connections, an end step for each, the UDP listener
-wire_weaver_server = { workspace = true, features = ["in_process", "udp"] }
+# local_socket: the mounted programs' sockets, and the fake's own with `Options::socket`
+wire_weaver_server = { workspace = true, features = ["in_process", "local_socket", "udp"] }
 ww_client_server = { workspace = true, features = ["std"] }
 ww_device.workspace = true
+ww_keyed = { workspace = true, features = ["std"] }
+ww_local_socket = { workspace = true, features = ["socket"] }
 ww_niri_api.workspace = true
+ww_self = { workspace = true, features = ["std"] }
 ww_stream = { workspace = true, features = ["std"] }
 
 [dev-dependencies]

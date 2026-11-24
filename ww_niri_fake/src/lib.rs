@@ -26,6 +26,7 @@ mod clock;
 mod device;
 mod keys;
 mod model;
+mod mounts;
 mod record;
 mod server;
 
@@ -66,6 +67,9 @@ pub struct Options {
     /// API has to see the fake's shape is still the same, instead of every call being refused on
     /// wire w0, the design line. `None`, the default, reports the real `api_hash()`.
     pub api_hash: Option<wire_weaver::ww_version::ApiHashPair<'static>>,
+    /// Also serves the API on this Unix socket, as a program a ww_niri mounts at one of its
+    /// `ext` slots does: for the tests of mounts. The knobs don't act on it.
+    pub socket: Option<std::path::PathBuf>,
 }
 
 impl Default for Options {
@@ -78,6 +82,7 @@ impl Default for Options {
             start_delay: Duration::from_millis(500),
             pages_play: true,
             api_hash: None,
+            socket: None,
             info: InfoOwned {
                 niri_version: "fake".to_owned(),
                 ww_niri_version: "fake".to_owned(),
@@ -134,6 +139,10 @@ pub(crate) struct Shared {
     /// Signals a change of `bound`.
     bound_changed: Condvar,
     info: InfoOwned,
+    /// The `ext` mount slots.
+    pub(crate) ext: mounts::Ext,
+    /// [Options::socket].
+    socket: Option<std::path::PathBuf>,
 }
 
 /// A poisoned lock panics: the fake is broken past use.
@@ -256,6 +265,8 @@ impl FakeTv {
             bound: Mutex::new([None; 2]),
             bound_changed: Condvar::new(),
             info: options.info,
+            ext: mounts::Ext::new(),
+            socket: options.socket,
         });
         let motion_path = format!("{path}/motion");
         let thread = {
@@ -263,8 +274,10 @@ impl FakeTv {
             std::thread::Builder::new()
                 .name("ww_niri_fake".to_owned())
                 .spawn(move || {
+                    // io: the mounted programs' sockets and the fake's own
                     tokio::runtime::Builder::new_current_thread()
                         .enable_time()
+                        .enable_io()
                         .build()
                         .expect("a current-thread runtime can be made")
                         .block_on(device::run(shared, path, motion_path));
@@ -378,6 +391,37 @@ impl FakeTv {
     /// errors wait for it.
     pub fn fail_next(&self, method: &str, fail: Fail) -> Result<(), FailError> {
         self.shared.record().fail_next(method, fail)
+    }
+
+    /// Mounts the program serving on the Unix socket `socket` at `ext[name]`, as a `mount`
+    /// line of ww.kdl does: its `presence` turns `Up` once the TV reached it and learned its API,
+    /// and `Absent` while it is gone. A name mounted already keeps its index and takes the new
+    /// socket.
+    ///
+    /// # Panics
+    ///
+    /// When `name` is empty or longer than 64 bytes.
+    pub fn mount(&self, name: &str, socket: impl Into<std::path::PathBuf>) {
+        assert!(!name.is_empty(), "a mount name is not empty");
+        assert!(
+            name.len() <= mounts::MOUNT_NAME_LEN_MAX,
+            "a mount name is at most 64 bytes"
+        );
+        self.shared.ext.mount(name, socket.into());
+    }
+
+    /// Takes `ext[name]` away, as removing its `mount` line does; false when there was none.
+    pub fn unmount(&self, name: &str) -> bool {
+        self.shared.ext.unmount(name)
+    }
+
+    /// Whether the program at `ext[name]` is up: `None` when nothing is mounted there.
+    pub fn mount_presence(
+        &self,
+        name: &str,
+    ) -> Option<wire_weaver::ww_api::mount::MountPresenceOwned> {
+        let index = self.shared.ext.index_of(name)?;
+        Some(self.shared.ext.presence(index))
     }
 
     /// How many times a client's link came up on [FakeTv::path].

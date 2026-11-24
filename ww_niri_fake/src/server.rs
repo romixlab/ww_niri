@@ -1,5 +1,6 @@
 //! Handlers of `ww_niri_api::WwNiri` on the fake's model, one [Server] per connection.
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use exact_units::prefix::{Micro, Milli};
@@ -7,8 +8,13 @@ use exact_units::units::Second;
 use exact_units::{Fixed, Unbounded};
 use futures_util::FutureExt as _;
 use wire_weaver::prelude::*;
-use wire_weaver_server::{Lagged, Subscription};
+use wire_weaver::ww_api::mount::{MountNameOwned, MountPresenceOwned};
+use wire_weaver_client::in_process::TokioClock;
+use wire_weaver_server::mount::{Forwarder, LocalSocket, MountEvent};
+use wire_weaver_server::{Connection, Lagged, Subscription};
+use ww_client_server::mount::{MountAnswer, MountRequest};
 use ww_client_server::ResourceIndex;
+use ww_keyed::KeyEvent;
 use ww_niri_api::{
     BrowserErrorOwned, BrowserStateOwned, Button, Delta, InfoOwned, InputErrorOwned, ItemId,
     ItemInfoOwned, ItemOwned, LaunchErrorOwned, Launched, MediaErrorOwned, Modifiers, OutputOwned,
@@ -43,6 +49,12 @@ pub(crate) struct Server {
     pub(crate) events_open: bool,
     /// Where the `input.pointer.motion` writes are.
     motion: TotalsRx<Delta>,
+    /// This connection's links to the mounted programs.
+    forwarder: Forwarder<LocalSocket, TokioClock>,
+    /// The `ext` indices as `valid_indices` last answered them.
+    ext_valid: Vec<UNib32>,
+    /// The `ext` indices this client knows of: listed when it connected, or announced since.
+    ext_known: BTreeSet<u32>,
 }
 
 /// The API error a [Fail] stands for, when it is of this error's kind.
@@ -87,8 +99,11 @@ fn refused(reason: &'static str) -> CommonError<'static> {
 }
 
 impl Server {
-    pub(crate) fn new(shared: Arc<Shared>) -> Self {
+    pub(crate) fn new(shared: Arc<Shared>, connection: &Connection, clock: TokioClock) -> Self {
         Self {
+            forwarder: Forwarder::new(&shared.ext.mounts, connection, clock),
+            ext_valid: Vec::new(),
+            ext_known: shared.ext.indices().iter().map(|index| index.0).collect(),
             observe: api_impl::ObserveState::new(Default::default()),
             holder: shared.next_holder(),
             news: shared.news.subscribe(),
@@ -985,6 +1000,87 @@ impl Server {
         })
     }
 
+    fn valid_indices_root_ext(&mut self) -> ValidIndices<'_> {
+        self.ext_valid = self.shared.ext.indices();
+        ValidIndices::List(RefVec::Slice {
+            slice: &self.ext_valid,
+        })
+    }
+
+    async fn get_ext_presence(
+        &mut self,
+        _cx: &mut Context<'_, impl EventOut>,
+        index_chain: [ResourceIndex; 1],
+    ) -> GetResult<MountPresenceOwned, CommonError<'_>> {
+        Value(self.shared.ext.presence(index(index_chain)))
+    }
+
+    async fn ext_request(
+        &mut self,
+        cx: &mut Context<'_, impl EventOut>,
+        _index_chain: [ResourceIndex; 1],
+        request: MountRequest<'_, '_>,
+    ) -> MountAnswer {
+        self.forwarder.forward(cx.call(), &request)
+    }
+
+    async fn ext_index_of(
+        &mut self,
+        _cx: &mut Context<'_, impl EventOut>,
+        key: MountNameOwned,
+    ) -> RpcResult<Option<UNib32>> {
+        Ready(self.shared.ext.index_of(key.0.as_str()).map(UNib32))
+    }
+
+    async fn get_ext_key(
+        &mut self,
+        _cx: &mut Context<'_, impl EventOut>,
+        index_chain: [ResourceIndex; 1],
+    ) -> GetResult<MountNameOwned, CommonError<'_>> {
+        match self.shared.ext.name_of(index(index_chain)).map(MaxLen::new) {
+            Some(Ok(name)) => Value(MountNameOwned(name)),
+            // unmounted since the index check
+            _ => GetError(refused("unmounted")),
+        }
+    }
+
+    /// Observers of a slot's `presence` hear that it was mounted or that its program came or
+    /// went.
+    fn mount_changed(&mut self, change: &MountEvent) {
+        if let MountEvent::Mounted { api_path } | MountEvent::Presence { api_path } = change {
+            if let Some(index) = crate::mounts::index_of_path(api_path) {
+                self.mark_changed_ext_presence([UNib32(index).into()]);
+            }
+        }
+    }
+
+    /// Tells the client's `ext_keys` stream of the slots added and removed since it last heard,
+    /// compared with the table.
+    async fn announce_ext_keys(&mut self, out: &mut EventWriter<'_, impl MessageSink>) {
+        let now: BTreeSet<u32> = self.shared.ext.indices().iter().map(|i| i.0).collect();
+        if now == self.ext_known {
+            return;
+        }
+        let mut keys = Vec::new();
+        for &index in self.ext_known.difference(&now) {
+            keys.push(KeyEvent::Removed {
+                index: UNib32(index),
+            });
+        }
+        for &index in now.difference(&self.ext_known) {
+            if let Some(Ok(name)) = self.shared.ext.name_of(index).map(MaxLen::new) {
+                keys.push(KeyEvent::Added {
+                    index: UNib32(index),
+                    key: MountNameOwned(name),
+                });
+            }
+        }
+        self.ext_known = now;
+        for key in keys {
+            let _ = api_impl::stream_data_ser().ext_keys_send(&key, out).await;
+        }
+    }
+
     /// Settings and send state of observed properties, for `Observe` requests and
     /// `poll_properties`.
     fn observe_state(&mut self) -> &mut api_impl::ObserveState {
@@ -1044,21 +1140,31 @@ impl WireWeaverSharedApiBackend for Server {
 }
 
 impl wire_weaver_server::Backend for Server {
-    /// Cancel-safe: the subscription keeps what was not taken.
+    /// Cancel-safe: the subscription and the forwarder keep what was not taken.
     async fn wait(&mut self) {
-        if self.due.is_empty() {
-            match self.news.recv().await {
-                // The fanout lives as long as the fake.
-                None => std::future::pending().await,
-                news => self.take(news),
-            }
+        if !self.due.is_empty() {
+            return;
+        }
+        let news = tokio::select! {
+            news = self.news.recv() => news,
+            () = self.forwarder.wait() => return,
+        };
+        match news {
+            // The fanout lives as long as the fake.
+            None => std::future::pending().await,
+            news => self.take(news),
         }
     }
 
     fn next_wake(&mut self, now: ww_device::Instant) -> Option<ww_device::Instant> {
-        self.observe
+        let observe = (self.observe)
             .next_wake(now.as_micros())
-            .map(ww_device::Instant::from_micros)
+            .map(ww_device::Instant::from_micros);
+        observe.into_iter().chain(self.forwarder.next_wake()).min()
+    }
+
+    fn cancel(&mut self, seq: u32) {
+        self.forwarder.cancel(seq);
     }
 
     async fn poll(
@@ -1093,6 +1199,10 @@ impl wire_weaver_server::Backend for Server {
                 let _ = api_impl::stream_data_ser().events_send(event, out).await;
             }
         }
+        for change in self.forwarder.poll(out).await {
+            self.mount_changed(&change);
+        }
+        self.announce_ext_keys(out).await;
         let mut buf = std::mem::take(&mut self.observe_buf);
         let _ = self
             .poll_properties(out, medium, now.as_micros(), &mut buf)
@@ -1104,6 +1214,7 @@ impl wire_weaver_server::Backend for Server {
     async fn end(&mut self) {
         let holder = self.holder;
         self.shared.with(|m| m.release_held_by(holder));
+        self.forwarder.end().await;
     }
 }
 

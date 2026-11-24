@@ -31,6 +31,7 @@ mod host;
 mod hub;
 pub(crate) mod input;
 mod interfaces;
+mod mounts;
 pub(crate) mod overlay;
 mod players;
 mod serve;
@@ -86,6 +87,8 @@ pub struct Services {
     pub browsers: Rc<Browsers>,
     pub players: Rc<Players>,
     pub audio: Rc<Audio>,
+    /// The `ext` mount slots, from the `mount` lines of ww.kdl.
+    pub ext: Rc<mounts::ExtMounts>,
     /// Timeouts for the handlers, as injected drags take steps.
     pub io: Rc<browsers::LoopIo>,
     /// The last connection id handed out, for what each holds and owns.
@@ -116,6 +119,7 @@ impl Services {
             browsers,
             players,
             audio: Audio::new(),
+            ext: mounts::ExtMounts::new(handle, scheduler),
             io: Rc::new(browsers::LoopIo::new(handle.clone())),
             holders: std::cell::Cell::new(0),
         })
@@ -326,6 +330,7 @@ impl WwServer {
         info!("ww: settings from {path:?}: {config:?}");
 
         self.services.browsers.configure(config.slots.clone());
+        self.services.ext.sync(&config.mounts);
         self.config = config;
         for line in missing {
             warn!("ww: listen {line}: the host has no such address yet, trying again");

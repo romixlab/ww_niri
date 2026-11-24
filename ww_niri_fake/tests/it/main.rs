@@ -5,6 +5,7 @@ mod hash_moved;
 mod hide;
 mod knobs;
 mod links;
+mod mounts;
 mod observers;
 mod overlay;
 

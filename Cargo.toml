@@ -42,9 +42,12 @@ wire_weaver_client = { git = "https://github.com/vhrdtech/wire_weaver", default-
 wire_weaver_server = { git = "https://github.com/vhrdtech/wire_weaver", default-features = false }
 ww_client_server = { git = "https://github.com/vhrdtech/wire_weaver", default-features = false }
 ww_device = { git = "https://github.com/vhrdtech/wire_weaver", default-features = false }
+ww_keyed = { git = "https://github.com/vhrdtech/ww_base", default-features = false }
+ww_local_socket = { git = "https://github.com/vhrdtech/wire_weaver", default-features = false }
 ww_niri_api = { path = "ww_niri_api" }
 ww_niri_client = { path = "ww_niri_client" }
 ww_niri_fake = { path = "ww_niri_fake" }
+ww_self = { git = "https://github.com/vhrdtech/wire_weaver", default-features = false }
 ww_stream = { git = "https://github.com/vhrdtech/wire_weaver", default-features = false }
 
 [workspace.dependencies.smithay]
@@ -131,9 +134,13 @@ wire_weaver_server = { git = "https://github.com/vhrdtech/wire_weaver", default-
 ww_calloop = { git = "https://github.com/vhrdtech/wire_weaver", default-features = false, optional = true }
 ww_client_server = { git = "https://github.com/vhrdtech/wire_weaver", default-features = false, features = ["std"], optional = true }
 ww_device = { git = "https://github.com/vhrdtech/wire_weaver", default-features = false, features = ["std", "log"], optional = true }
+# ww: the generated server names ww_keyed for the keys of the `ext` mount slots
+ww_keyed = { git = "https://github.com/vhrdtech/ww_base", default-features = false, features = ["std"], optional = true }
 # ww: announces the API on the LAN; the in-process responder, Avahi where it can't start
 ww_dns_sd = { git = "https://github.com/vhrdtech/wire_weaver", default-features = false, features = ["mdns", "avahi"], optional = true }
 ww_niri_api = { path = "ww_niri_api", optional = true }
+# ww: the server's own API, learned for global paths into the mounted ones
+ww_self = { git = "https://github.com/vhrdtech/wire_weaver", default-features = false, features = ["std"], optional = true }
 ww_stream = { git = "https://github.com/vhrdtech/wire_weaver", default-features = false, features = ["std"], optional = true }
 
 [dependencies.smithay]
@@ -166,6 +173,8 @@ xshell = "0.2.7"
 # ww: a real client against the server in tests
 tokio = { version = "1", default-features = false, features = ["rt", "macros", "time"] }
 wire_weaver_client = { git = "https://github.com/vhrdtech/wire_weaver", default-features = false, features = ["ws", "udp"] }
+# ww: a program to mount, serving the control API on a Unix socket
+ww_niri_fake.workspace = true
 
 [build-dependencies]
 pkg-config = "0.3"
@@ -174,7 +183,7 @@ pkg-config = "0.3"
 default = ["dbus", "systemd", "xdp-gnome-screencast", "ww"]
 # Enables the WireWeaver control API server (ww_niri_api over WebSocket and UDP, configured in ww.kdl).
 # Needs systemd: its spawn hands back the launched app's pid.
-ww = ["systemd", "dep:async-tungstenite", "dep:exact_units", "dep:knuffel", "dep:nix", "dep:pulseaudio", "dep:wire_weaver", "dep:wire_weaver_server", "dep:ww_calloop", "dep:ww_client_server", "dep:ww_device", "dep:ww_dns_sd", "dep:ww_niri_api", "dep:ww_stream"]
+ww = ["systemd", "dep:async-tungstenite", "dep:exact_units", "dep:knuffel", "dep:nix", "dep:pulseaudio", "dep:wire_weaver", "dep:wire_weaver_server", "dep:ww_calloop", "dep:ww_client_server", "dep:ww_device", "dep:ww_dns_sd", "dep:ww_keyed", "dep:ww_niri_api", "dep:ww_self", "dep:ww_stream"]
 # Enables D-Bus support (serve various freedesktop and GNOME interfaces, accessibility tree, power button handling).
 dbus = ["dep:zbus", "dep:async-io", "dep:accesskit", "dep:accesskit_unix"]
 # Enables systemd integration (global environment, apps in transient scopes).

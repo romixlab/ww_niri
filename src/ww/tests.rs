@@ -19,7 +19,7 @@ use ww_niri_api::{
 
 use super::audio::Target;
 use super::browsers::{LoopIo, Settings};
-use super::config::SlotConfig;
+use super::config::{MountConfig, SlotConfig};
 use super::host::WwHost;
 use super::input::{Key, Op, TextKeys};
 use super::Services;
@@ -361,6 +361,8 @@ enum Ctl {
     StopListening(std::sync::mpsc::Sender<()>),
     /// Bind another address, as a changed `listen` line does; answers the address bound.
     Bind(SocketAddr, std::sync::mpsc::Sender<SocketAddr>),
+    /// Mount exactly these, as the `mount` lines of ww.kdl do; answers once mounted.
+    Mount(Vec<MountConfig>, std::sync::mpsc::Sender<()>),
 }
 
 struct Bench {
@@ -469,6 +471,10 @@ fn bench_on(
                     bound.push(bind(addr));
                     done.send(bound.last().unwrap().local_addr()).unwrap();
                 }
+                calloop::channel::Event::Msg(Ctl::Mount(lines, done)) => {
+                    host.services().ext.sync(&lines);
+                    done.send(()).unwrap();
+                }
                 calloop::channel::Event::Msg(Ctl::Stop) | calloop::channel::Event::Closed => {
                     host.stop = true;
                 }
@@ -517,6 +523,13 @@ impl Bench {
         let (done, stopped) = std::sync::mpsc::channel();
         self.ctl.send(Ctl::StopListening(done)).unwrap();
         stopped.recv().unwrap();
+    }
+
+    /// Mounts exactly `lines`, as the `mount` lines of ww.kdl do.
+    fn mount(&self, lines: Vec<MountConfig>) {
+        let (done, mounted) = std::sync::mpsc::channel();
+        self.ctl.send(Ctl::Mount(lines, done)).unwrap();
+        mounted.recv().unwrap();
     }
 
     /// Binds `addr` beside, as a `listen` line added to ww.kdl does; answers the address bound.
@@ -3033,4 +3046,87 @@ fn overlay_show_only_is_one_filter_every_connection_observes() {
         assert!(!listed[0].hidden);
         assert!((fake.calls.lock().unwrap().iter()).any(|c| c.starts_with("show only Some")));
     });
+}
+
+/// A fake TV serving the control API on `socket` as a mounted program, named `hostname`.
+fn mounted_program(socket: &std::path::Path, hostname: &str) -> ww_niri_fake::FakeTv {
+    ww_niri_fake::FakeTv::start(ww_niri_fake::Options {
+        socket: Some(socket.to_owned()),
+        info: ww_niri_api::InfoOwned {
+            niri_version: "fake".to_owned(),
+            ww_niri_version: "fake".to_owned(),
+            hostname: hostname.to_owned(),
+        },
+        ..ww_niri_fake::Options::default()
+    })
+}
+
+/// Waits until the view's status is up (`true`) or absent.
+async fn view_up(view: &wire_weaver_client::MountView, up: bool) {
+    use wire_weaver::ww_api::mount::MountPresenceOwned;
+
+    let mut status = view.status();
+    let wait = status.wait_for(|p| matches!(p, MountPresenceOwned::Up { .. }) == up);
+    tokio::time::timeout(Duration::from_secs(10), wait)
+        .await
+        .expect("the view's status changes within 10 s")
+        .unwrap();
+}
+
+/// A `mount` line's program is reached through ww_niri's own link, by its name; a restart of the
+/// program shows as its slot's presence going absent and up again, at the same index, while
+/// ww_niri's own API goes on. A line removed takes its slot away.
+#[test]
+fn a_mounted_program_through_the_link_and_its_restart() {
+    use wire_weaver::prelude::MaxLen;
+    use wire_weaver::ww_api::mount::MountNameOwned;
+
+    let dir = std::env::temp_dir().join(format!("ww_niri-mounts-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let socket = dir.join("hub.sock");
+    let first = mounted_program(&socket, "hub-1");
+    let bench = bench(Vec::new());
+    bench.mount(vec![MountConfig {
+        name: "hub".to_owned(),
+        socket: socket.clone(),
+    }]);
+    let hub = MountNameOwned(MaxLen::new("hub".to_owned()).unwrap());
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        let client = bench.connect().await;
+        let slot = client.ext_by(&hub).await.unwrap().expect("ext[\"hub\"]");
+        let line = NiriClient::client_line();
+        let view = slot.view_for(&line).await.unwrap();
+        view_up(&view, true).await;
+        let program: NiriClient = view.client(&line).unwrap();
+        assert_eq!(program.info().call().await.unwrap().hostname, "hub-1");
+
+        drop(first);
+        view_up(&view, false).await;
+        assert!(program.info().call().await.is_err(), "nothing is up");
+        let own = client.info().call().await.unwrap();
+        assert_eq!(own.ww_niri_version, env!("CARGO_PKG_VERSION"));
+
+        let _second = mounted_program(&socket, "hub-2");
+        view_up(&view, true).await;
+        assert_eq!(program.info().call().await.unwrap().hostname, "hub-2");
+        assert_eq!(client.ext_index_of(&hub).await.unwrap(), Some(0));
+
+        // the client hears of it on the `ext_keys` stream
+        let mut keys = client.ext_keys().await.unwrap();
+        bench.mount(Vec::new());
+        let removed = tokio::time::timeout(Duration::from_secs(10), keys.recv())
+            .await
+            .expect("ext[\"hub\"] goes within 10 s")
+            .unwrap();
+        assert!(
+            matches!(removed, ww_keyed::KeyEvent::Removed { index } if index.0 == 0),
+            "{removed:?}"
+        );
+        assert_eq!(client.ext_index_of(&hub).await.unwrap(), None);
+    });
+    bench.end();
 }

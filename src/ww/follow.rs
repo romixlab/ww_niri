@@ -3,18 +3,24 @@
 //! properties, lets go of held keys and buttons at their hold limit, and when the link goes
 //! releases everything the client held.
 
+use std::collections::BTreeSet;
 use std::future::Future;
 use std::pin::pin;
 use std::time::Instant;
 
 use async_channel::Receiver;
-use futures_util::future::select;
+use futures_util::future::{select, Either};
+use wire_weaver::prelude::{MaxLen, UNib32};
+use wire_weaver::ww_api::mount::MountNameOwned;
 use wire_weaver::{EventWriter, MessageSink};
+use wire_weaver_server::mount::MountEvent;
+use ww_keyed::KeyEvent;
 use ww_niri_api::{EventOwned, WindowId};
 
 use super::host::{call, Run};
 use super::hub::{Hub, Mark};
 use super::input::Input;
+use super::mounts::index_of_path;
 use super::server::{api_impl, Server};
 use super::Audio;
 
@@ -181,17 +187,29 @@ impl Server {
 }
 
 impl wire_weaver_server::Backend for Server {
+    /// Something to act on, or to pass on from a mounted program.
     async fn wait(&mut self) {
-        if self.due.is_none() {
-            self.due = Some(self.sources.next(&self.input).await);
+        if self.due.is_some() {
+            return;
+        }
+        let next = self.sources.next(&self.input);
+        let mounted = self.forwarder.wait();
+        if let Either::Left((next, _)) = select(pin!(next), pin!(mounted)).await {
+            self.due = Some(next);
         }
     }
 
-    /// Observed properties: when one is due (a period, a held-back change).
+    /// Observed properties: when one is due (a period, a held-back change); a mount link's
+    /// ping or timeout.
     fn next_wake(&mut self, now: ww_device::Instant) -> Option<ww_device::Instant> {
-        self.observe
+        let observe = (self.observe)
             .next_wake(now.as_micros())
-            .map(ww_device::Instant::from_micros)
+            .map(ww_device::Instant::from_micros);
+        observe.into_iter().chain(self.forwarder.next_wake()).min()
+    }
+
+    fn cancel(&mut self, seq: u32) {
+        self.forwarder.cancel(seq);
     }
 
     async fn poll(
@@ -212,6 +230,10 @@ impl wire_weaver_server::Backend for Server {
                 }
             }
         }
+        for change in self.forwarder.poll(out).await {
+            self.mount_changed(&change);
+        }
+        self.announce_ext_keys(out).await;
         let mut buf = std::mem::take(&mut self.observe_buf);
         let _ = self
             .poll_properties(out, medium, now.as_micros(), &mut buf)
@@ -226,6 +248,48 @@ impl wire_weaver_server::Backend for Server {
         let _ = call(&self.run, move |host| host.overlay_lift_owned_by(holder)).await;
         if let Err(err) = self.input.release_all().await {
             warn!("ww: error releasing what {} held: {err:?}", self.peer);
+        }
+        self.forwarder.end().await;
+    }
+}
+
+impl Server {
+    /// Observers of a slot's `presence` hear that it was mounted or that its program came or
+    /// went.
+    fn mount_changed(&mut self, change: &MountEvent) {
+        if let MountEvent::Mounted { api_path } | MountEvent::Presence { api_path } = change {
+            if let Some(index) = index_of_path(api_path) {
+                self.mark_changed_ext_presence([UNib32(index).into()]);
+            }
+        }
+    }
+
+    /// Tells the client's `ext_keys` stream of the slots added and removed since it last heard.
+    /// Compared with the table, not taken from its events: a connection that fell behind on
+    /// them still hears of each.
+    async fn announce_ext_keys(&mut self, out: &mut EventWriter<'_, impl MessageSink>) {
+        let now: BTreeSet<u32> = self.ext.indices().iter().map(|index| index.0).collect();
+        if now == self.ext_known {
+            return;
+        }
+        let mut keys = Vec::new();
+        for &index in self.ext_known.difference(&now) {
+            keys.push(KeyEvent::Removed {
+                index: UNib32(index),
+            });
+        }
+        for &index in now.difference(&self.ext_known) {
+            let name = self.ext.name_of(index).map(MaxLen::new);
+            if let Some(Ok(name)) = name {
+                keys.push(KeyEvent::Added {
+                    index: UNib32(index),
+                    key: MountNameOwned(name),
+                });
+            }
+        }
+        self.ext_known = now;
+        for key in keys {
+            let _ = api_impl::stream_data_ser().ext_keys_send(&key, out).await;
         }
     }
 }

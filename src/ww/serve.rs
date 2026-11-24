@@ -19,6 +19,7 @@ use wire_weaver_server::{Connection, Server as WwServer};
 use ww_calloop::{bind_udp, LoopClock, LoopUdpStop, TcpIncoming, TcpStop};
 
 use super::host::{runner, WwHost};
+use super::mounts::MountClock;
 use super::server::{api_impl, Peer, Server};
 use super::Services;
 
@@ -92,17 +93,20 @@ pub fn bind<D: WwHost>(
     let root = listen(tcp, WsFraming::new(MESSAGE_LEN_MAX), clock.clone());
     let ww = root.service(WS_SERVICE);
     let run = runner(handle.clone());
+    let mount_clock = MountClock::new(clock.clone());
     let make = |medium: fn(wire_weaver::Peer) -> Peer| {
-        let (run, services) = (run.clone(), services.clone());
+        let (run, services, mount_clock) = (run.clone(), services.clone(), mount_clock.clone());
         move |connection: &Connection| {
             let peer = medium(connection.peer);
             debug!("ww: link to {peer} is up");
-            Server::new(run.clone(), peer, services.clone())
+            let forwarder = services.ext.forwarder(connection, mount_clock.clone());
+            Server::new(run.clone(), peer, services.clone(), forwarder)
         }
     };
     let (ws, udp_make) = (make(Peer::WebSocket), make(Peer::Udp));
+    let routes = services.ext.routes();
     let serve = async move {
-        let server = WwServer::new(clock);
+        let server = WwServer::new(clock).mounts(routes);
         let (root, ww, udp) = join3(
             server.serve(link_config(), root, &ws, pending::<()>()),
             server.serve(link_config(), ww, &ws, pending::<()>()),

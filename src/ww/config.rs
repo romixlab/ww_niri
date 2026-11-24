@@ -1,12 +1,13 @@
 //! `ww.kdl`: where the control API listens, the name it is announced under, how many browser
-//! slots there are and whose they are, where the volume indicator sits and where the overlay's
-//! images are.
+//! slots there are and whose they are, where the volume indicator sits, where the overlay's
+//! images are and which local programs' APIs are mounted in it.
 //!
 //! ```kdl
 //! listen "lan:7590"
 //! listen "tailnet:7590"
-//! listen "127.0.0.1:7591"
+//! listen "127.0.0.1:7590"
 //! advertise "Living room TV"
+//! mount "hub" "unix:$XDG_RUNTIME_DIR/pult/hub.sock"
 //! browsers 3
 //! browser 1 owner="Roman" user-agent="Mozilla/5.0 (SMART-TV; Linux; Tizen 6.0) AppleWebKit/538.1 (KHTML, like Gecko) Version/6.0 TV Safari/538.1"
 //! volume-indicator anchor="top-right" dx=-40 dy=40 output="HDMI-A-1" label="Громкость" muted-label="Без звука"
@@ -20,6 +21,10 @@
 //! A `browser N` line belongs to slot `N` (below the `browsers` count): `owner` names the person
 //! whose sign-ins the slot's profile keeps, and `user-agent` is the user agent its Firefox sends
 //! from its next start, as a smart TV's makes youtube.com/tv serve its TV interface.
+//!
+//! A `mount NAME unix:PATH` line mounts the API a local program serves on the Unix socket `PATH`
+//! at the slot `ext[NAME]` (see `mounts.rs`). `$VAR` and `${VAR}` in `PATH` are the environment
+//! variable's value when the file is read. Only this file adds a slot: a client never can.
 //!
 //! `lan:PORT` is the host's LAN address and `tailnet:PORT` its tailnet address, whatever they are
 //! now (see [`Interfaces`]); a literal address names itself. Each `lan:` listener is announced
@@ -56,6 +61,81 @@ struct RawConfig {
     volume_indicator: Option<RawVolume>,
     #[knuffel(child, unwrap(argument))]
     backgrounds: Option<String>,
+    #[knuffel(children(name = "mount"))]
+    mount: Vec<RawMount>,
+}
+
+/// One `mount NAME TARGET` line.
+#[derive(knuffel::Decode, Debug, Default, Clone, PartialEq, Eq)]
+struct RawMount {
+    #[knuffel(argument)]
+    name: String,
+    #[knuffel(argument)]
+    target: String,
+}
+
+/// The longest name of a mount slot, as `ww_api::mount::MountName` takes it.
+pub const MOUNT_NAME_LEN_MAX: usize = 64;
+
+/// One `mount` line: the program serving on `socket` is mounted at `ext[name]`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MountConfig {
+    pub name: String,
+    /// The Unix socket, with its variables expanded.
+    pub socket: PathBuf,
+}
+
+impl RawMount {
+    fn parse(self, env: &dyn Fn(&str) -> Option<String>) -> anyhow::Result<MountConfig> {
+        let name = self.name;
+        if name.is_empty() || name.len() > MOUNT_NAME_LEN_MAX {
+            bail!("mount {name:?}: the name is empty or longer than {MOUNT_NAME_LEN_MAX} bytes");
+        }
+        if name.chars().any(|c| c.is_control() || c.is_whitespace()) {
+            bail!("mount {name:?}: the name has a space or a control character");
+        }
+        let Some(path) = self.target.strip_prefix("unix:") else {
+            bail!("mount {name:?}: {:?} is not unix:PATH", self.target);
+        };
+        let socket = PathBuf::from(expand(path, env).with_context(|| format!("mount {name:?}"))?);
+        if !socket.is_absolute() {
+            bail!("mount {name:?}: {socket:?} is not an absolute path");
+        }
+        Ok(MountConfig { name, socket })
+    }
+}
+
+/// `text` with each `$VAR` and `${VAR}` replaced by `env`'s value; a variable it has no value
+/// for is an error.
+fn expand(text: &str, env: &dyn Fn(&str) -> Option<String>) -> anyhow::Result<String> {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find('$') {
+        out.push_str(&rest[..at]);
+        let after = &rest[at + 1..];
+        let (name, next) = match after.strip_prefix('{') {
+            Some(braced) => {
+                let end = braced
+                    .find('}')
+                    .with_context(|| format!("{text:?}: ${{ without }}"))?;
+                (&braced[..end], &braced[end + 1..])
+            }
+            None => {
+                let end = after
+                    .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                    .unwrap_or(after.len());
+                (&after[..end], &after[end..])
+            }
+        };
+        if name.is_empty() {
+            bail!("{text:?}: $ without a variable name");
+        }
+        let value = env(name).with_context(|| format!("{text:?}: ${name} is not set"))?;
+        out.push_str(&value);
+        rest = next;
+    }
+    out.push_str(rest);
+    Ok(out)
 }
 
 /// The `volume-indicator` line.
@@ -206,6 +286,8 @@ pub struct WwConfig {
     pub volume_indicator: Indicator,
     /// The `backgrounds` folder; `None`: `backgrounds` next to `ww.kdl`.
     pub backgrounds: Option<PathBuf>,
+    /// The `mount` lines, in the file's order, each name once.
+    pub mounts: Vec<MountConfig>,
 }
 
 impl Default for WwConfig {
@@ -216,12 +298,22 @@ impl Default for WwConfig {
             slots: vec![SlotConfig::default(); usize::from(DEFAULT_BROWSERS)],
             volume_indicator: Indicator::default(),
             backgrounds: None,
+            mounts: Vec::new(),
         }
     }
 }
 
 impl WwConfig {
     pub fn parse(filename: &str, text: &str) -> anyhow::Result<Self> {
+        Self::parse_with(filename, text, &|name| std::env::var(name).ok())
+    }
+
+    /// As [Self::parse], with the variables of `mount` lines from `env`.
+    pub fn parse_with(
+        filename: &str,
+        text: &str,
+        env: &dyn Fn(&str) -> Option<String>,
+    ) -> anyhow::Result<Self> {
         let raw: RawConfig =
             knuffel::parse(filename, text).map_err(|err| anyhow::anyhow!("{err}"))?;
 
@@ -267,12 +359,22 @@ impl WwConfig {
             .transpose()?
             .unwrap_or_default();
 
+        let mut mounts: Vec<MountConfig> = Vec::new();
+        for line in raw.mount {
+            let line = line.parse(env)?;
+            if mounts.iter().any(|m| m.name == line.name) {
+                bail!("mount {:?}: a second line for the name", line.name);
+            }
+            mounts.push(line);
+        }
+
         Ok(Self {
             listen,
             advertise,
             slots,
             volume_indicator,
             backgrounds: raw.backgrounds.map(PathBuf::from),
+            mounts,
         })
     }
 
@@ -488,6 +590,52 @@ mod tests {
     #[test]
     fn refuses_address_without_port() {
         assert!(WwConfig::parse("ww.kdl", "listen \"100.64.0.12\"").is_err());
+    }
+
+    #[test]
+    fn mount_lines() {
+        let env = |name: &str| (name == "XDG_RUNTIME_DIR").then(|| "/run/user/1000".to_owned());
+        let text = "mount \"hub\" \"unix:$XDG_RUNTIME_DIR/pult/hub.sock\"\n\
+                    mount \"cast\" \"unix:${XDG_RUNTIME_DIR}x/cast.sock\"\n";
+        let config = WwConfig::parse_with("ww.kdl", text, &env).unwrap();
+        let mount = |name: &str, socket: &str| MountConfig {
+            name: name.to_owned(),
+            socket: PathBuf::from(socket),
+        };
+        assert_eq!(
+            config.mounts,
+            [
+                mount("hub", "/run/user/1000/pult/hub.sock"),
+                mount("cast", "/run/user/1000x/cast.sock"),
+            ]
+        );
+    }
+
+    #[test]
+    fn refuses_bad_mount_lines() {
+        let env = |name: &str| (name == "HOME").then(|| "/home/tv".to_owned());
+        let long = format!(
+            "mount {:?} \"unix:/run/a.sock\"",
+            "x".repeat(MOUNT_NAME_LEN_MAX + 1)
+        );
+        for text in [
+            "mount \"hub\" \"/run/hub.sock\"",
+            "mount \"hub\" \"tcp:127.0.0.1:7591\"",
+            "mount \"hub\" \"unix:hub.sock\"",
+            "mount \"hub\" \"unix:$NOPE/hub.sock\"",
+            "mount \"hub\" \"unix:${HOME/hub.sock\"",
+            "mount \"hub\" \"unix:$/hub.sock\"",
+            "mount \"\" \"unix:/run/hub.sock\"",
+            "mount \"my hub\" \"unix:/run/hub.sock\"",
+            "mount \"hub\"",
+            "mount \"hub\" \"unix:/a.sock\"\nmount \"hub\" \"unix:$HOME/b.sock\"",
+            &long,
+        ] {
+            assert!(
+                WwConfig::parse_with("ww.kdl", text, &env).is_err(),
+                "{text}"
+            );
+        }
     }
 
     #[test]
