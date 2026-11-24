@@ -4,6 +4,8 @@ Changes of ww_niri on top of upstream niri. Upstream's own changes are in its re
 
 ## [Unreleased]
 
+## [26.24.0] - 2026-11-24
+
 ### Added
 
 - `deploy/niri-seatd.service`: the TV's niri unit with `Type=notify` and a watchdog; `just install-seatd-unit` installs it.
