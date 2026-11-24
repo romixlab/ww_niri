@@ -6,6 +6,9 @@ use std::time::Duration;
 
 use exact_units::Micros;
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
+use wire_weaver::prelude::MaxLen;
+use wire_weaver::ww_api::mount::MountNameOwned;
+use wire_weaver_client::{ClientLine, MountView};
 use ww_niri_api::{
     Button, InfoOwned, ItemId, ItemOwned, Modifiers, OutputOwned, PlayerId, PlayerInfoOwned, Point,
     ShowOnlyOwned, Transition, WindowId, WindowOwned,
@@ -278,6 +281,33 @@ impl Tv {
     /// When the TV is offline (it released them itself) or the queue is full.
     pub async fn release_all(&self) -> Result<(), TvError> {
         self.request(Command::ReleaseAll).await
+    }
+
+    // ---- mounted programs ----
+
+    /// A view of the program mounted at `ext[name]`, over this TV's own link, for the generated
+    /// client of `line` (its `client_line()`); `None` while ww.kdl has no `mount` line `name`.
+    ///
+    /// The view follows the slot: its [MountView::status] is `Absent` while the program is gone
+    /// and `Up` once its API is learned, again after a restart. Make the client with
+    /// [MountView::client]. Needs a tokio runtime, which runs the view's follower.
+    ///
+    /// # Errors
+    ///
+    /// When the TV is offline, `name` is longer than 64 bytes, or the mounted API can't be
+    /// learned.
+    pub async fn ext_view(
+        &self,
+        name: &str,
+        line: &ClientLine,
+    ) -> Result<Option<MountView>, TvError> {
+        let name = MaxLen::new(name.to_owned()).map_err(|_too_long| TvError::BadArgument {
+            what: "a mount name",
+        })?;
+        let Some(slot) = self.inner.client.ext_by(&MountNameOwned(name)).await? else {
+            return Ok(None);
+        };
+        Ok(Some(slot.view_for(line).await?))
     }
 }
 

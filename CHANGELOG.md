@@ -18,6 +18,7 @@ Changes of ww_niri on top of upstream niri. Upstream's own changes are in its re
 - `ww_niri_client`: `tv.overlay().show_only`; `ww_niri_fake`: `show_only`, `add_background` and the volume indicator (P2618#23nov-2021c).
 - ww.kdl `mount` lines put local programs' APIs at `ext[NAME]` of the control API (P2618#23nov-1057).
 - `ww_niri_fake`: `mount`, `unmount` of `ext` slots; `Options::socket` serves the fake on a Unix socket (P2618#23nov-1057).
+- `ww_niri_client`: `Tv::ext_view` opens a mounted program's API over the TV's own link (P2618#23nov-1057c).
 
 ### Changed
 

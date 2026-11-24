@@ -45,5 +45,6 @@ pub use tv::{
     AudioCalls, KeyboardCalls, OverlayCalls, PlaybackCalls, PointerCalls, SlotCalls, Tv,
     WindowCalls,
 };
-pub use wire_weaver_client::{Backoff, KeepTrying};
+pub use wire_weaver::ww_api::mount::MountPresenceOwned;
+pub use wire_weaver_client::{Backoff, ClientLine, KeepTrying, MountView};
 pub use ww_niri_api;

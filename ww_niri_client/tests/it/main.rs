@@ -4,6 +4,7 @@ mod commands;
 mod connection;
 mod model;
 mod motion;
+mod mounts;
 
 use std::future::Future;
 use std::time::Duration;

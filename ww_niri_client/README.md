@@ -72,6 +72,10 @@ On each link, and after a `Resync` event, the client lists everything again and 
 - `tv.window(id).hide()` keeps the window running off screen: niri never draws or focuses it until `show`, which brings it back on the active workspace. A hidden window is a lasting state, not a lease: it stays hidden when the link goes.
 - `Tv::release_all` lets go of everything when the app goes to the background. A phone that vanishes leaves nothing held past the hold limit.
 
+## Mounted programs
+
+A local program that ww.kdl mounts at `ext[NAME]` is reached over the TV's own link, with no second connection. `tv.ext_view(NAME, &Client::client_line())` answers a `MountView` for that program's generated client, or `None` without such a `mount` line. The view's `status()` says `Absent` while the program is gone and `Up` once its API is learned, also after a restart. `view.client(&line)` makes the client.
+
 ## Tests
 
 The tests run the client against `ww_niri_fake` in the same process. They cover:
