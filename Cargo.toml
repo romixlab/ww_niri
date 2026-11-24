@@ -41,6 +41,7 @@ wire_weaver = { git = "https://github.com/vhrdtech/wire_weaver", default-feature
 wire_weaver_client = { git = "https://github.com/vhrdtech/wire_weaver", default-features = false }
 wire_weaver_server = { git = "https://github.com/vhrdtech/wire_weaver", default-features = false }
 ww_client_server = { git = "https://github.com/vhrdtech/wire_weaver", default-features = false }
+ww_api = { git = "https://github.com/vhrdtech/wire_weaver", default-features = false }
 ww_device = { git = "https://github.com/vhrdtech/wire_weaver", default-features = false }
 ww_keyed = { git = "https://github.com/vhrdtech/ww_base", default-features = false }
 ww_local_socket = { git = "https://github.com/vhrdtech/wire_weaver", default-features = false }
@@ -48,6 +49,7 @@ ww_niri_api = { path = "ww_niri_api" }
 ww_niri_client = { path = "ww_niri_client" }
 ww_niri_fake = { path = "ww_niri_fake" }
 ww_self = { git = "https://github.com/vhrdtech/wire_weaver", default-features = false }
+ww_si = { git = "https://github.com/vhrdtech/ww_base", default-features = false }
 ww_stream = { git = "https://github.com/vhrdtech/wire_weaver", default-features = false }
 
 [workspace.dependencies.smithay]
