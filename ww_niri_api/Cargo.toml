@@ -11,6 +11,10 @@ repository = "https://github.com/romixlab/ww_niri"
 [package.metadata.wire_weaver]
 wire = "w1.0"
 
+# ww_keyed: named by the code `mounts!(ext)` generates in the API's users
+[package.metadata.cargo-machete]
+ignored = ["ww_keyed"]
+
 [features]
 default = ["std"]
 std = ["ww_api/std", "ww_keyed/std", "ww_si/std"]

@@ -2,7 +2,7 @@
 //! a client reaches it through the first one's link, and a restart of the mounted one shows as
 //! its presence going `Absent` and `Up` again, the first TV untouched.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use wire_weaver::prelude::MaxLen;
@@ -14,10 +14,10 @@ use ww_niri_fake::{ClockMode, FakeTv, Options};
 use super::{connect, run, soon, NiriClient};
 
 /// A fake serving on `socket` too, named `hostname`.
-fn mounted(socket: &PathBuf, hostname: &str) -> FakeTv {
+fn mounted(socket: &Path, hostname: &str) -> FakeTv {
     FakeTv::start(Options {
         clock: ClockMode::Manual,
-        socket: Some(socket.clone()),
+        socket: Some(socket.to_owned()),
         info: InfoOwned {
             niri_version: "fake".to_owned(),
             ww_niri_version: "fake".to_owned(),

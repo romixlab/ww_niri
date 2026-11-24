@@ -145,6 +145,10 @@ We also have a community Discord server: https://discord.gg/vT8Sfjy7sx
 
 Control API clients put items on one layer above the windows: covers, texts, a clock, notices, meters, each owned by its client and stacked by priority, each over its own blur, dim and colour or image fill. One shared filter can show only some of them. ww_niri shows the volume on every change, at the place `volume-indicator` in `ww.kdl` gives. See [docs/ww/Overlay.md](docs/ww/Overlay.md).
 
+## Mounted programs (ww_niri)
+
+A `mount NAME unix:PATH` line of `ww.kdl` puts the API another local program serves on that socket into the control API at `ext[NAME]`: clients reach it over their link to the TV, and the program restarts without touching the screen. See [docs/ww/Mounts.md](docs/ww/Mounts.md).
+
 ## Deploying niri on a PC (ww_niri)
 
 - `just deploy`: pulls `--ff-only` (refuses on local changes), builds `--profile deploy`, installs through binkeep (`deploy/binkeep.toml`), checks `niri --version` against HEAD.

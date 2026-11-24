@@ -16,11 +16,15 @@ Changes of ww_niri on top of upstream niri. Upstream's own changes are in its re
 - Overlay `show_only`: one observed filter by band, key or id; hidden items stay up, `list` marks them (P2618#23nov-2021c).
 - Overlay backdrop `fill`: none, a colour, or a PNG image from the `backgrounds` folder, under blur and dim (P2618#23nov-2021c).
 - `ww_niri_client`: `tv.overlay().show_only`; `ww_niri_fake`: `show_only`, `add_background` and the volume indicator (P2618#23nov-2021c).
+- ww.kdl `mount` lines put local programs' APIs at `ext[NAME]` of the control API (P2618#23nov-1057).
+- `ww_niri_fake`: `mount`, `unmount` of `ext` slots; `Options::socket` serves the fake on a Unix socket (P2618#23nov-1057).
 
 ### Changed
 
 - **Breaking:** control API: `Item` has a new field `report_shown` (P2618#23nov-2020b).
 - **Breaking:** control API: `Backdrop` has a new field `fill` and a lifetime; `ItemInfo` a new field `hidden` (P2618#23nov-2021c).
+- **Breaking:** control API: the root gains the keyed mount slots `ext` and `ext_keys` (P2618#23nov-1057).
+- wire_weaver moves to b274db32, with mount slots (P2618#23nov-1057).
 
 ## [26.23.0] - 2026-11-22
 
